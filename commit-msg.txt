@@ -1,0 +1,7 @@
+fix(v1.2.32): fix backup/restore data loss, cascade delete miss, version display errors
+
+- Fix exportAll/restoreBackup missing mastered_questions and compose_records
+- Fix deleteBank cascade delete missing mastered_questions (orphan records)
+- Fix manualCheckUpdate hardcoded v1.2.29 (should be v1.2.32)
+- Unify SettingsView version display to 1.2.32
+- Fix heatmap maxStreak broken on DST transition (use date string comparison)

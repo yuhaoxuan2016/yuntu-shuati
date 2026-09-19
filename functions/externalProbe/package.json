@@ -1,0 +1,9 @@
+{
+  "name": "externalProbe",
+  "version": "1.0.0",
+  "description": "异地探活：定时读取轻量服务器 /ops/ping，异常写入 probe_incidents，修复自身巡检「自己查自己」的盲区",
+  "main": "index.js",
+  "dependencies": {
+    "@cloudbase/node-sdk": "^2.10.0"
+  }
+}

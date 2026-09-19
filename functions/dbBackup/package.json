@@ -1,0 +1,9 @@
+{
+  "name": "dbBackup",
+  "version": "1.0.0",
+  "description": "全库定时备份：每日导出全部集合到云存储，保留 30 天",
+  "main": "index.js",
+  "dependencies": {
+    "@cloudbase/node-sdk": "^2.10.0"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "shuati-bao-pwa",
+  "private": true,
+  "version": "1.2.48",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "type-check": "vue-tsc --noEmit",
+    "deploy": "node scripts/deploy-server.mjs",
+    "deploy:calc": "node scripts/deploy-server.mjs --calc"
+  },
+  "dependencies": {
+    "@cloudbase/js-sdk": "^3.7.1",
+    "mammoth": "^1.12.0",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.13",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@cloudbase/node-sdk": "^3.18.3",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "cos-nodejs-sdk-v5": "^3.0.0",
+    "tencentcloud-sdk-nodejs-tcb": "^4.1.287",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.3",
+    "vite-plugin-pwa": "^0.21.1",
+    "vue-tsc": "^3.3.11"
+  }
+}
