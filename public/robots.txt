@@ -1,0 +1,4 @@
+User-agent: *
+Disallow: /wechat-qr.png
+Disallow: /placeholders/
+Disallow: /ops/

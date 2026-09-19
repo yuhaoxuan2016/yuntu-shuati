@@ -1,0 +1,9 @@
+{
+  "name": "admin-api",
+  "version": "1.0.0",
+  "description": "管理员操作云函数：口令保护（常量时间比较）+ 失败计数与临时锁定（P1-38）",
+  "main": "index.js",
+  "dependencies": {
+    "@cloudbase/node-sdk": "^2.10.0"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "examGate",
+  "version": "1.0.0",
+  "description": "考试流程服务端闸门：公共考试列表 / 取卷（剥答案）/ 服务端判分 / 凭查询码回看",
+  "main": "index.js",
+  "dependencies": {
+    "@cloudbase/node-sdk": "^2.10.0"
+  }
+}

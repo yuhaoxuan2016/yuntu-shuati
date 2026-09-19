@@ -1,0 +1,79 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Scripts (运维/调试脚本，含本机凭据配置 - DO NOT upload)
+scripts/
+# 腾讯云密钥已收敛为唯一一份 scripts/.creds.env。下面这条是显式兜底：
+# 万一将来有人解除 scripts/ 的整目录忽略，密钥文件本身仍然进不了仓库。
+**/.creds.env
+
+# Backups (contains cloud data snapshots)
+backups/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Personal assets (replace with your own)
+public/wechat-qr.png
+public/contact-avatar.png
+# 品牌素材：仅维护者本机与服务端保留，不进仓库（缺失时页面自动收起，见 App.vue 的 onLogoError）
+public/logo.png
+public/logo.gif
+public/logo-32.png
+public/logo-64.png
+public/logo-192.png
+public/logo-256.png
+public/logo-512.png
+public/icons/logo-*.gif
+public/share-card.png
+public/mp-qr.png
+src/assets/logo.png
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Build artifacts (minified bundles at root)
+.online-*.js
+
+# Personal assets in src/assets (replace with your own)
+src/assets/wechat-qr.png
+src/assets/alipay-qr.jpg
+
+# Temp reference materials
+tmp_logo_ref/
+
+# PWA generated
+dev-dist/
+
+# 截图/素材（本地保留，不上传）
+home-icons-shot.png
+
+# 旧 git 历史备份（含 envId，仅本地保留）
+.git.bak-envhistory/
+
+# 本地 MCP 工具配置（仅本机有效，不上传）
+config/
+
+# 本地探测/临时脚本
+.probe/
+push-byd-pub-bank.cjs
+
+# 桌面版打包壳（本地保留，暂不上传 GitHub；恢复见 scripts/desktop-shell.patch）
+src-tauri/
+
+# 某工具会用未展开的 %SystemDrive% 建 Windows 缓存目录（2026-09-16 多次出现，防误提交）
+%SystemDrive%/
