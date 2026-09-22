@@ -61,6 +61,9 @@
         </div>
         <p class="restart-tip">加载不全或卡顿，点此刷新</p>
         <a v-if="icpNumber" class="beian-link" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">{{ icpNumber }}</a>
+        <a v-if="gaNumber" class="beian-link" :href="gaLink" target="_blank" rel="noreferrer">
+          <img src="/beian-icon.png" class="beian-icon" width="18" height="20" alt="公安备案" />{{ gaNumber }}
+        </a>
       </div>
     </aside>
     <main class="content"><RouterView :key="route.fullPath" /></main>
@@ -125,6 +128,13 @@ function fallbackToPlaceholder(e: Event, placeholder: string) {
 
 // ICP 备案号：构建时从 .env 注入（VITE_ICP_NUMBER），源码不含真实备案号
 const icpNumber = (import.meta.env.VITE_ICP_NUMBER as string) || ''
+
+// 公安备案号同上（VITE_GA_BEIAN_NUMBER，如「X公网安备00000000000000号」）。
+// 查询链接由编号里的数字拼出，避免第二个变量与展示文案漂移。
+const gaNumber = (import.meta.env.VITE_GA_BEIAN_NUMBER as string) || ''
+const gaLink = gaNumber
+  ? `https://beian.mps.gov.cn/#/query/webSearch?code=${gaNumber.replace(/\D/g, "")}`
+  : ''
 
 // logo 随主题色切换（2026-08-23）：读取 documentElement 的 data-theme-color 选对应主题色版动画 GIF
 const themeColor = ref('green')
@@ -304,6 +314,7 @@ async function handleRestart() {
   text-decoration: none;
 }
 .beian-link:hover { color: var(--color-text-secondary); text-decoration: underline; }
+.beian-icon { width: 18px; height: 20px; margin-right: 4px; vertical-align: -5px; }
 
 /* 联系我 */
 .contact-me {

@@ -10,7 +10,7 @@
         <div class="modal-body">
           <p class="intro">
             遇到 Bug？想要新功能？有其他建议？<br />
-            告诉我们，反馈会直接发到作者的 QQ 邮箱。
+            {{ feedbackEmail ? '告诉我们，反馈会直接发到维护者邮箱。' : '告诉我们，可复制或保存内容后自行发送。' }}
           </p>
 
           <div class="field">
@@ -86,8 +86,8 @@
 
         <footer class="modal-foot">
           <button class="btn-secondary" @click="close" :disabled="submitting">取消</button>
-          <button class="btn-primary" @click="sendToQQMail" :disabled="!canSubmit || submitting">
-            📧 发送到 QQ 邮箱
+          <button v-if="feedbackEmail" class="btn-primary" @click="sendToEmail" :disabled="!canSubmit || submitting">
+            📧 发送到邮箱
           </button>
           <button class="btn-secondary" @click="copyToClipboard" :disabled="!canSubmit || submitting">
             📋 复制到剪贴板
@@ -111,6 +111,10 @@ interface Props {
 }
 const props = defineProps<Props>()
 const emit = defineEmits<{ (e: 'close'): void }>()
+
+// 反馈收件地址：构建时从 .env 注入（VITE_FEEDBACK_EMAIL），源码与产物不含真实邮箱。
+// 未配置时「发送到邮箱」按钮不渲染，只保留复制/下载两条通道。
+const feedbackEmail = (import.meta.env.VITE_FEEDBACK_EMAIL as string) || ''
 
 const categories = [
   { key: 'bug', label: 'Bug 报告', icon: '🐛' },
@@ -238,12 +242,11 @@ async function copyToClipboard() {
   }
 }
 
-async function sendToQQMail() {
+async function sendToEmail() {
   const md = await buildPayload()
   if (!md) return
   // mailto URL 长度限制：约 2048 字符（IE/Outlook），Chrome/Edge/QQ 邮件客户端约 8192
   // 超长内容会被截断，所以同时复制到剪贴板
-  const FEEDBACK_EMAIL = '2943663274@qq.com'
   const categoryLabel = {
     bug: '[Bug]',
     feature: '[建议]',
@@ -261,7 +264,7 @@ async function sendToQQMail() {
   //         并明确说出「没反应时怎么办」，不再给一个探测不到的绿勾。
   let copied = false
   try {
-    await navigator.clipboard.writeText(`收件人: ${FEEDBACK_EMAIL}\n主题: ${subject}\n\n${md}`)
+    await navigator.clipboard.writeText(`收件人: ${feedbackEmail}\n主题: ${subject}\n\n${md}`)
     copied = true
   } catch { copied = false }
 
@@ -279,7 +282,7 @@ async function sendToQQMail() {
   }
 
   const mailtoUrl =
-    `mailto:${FEEDBACK_EMAIL}` +
+    `mailto:${feedbackEmail}` +
     `?subject=${encodeURIComponent(subject)}` +
     `&body=${encodeURIComponent(body)}`
 
@@ -294,7 +297,7 @@ async function sendToQQMail() {
   resultMsg.value =
     (mailAttempted ? '已尝试唤起系统邮件客户端。' : '无法唤起系统邮件客户端。') +
     (copied ? '反馈内容已复制到剪贴板，可直接粘贴。' : '未能写入剪贴板，请手动复制内容。') +
-    `若没有反应，请把内容发送到 ${FEEDBACK_EMAIL}`
+    `若没有反应，请把内容发送到 ${feedbackEmail}`
 }
 
 async function saveLocal() {

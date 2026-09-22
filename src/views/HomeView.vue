@@ -195,6 +195,12 @@
     <!-- 免责声明（2026-09-07） -->
     <p class="site-disclaimer">本站为个人自用的非经营性学习工具，题库内容仅供个人学习交流参考；本站不向公众提供生成式人工智能服务（AI 功能需自行配置个人密钥）。</p>
 
+    <!-- 备案标识：桌面在侧栏（App.vue），小屏侧栏是抽屉、不点开看不见，故在首页底部补一份 -->
+    <div v-if="icpNumber || gaNumber" class="site-beian">
+      <a v-if="icpNumber" class="beian-link" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">{{ icpNumber }}</a>
+      <a v-if="gaNumber" class="beian-link" :href="gaLink" target="_blank" rel="noreferrer"><img src="/beian-icon.png" class="beian-icon" width="18" height="20" alt="公安备案" />{{ gaNumber }}</a>
+    </div>
+
     <div v-if="showNew" class="modal" @click.self="showNew = false">
       <div class="modal-body">
         <h3>新建题库</h3>
@@ -245,6 +251,13 @@ interface DailyRecord { date: string; total: number; correct: number }
 const router = useRouter()
 const bankStore = useBankStore()
 const showNew = ref(false)
+
+// 备案标识：与 App.vue 侧栏那份同源（都只读 .env 注入值），改口径时两处一起改
+const icpNumber = (import.meta.env.VITE_ICP_NUMBER as string) || ''
+const gaNumber = (import.meta.env.VITE_GA_BEIAN_NUMBER as string) || ''
+const gaLink = gaNumber
+  ? `https://beian.mps.gov.cn/#/query/webSearch?code=${gaNumber.replace(/\D/g, "")}`
+  : ''
 
 // 云朵彩蛋欢迎条（在设置页连点云朵主题触发过彩蛋后，首页常显欢迎语）
 const cloudEgg = (() => {
@@ -921,4 +934,8 @@ onBeforeUnmount(() => { document.removeEventListener('click', onDocClick); docum
   line-height: 1.6;
   color: var(--color-text-tertiary);
 }
+
+/* 小屏才显示，链接本身的样式在 App.vue（非 scoped，全局生效） */
+.site-beian { display: none; margin: 0 auto 20px; }
+@media (max-width: 768px) { .site-beian { display: block; } }
 </style>
