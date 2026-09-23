@@ -129,16 +129,8 @@ export function judgeAnswerBool(ans: string | null, options: string[] | null): s
   return ''  // 无法识别的判断词不默认判对
 }
 
-// 智能组卷配额模板：5 个等级 × 3 种题型 = 220 题（从公共题库抽题）
-// 注意：自定义模板功能见 src/lib/compose-template.ts，此处保留为默认规格/兼容旧逻辑
-// 2026-09-23：指向「2026 新版公共题库」（旧库已改名加 (旧) 后缀，仍在线上但不再作默认抽题源）。
-export const COMPOSE_SPEC = [
-  { level: '初级', bank: 'lquiz_banks_15', single: 11, multi: 5, judge: 14 },
-  { level: '中级', bank: 'lquiz_banks_16', single: 11, multi: 5, judge: 14 },
-  { level: '高级', bank: 'lquiz_banks_17', single: 29, multi: 15, judge: 36 },
-  { level: '技师', bank: 'lquiz_banks_18', single: 18, multi: 10, judge: 22 },
-  { level: '安规', bank: 'lquiz_banks_14', single: 11, multi: 5, judge: 14 },
-]
+// 智能组卷配额模板已迁到 src/lib/compose-template.ts（题库 ID 由 VITE_PUBLIC_BANKS 注入，
+// 不写死在代码里）。原 COMPOSE_SPEC 常量已无引用，2026-09-23 删除。
 
 export interface ExamQuestion {
   // 题目身份键。本地题目库是数字 id；云端公共题库的题目走 listPublicBankQuestions 映射，
@@ -147,11 +139,11 @@ export interface ExamQuestion {
   // 2026-09-15 实测（scripts/all-questions.json：真实云端导出 7049 条，导出于 2026-08-08）：
   //   · **全部 7049 条都没有 `id` 字段** —— 印证 `cloud.ts:317`「push 时 id 被删、只留 _id + _local_id」；
   //   · **全部 7049 条都有 `_local_id`**，defaultSpec() 五库（初级/中级/高级/技师/安规）无一例外，
-  //     安规 lquiz_banks_12 的 1147 条也全带。
+  //     安规库的 1147 条也全带。
   // 所以今天 `id` 实际总是解析成 `_local_id`（数字），最后那个 `?? _id` 兜底**并未被触发**。
-  // ⚠️ 更正一条曾经写在这里的错误断言：`cloud.ts:548` 那句「云端题库无 _local_id（如安规 lquiz_banks_12）」
+  // ⚠️ 更正一条曾经写在这里的错误断言：`cloud.ts:548` 那句「云端题库无 _local_id（如某安规库）」
   // 说的是 **`quiz_banks` 集合里的题库文档**（`cloud.ts:11-19` 的 `CLOUD_COLLECTIONS` 里根本没有
-  // `lquiz_banks` 这个集合；`lquiz_banks_12` 是**题库文档的 `_id`**，被题目文档用作 `bank_ref`），
+  // 题库 ID 那个前缀的集合；它是**题库文档的 `_id`**，被题目文档用作 `bank_ref`），
   // 不是 `questions` 集合里的题目文档；把它当成「安规的题目没有 _local_id」是误读，实测相反。
   //
   // 尽管如此，`_id` 兜底与 dedupKeyOf 的退化键仍然保留：一旦将来有任何一批题目文档两个键都缺，
@@ -195,7 +187,7 @@ export interface ExamQuestion {
   analysis: string | null
   source_index?: number | null
   // 题干插图。stem 里用 [IMG:n] 占位指向本数组下标（见 components/StemText.vue）。
-  // 云端是绝对 URL（https://yuhaoxuan.cn/qimg/...），本地导入的题库是 data URI。
+  // 云端存的是绝对 URL（图放在部署方自己的静态目录下），本地导入的题库是 data URI。
   images?: string[] | null
   // 由解析推算出来、**不是题库标准答案**的空值。标准答案才是考试判分依据，两者在 UI 上分开显示。
   answer_derived?: string | null

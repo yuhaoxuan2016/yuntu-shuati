@@ -23,25 +23,39 @@ const STORE_KEY = 'compose_templates'
 // 读取时按 legacy 兼容并逐行归一化；写入统一用 { version, templates } 信封。
 const STORE_VERSION = 1
 
-// 公共题库下拉选项（与 COMPOSE_SPEC 原等级对应；模板里可任选）
-// 2026-09-23：改为「2026 新版公共题库」（旧库已改名加 (旧)，仍在线上，用户自定义模板里若指向旧库不受影响）。
-export const BANK_OPTIONS = [
-  { id: 'lquiz_banks_15', name: '初级2026' },
-  { id: 'lquiz_banks_16', name: '中级2026' },
-  { id: 'lquiz_banks_17', name: '高级2026' },
-  { id: 'lquiz_banks_18', name: '技师2026' },
-  { id: 'lquiz_banks_14', name: '变电安规2026' },
-]
+// 公共题库下拉选项。
+// 题库 ID 属于**部署方自己的配置**，不写进代码：由构建期变量 VITE_PUBLIC_BANKS 注入，
+// 格式「显示名=题库ID」，多个用逗号分隔，例如：初级=yb_banks_01,中级=yb_banks_02
+// 没配就为空（应用仍可用，只是没有公共题库可选、组卷只能基于本地题库）。
+function parseBankOptions(): { id: string; name: string }[] {
+  const raw = String((import.meta as any).env?.VITE_PUBLIC_BANKS || '')
+  if (!raw.trim()) return []
+  return raw.split(/[,;\n]/).map(s => s.trim()).filter(Boolean).map(pair => {
+    const i = pair.indexOf('=')
+    if (i < 0) return { id: pair, name: pair }
+    return { id: pair.slice(i + 1).trim(), name: pair.slice(0, i).trim() }
+  }).filter(o => o.id && o.name)
+}
+
+export const BANK_OPTIONS = parseBankOptions()
+
+// 出厂默认模板的「等级 → 公共题库」对应：按等级关键词去 BANK_OPTIONS 的名字里找，
+// 找不到就让该行指向空题库（normalizeSpecRow 会把这行丢掉，不会拿错库凑数）。
+// 配额沿用产品原始规格（5 等级 × 3 题型 = 220 题），与部署方无关。
+function defaultBankOf(level: string): string {
+  const hit = BANK_OPTIONS.find(o => o.name.includes(level))
+  return hit ? hit.id : ''
+}
 
 // 出厂默认模板：与原智能组卷 5 等级 × 3 题型规格一致
 export function defaultSpec(): ComposeSpecRow[] {
   return [
-    { level: '初级', bank: 'lquiz_banks_15', single: 11, multi: 5, judge: 14 },
-    { level: '中级', bank: 'lquiz_banks_16', single: 11, multi: 5, judge: 14 },
-    { level: '高级', bank: 'lquiz_banks_17', single: 29, multi: 15, judge: 36 },
-    { level: '技师', bank: 'lquiz_banks_18', single: 18, multi: 10, judge: 22 },
-    { level: '安规', bank: 'lquiz_banks_14', single: 11, multi: 5, judge: 14 },
-  ]
+    { level: '初级', bank: defaultBankOf('初级'), single: 11, multi: 5, judge: 14 },
+    { level: '中级', bank: defaultBankOf('中级'), single: 11, multi: 5, judge: 14 },
+    { level: '高级', bank: defaultBankOf('高级'), single: 29, multi: 15, judge: 36 },
+    { level: '技师', bank: defaultBankOf('技师'), single: 18, multi: 10, judge: 22 },
+    { level: '安规', bank: defaultBankOf('安规'), single: 11, multi: 5, judge: 14 },
+  ].filter(r => r.bank)
 }
 
 export function specTotal(rows: ComposeSpecRow[]): number {

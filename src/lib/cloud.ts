@@ -853,7 +853,7 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
           })
         }
       } else if (doc._id && !byCloudId) {
-        // 云端题库无 _local_id（如安规 lquiz_banks_12）：分配新本地 id 创建，记 cloud_id
+        // 云端题库无 _local_id（历史数据里出现过）：分配新本地 id 创建，记 cloud_id
         const maxId = banks.reduce((m, b) => Math.max(m, typeof b.id === 'number' ? b.id : 0), 0)
         await idb.createBank({
           id: maxId + 1,

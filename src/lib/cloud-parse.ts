@@ -63,7 +63,7 @@ export async function parseFileInCloud(
 
   onProgress?.('正在上传文件到云端…')
   // ⚠️ 平铺路径 `imports/<时间戳-随机>.<ext>` 是**有意的**，不是漏改：
-  // 2026-09-15 在生产域名 https://yuhaoxuan.cn 上用真实客户端实测——网页端（匿名登录）调
+  // 2026-09-15 在生产域名上用真实客户端实测——网页端（匿名登录）调
   // `parseFile {action:'namespace'}` 拿到的是 `{ok:false, code:'NO_IDENTITY'}`，
   // 即服务端（wx-server-sdk 的 `cloud.getWXContext()`）**识别不出网页端调用方身份**
   // （小程序端同一动作能拿到 OPENID）。没有命名空间就没有 `imports/<ns>/` 可写，

@@ -10,7 +10,8 @@ import StemText from '../components/StemText.vue'
 const route = useRoute()
 const router = useRouter()
 
-const bankId = String(route.params.bankId || 'lquiz_banks_19')
+// bankId 必须由路由给出（题库 ID 属于部署方配置，代码里不留默认库）
+const bankId = String(route.params.bankId || '')
 const bankName = String(route.query.name || '计算题')
 const loading = ref(true)
 const loadError = ref('')
@@ -45,6 +46,12 @@ function conflictText(q: any): string {
 async function load() {
   loading.value = true
   loadError.value = ''
+  if (!bankId) {
+    all.value = []
+    loadError.value = '没有指定题库'
+    loading.value = false
+    return
+  }
   try {
     const qs = await listPublicBankQuestions(bankId)
     all.value = qs
