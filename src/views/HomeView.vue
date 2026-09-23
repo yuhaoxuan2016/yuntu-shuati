@@ -124,7 +124,7 @@
             <span class="count-pill">📝 {{ b.question_count || 0 }} 题</span>
           </div>
           <div class="actions">
-            <button class="primary-btn" @click="$router.push(`/public-practice/${b._id}/${encodeURIComponent(b.name)}`)">开始刷题</button>
+            <button class="primary-btn" @click="$router.push(b.mode === 'recite' ? `/recite/${b._id}?name=${encodeURIComponent(b.name)}` : `/public-practice/${b._id}/${encodeURIComponent(b.name)}`)">{{ b.mode === 'recite' ? '开始背题' : '开始刷题' }}</button>
             <div v-if="isImported(b.name)" class="imported-tag">✓ 已添加到我的题库</div>
             <button v-else class="import-btn" :disabled="importingId === b._id" @click="importPublicBank(b)">
               <span v-if="importingId === b._id">导入中… {{ importProgress?.done }}/{{ importProgress?.total }}</span>

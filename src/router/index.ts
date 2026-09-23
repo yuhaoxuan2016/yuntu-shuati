@@ -18,6 +18,8 @@ const routes = [
   { path: '/settings', name: 'settings', component: () => import('../views/SettingsView.vue') },
   { path: '/study-plan', name: 'study-plan', component: () => import('../views/StudyPlanView.vue') },
   { path: '/memory-review', name: 'memory-review', component: () => import('../views/MemoryReviewView.vue') },
+  // 2026-09-23：背题模式（计算题这类无选项题：只给题干/答案/解析，不进判分与组卷）
+  { path: '/recite/:bankId', name: 'recite', component: () => import('../views/ReciteView.vue') },
   // 404 兜底：未知路径回首页（2026-08-15 修复）
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
