@@ -43,6 +43,14 @@ function conflictText(q: any): string {
   return ''
 }
 
+function diffText(q: any): string {
+  const v = String(q?.difficulty || '')
+  if (v === 'easy') return '易'
+  if (v === 'mid') return '中'
+  if (v === 'hard') return '难'
+  return ''
+}
+
 async function load() {
   loading.value = true
   loadError.value = ''
@@ -101,6 +109,12 @@ onMounted(load)
             <span class="idx">第 {{ i + 1 }} 题</span>
             <span v-if="(q as any).subject" class="tag">{{ (q as any).subject }}</span>
             <span
+              v-if="diffText(q)"
+              class="diff"
+              :class="'d-' + ((q as any).difficulty || '')"
+              :title="(q as any).difficulty_why || ''"
+            >{{ diffText(q) }}</span>
+            <span
               v-if="(q as any).answer_conflict"
               class="warn"
               :class="{ soft: (q as any).answer_conflict === 'rounding' }"
@@ -123,6 +137,11 @@ onMounted(load)
             <summary>看解析</summary>
             <p class="ana">{{ q.analysis }}</p>
           </details>
+          <!-- 知识点总结：不针对本题而是这一类题的通用规律，比解析长，单独折叠 -->
+          <details v-if="!revealAll && (q as any).knowledge" class="fold">
+            <summary>知识点总结（举一反三用）</summary>
+            <p class="kno">{{ (q as any).knowledge }}</p>
+          </details>
 
           <template v-if="revealAll">
             <p class="ans">{{ q.answer || '（本题库未给出标准答案）' }}</p>
@@ -131,6 +150,7 @@ onMounted(load)
             </p>
             <p v-if="(q as any).answer_conflict_note" class="warn-note">{{ (q as any).answer_conflict_note }}</p>
             <p v-if="q.analysis" class="ana">{{ q.analysis }}</p>
+            <p v-if="(q as any).knowledge" class="kno">{{ (q as any).knowledge }}</p>
           </template>
         </article>
       </li>
@@ -195,4 +215,16 @@ onMounted(load)
 }
 .fold { margin-top: 8px; }
 .fold summary { cursor: pointer; color: #2f5597; font-size: 0.88rem; }
+.diff {
+  font-size: 0.74rem; padding: 1px 9px; border-radius: 999px; font-weight: 700;
+  border: 1px solid transparent;
+}
+.d-easy { background: #eaf6ec; color: #1b6b2f; border-color: #bfe3c6; }
+.d-mid { background: #fff4e2; color: #8a5a00; border-color: #f0d49b; }
+.d-hard { background: #fdecec; color: #b42318; border-color: #f3bdbc; }
+.kno {
+  margin: 6px 0 0; padding: 10px 12px; border-radius: 8px; font-size: 0.86rem;
+  background: #f7f9fc; border-left: 3px solid #2f5597; color: #33384a;
+  white-space: pre-wrap; line-height: 1.8;
+}
 </style>

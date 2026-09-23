@@ -195,6 +195,12 @@ export interface ExamQuestion {
   // 题库标准答案无论对错都保留，所以这里只做提示、不改答案。
   answer_conflict?: string | null
   answer_conflict_note?: string | null
+  // 知识点总结：不针对本题、而是这一类题的通用规律（公式／易混点／变体／常见错），
+  // 比 analysis 长，默认折叠，供举一反三用。
+  knowledge?: string | null
+  // 难易度：'easy' | 'mid' | 'hard'，空 = 未判定
+  difficulty?: string | null
+  difficulty_why?: string | null
 }
 
 export interface Exam {
@@ -847,6 +853,7 @@ const PUBLIC_Q_FIELDS = {
   _local_id: true, _local_bank_id: true, bank_id: true, stem: true,
   type: true, options: true, answer: true, analysis: true, source_index: true,
   images: true, answer_derived: true, answer_conflict: true, answer_conflict_note: true,
+  knowledge: true, difficulty: true, difficulty_why: true,
 }
 const PUBLIC_Q_PAGE = 200
 // 缓存有效期：即使题数没变，超过这个时间也重拉一次（兜住「题数不变但内容被改」的情形）
@@ -872,6 +879,9 @@ function mapPublicQuestion(q: any): ExamQuestion {
     answer_derived: q.answer_derived || null,
     answer_conflict: q.answer_conflict || '',
     answer_conflict_note: q.answer_conflict_note || null,
+    knowledge: q.knowledge || null,
+    difficulty: q.difficulty || '',
+    difficulty_why: q.difficulty_why || null,
   }
 }
 
