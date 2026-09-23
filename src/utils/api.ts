@@ -38,6 +38,9 @@ export interface Question {
   id: number; bank_id: number; type: string; stem: string;
   options: string | null; answer: string | null; analysis: string | null;
   source_index: number | null; confidence: number;
+  // 2026-09-23：题面内嵌图片（data URI 数组），与 stem 里的 [IMG:n] 下标对应。
+  // 来源：导入 docx 时 mammoth 抽出的图；渲染由 components/StemText.vue 负责。
+  images?: string[] | null;
 }
 export interface NewBank { name: string; description: string | null; visibility?: 'public' | 'private' | 'pending'; creator_name?: string | null }
 

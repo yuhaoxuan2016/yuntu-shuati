@@ -201,10 +201,13 @@ export function htmlToParagraphs(html: string): { paragraphs: string[]; images: 
       const imgTag = html.slice(i, end)
       const b64Idx = imgTag.indexOf('base64,')
       if (b64Idx >= 0) {
+        // 2026-09-23：存完整 data URI（含 MIME），此前只存裸 base64 —— 渲染时是坏图。
+        const mimeM = /data:([^;,]+)/.exec(imgTag)
+        const mime = mimeM ? mimeM[1] : 'image/png'
         const after = imgTag.slice(b64Idx + 7)
         const b64 = after.split(/["\s]/)[0]
         if (b64) {
-          images.push(b64)
+          images.push(`data:${mime};base64,${b64}`)
           current += `[IMG:${images.length - 1}]`
         }
       }
@@ -776,18 +779,53 @@ function buildQuestion(blocks: string[], sourceIndex: number, chapter: number, s
 
 // 从 HTML 直接解析（pipeline.rs html_to_questions 的 JS 版）
 export function parseHtml(html: string, bankId: number): any[] {
-  const { paragraphs } = htmlToParagraphs(html)
+  const { paragraphs, images } = htmlToParagraphs(html)
   const parsed = parseQuestions(paragraphs)
-  return parsed.map(pq => ({
-    bank_id: bankId,
-    type: pq.type,
-    stem: pq.stem,
-    options: pq.options.length > 0 ? JSON.stringify(pq.options) : null,
-    answer: pq.answer,
-    analysis: pq.analysis,
-    source_index: pq.source_index,
-    confidence: pq.confidence
-  }))
+  return parsed.map(pq => {
+    // 2026-09-23：题干里若含 [IMG:n]（htmlToParagraphs 标记的内嵌图位置），
+    // 把对应图片挂到该题自己的 images 上并重排下标，保证 [IMG:k] ↔ images[k]。
+    // 渲染层（StemText）据此显示；图源是 mammoth 从 docx 里抽出的 data URI。
+    const imgs: string[] = []
+    const stem = String(pq.stem || '').replace(/\[IMG:(\d+)\]/g, (_m, n) => {
+      const src = images[Number(n)]
+      if (!src) return ''
+      imgs.push(src)
+      return `[IMG:${imgs.length - 1}]`
+    })
+    const base: any = {
+      bank_id: bankId,
+      type: pq.type,
+      stem,
+      options: pq.options.length > 0 ? JSON.stringify(pq.options) : null,
+      answer: pq.answer,
+      analysis: pq.analysis,
+      source_index: pq.source_index,
+      confidence: pq.confidence
+    }
+    return imgs.length ? { ...base, images: imgs } : base
+  })
+}
+
+// 从 HTML 提取「段落文本 → 该段内嵌图片」的对应关系。
+// 用途：导入流程走的是「先转纯文本再识别」，图片会在转文本时丢掉；
+// 识别出题目后拿这里的 stem/key 与题干比对，就能把图回填到对应题目上。
+// 与 htmlToParagraphs 同源，段落里 [IMG:n] 的下标指向本函数返回的 images。
+export function extractImagesByParagraph(html: string): Array<{ key: string; stem: string; images: string[] }> {
+  const { paragraphs, images } = htmlToParagraphs(html)
+  const out: Array<{ key: string; stem: string; images: string[] }> = []
+  for (const p of paragraphs) {
+    if (!/\[IMG:\d+\]/.test(p)) continue
+    const imgs: string[] = []
+    const withMarks = p.replace(/\[IMG:(\d+)\]/g, (_m, n) => {
+      const src = images[Number(n)]
+      if (!src) return ''
+      imgs.push(src)
+      return `[IMG:${imgs.length - 1}]`
+    })
+    const key = withMarks.replace(/\[IMG:\d+\]/g, '').replace(/\s+/g, '').slice(0, 40)
+    if (key && imgs.length) out.push({ key, stem: withMarks, images: imgs })
+  }
+  return out
 }
 
 // 纯文本导入（TXT/MD）：每行转 <p> 后复用解析

@@ -18,6 +18,15 @@ type Part =
 
 const TOKEN = /\[IMG:(\d+)\]|\{[^{}\n]{1,80}\.(?:png|jpg|jpeg|gif|bmp)\}|<img[^>]{0,300}>/gi
 
+const toSrc = (s: string | null | undefined) => {
+  const v = String(s || '')
+  if (!v) return null
+  if (/^(data:|https?:|\/)/i.test(v)) return v
+  // 兜底：裸 base64（早期解析层只存了内容没存前缀）
+  if (/^[A-Za-z0-9+/=]{40,}$/.test(v.slice(0, 60))) return 'data:image/png;base64,' + v
+  return v
+}
+
 const parts = computed<Part[]>(() => {
   const s = props.stem || ''
   const list: Part[] = []
@@ -29,7 +38,7 @@ const parts = computed<Part[]>(() => {
     const tok = m[0]
     if (tok.startsWith('[IMG:')) {
       const n = Number(m[1])
-      const src = (props.images && props.images[n]) || null
+      const src = toSrc(props.images && props.images[n])
       list.push({ kind: 'img', src, label: `图${n + 1}` })
     } else if (tok.startsWith('{')) {
       const name = tok.slice(1, -1)

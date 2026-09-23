@@ -110,6 +110,7 @@ import { toastError } from '../utils/toast'
 import { useBankStore } from '../stores/bank'
 import ImportReviewTable from '../components/ImportReviewTable.vue'
 import { parseText, parseHtml } from '../lib/parser'
+import { extractImagesByParagraph } from '../lib/parser'
 import { newQuestionIds, replacedCount } from '../lib/import-diff'
 
 //#region debug-point import-crash-during
@@ -274,6 +275,33 @@ function htmlToText(html: string): string {
   return doc.body.textContent || doc.body.innerText || ''
 }
 
+// 2026-09-23：导入时把文档里内嵌的图片回填到对应题目。
+// AI 识别走的是「先转纯文本」，图在转文本时就丢了；这里用原始 HTML 的「段落→图片」
+// 对应关系，按题干文本匹配把图补回去（stem 里换成 [IMG:k] 占位，配 images 数组渲染）。
+// 结构化识别（importFromHtml）走 parseHtml，已自带图片，无需回填。
+async function backfillImages(bankId: number, html: string): Promise<number> {
+  if (!html || !html.includes('<img')) return 0
+  const index = extractImagesByParagraph(html)
+  if (!index.length) return 0
+  const norm = (s: any) => String(s || '').replace(/\[IMG:\d+\]/g, '').replace(/\s+/g, '').slice(0, 40)
+  const qs = await api.listQuestions(bankId)
+  let filled = 0
+  for (const q of qs) {
+    if (/\[IMG:\d+\]/.test(String(q.stem || ''))) continue
+    const key = norm(q.stem)
+    if (!key) continue
+    const hit = index.find(e => e.key.includes(key) || key.includes(e.key))
+    if (!hit) continue
+    try {
+      await api.updateQuestion({ ...q, stem: hit.stem + (q.options ? '' : ''), images: hit.images } as any)
+      filled++
+    } catch (e) {
+      dbg('backfill_images_item_fail', { id: q.id, msg: String(e) })
+    }
+  }
+  return filled
+}
+
 async function pickFile() {
   dbg('pickFile_start', { engine: engine.value, bankId: bankId.value })
   const input = document.createElement('input')
@@ -412,6 +440,13 @@ async function runImport(file: File) {
     stage.value = 'saving'
     status.value = '正在保存到数据库...'
     dbg('listQuestions_call_start', { bankId: bankId.value })
+    // 图片回填：AI 路径的图在转纯文本时丢了，用原始 HTML 补回来（结构化路径已自带）
+    try {
+      const filled = await backfillImages(bankId.value, html)
+      if (filled) dbg('backfill_images_done', { filled })
+    } catch (e) {
+      dbg('backfill_images_fail', { msg: String(e) })
+    }
     const qs = await api.listQuestions(bankId.value)
     dbg('listQuestions_call_done', { count: qs.length })
     dbg('reviewList_assign_start')

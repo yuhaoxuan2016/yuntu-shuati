@@ -4,7 +4,7 @@
       <span class="idx">{{ index + 1 }}.</span>
       <span class="type-tag">{{ typeLabel }}</span>
       <span v-if="elapsedSecs !== null" class="timer" title="本题用时">{{ formatTime(elapsedSecs) }}</span>
-      <span class="stem-text">{{ question.stem }}</span>
+      <span class="stem-text"><StemText :stem="question.stem" :images="(question as any).images || null" /></span>
       <!-- 右上角操作按钮组（考试模式/回顾模式下隐藏，防作弊） -->
       <div v-if="!examMode && !readOnly" class="card-toolbar">
         <button class="tool-btn" :class="{ active: favorited }" :title="favorited ? '取消收藏' : '收藏本题'" @click="$emit('toggle-favorite')">
@@ -156,6 +156,7 @@
 </template>
 
 <script setup lang="ts">
+import StemText from './StemText.vue'
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { api, Question } from '../utils/api'
 import { toastError } from '../utils/toast'
