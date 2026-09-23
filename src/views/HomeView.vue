@@ -128,6 +128,8 @@
           <div class="actions">
             <button class="primary-btn" @click="$router.push(b.mode === 'recite' ? `/recite/${b._id}?name=${encodeURIComponent(b.name)}` : `/public-practice/${b._id}/${encodeURIComponent(b.name)}`)">{{ b.mode === 'recite' ? '开始背题' : '开始刷题' }}</button>
             <div v-if="isImported(b.name)" class="imported-tag">✓ 已添加到我的题库</div>
+            <!-- 背题模式的库（计算题）不提供本地副本：整库内容只走在线读取 -->
+            <div v-else-if="b.mode === 'recite'" class="imported-tag">仅在线背题 · 不下载到本地</div>
             <button v-else class="import-btn" :disabled="importingId === b._id" @click="importPublicBank(b)">
               <span v-if="importingId === b._id">导入中… {{ importProgress?.done }}/{{ importProgress?.total }}</span>
               <span v-else>＋ 添加到我的题库</span>
@@ -572,6 +574,11 @@ function resumePractice() {
 // 将云端公共题库完整导入到本地「我的题库」，导入后自动获得进度/收藏/错题功能
 async function importPublicBank(b: any) {
   if (importingId.value) return
+  // 背题模式的库（计算题）不提供本地副本，按钮已隐藏，这里再拦一道防异常路径
+  if (b?.mode === 'recite') {
+    toastError('该题库仅支持在线背题，不下载到本地')
+    return
+  }
   // 2026-08-21：按钮已 v-else 隐藏，这里再拦一道防止异常路径重复导入建副本
   if (isImported(b.name)) {
     toastError(`「${b.name}」已在你的题库中，无需重复导入`)

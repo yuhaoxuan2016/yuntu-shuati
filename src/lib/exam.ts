@@ -921,9 +921,12 @@ export async function listPublicBankQuestions(bankId: string | number): Promise<
   try {
     const meta = await fetchPublicBankMeta(bankRef)
     const cloudCount = meta && typeof meta.question_count === 'number' ? meta.question_count : -1
+    // 背题模式的库（计算题）**不落本地**：整库题目、题图和长知识点都只走在线读取。
+    // 这类库体积大、且属于「看一次算一次」的内容，缓存到用户机器上等于把题库搬走。
+    const noLocalCopy = String(meta?.mode || '') === 'recite'
 
     // 档2：缓存命中直接返回，0 次题目请求
-    if (cloudCount > 0) {
+    if (!noLocalCopy && cloudCount > 0) {
       const cached = await readPublicQuestionCache(bankRef)
       if (cached && cached.count === cloudCount
         && Array.isArray(cached.questions) && cached.questions.length === cloudCount
@@ -949,8 +952,8 @@ export async function listPublicBankQuestions(bankId: string | number): Promise<
     const rows = chunks.flat()
     const mapped = rows.map(mapPublicQuestion)
 
-    // 档2：写缓存（失败不影响返回）
-    if (mapped.length) {
+    // 档2：写缓存（失败不影响返回）；背题库不写
+    if (!noLocalCopy && mapped.length) {
       await writePublicQuestionCache({
         bank_ref: bankRef, count: mapped.length, fetched_at: Date.now(), questions: mapped,
       })
