@@ -16,7 +16,8 @@ const loading = ref(true)
 const loadError = ref('')
 const all = ref<ExamQuestion[]>([])
 const subject = ref<string>('全部')
-const revealAll = ref(true)
+// 默认折叠：背题时先自己回忆，再展开对答案
+const revealAll = ref(false)
 
 const subjects = computed(() => {
   const set = new Set<string>()
@@ -31,6 +32,15 @@ const list = computed(() => {
   if (subject.value === '全部') return all.value
   return all.value.filter(q => ((q as any).subject || '') === subject.value)
 })
+
+// 题库标准答案是考试判分依据，即使与解析算出的结果对不上也照样保留 —— 这种情况在这里显著标出来
+function conflictText(q: any): string {
+  const v = String(q?.answer_conflict || '')
+  if (v === 'value') return '⚠ 答案与解析不一致'
+  if (v === 'unit') return '⚠ 单位口径不一致'
+  if (v === 'rounding') return '取整口径不同'
+  return ''
+}
 
 async function load() {
   loading.value = true
@@ -83,17 +93,36 @@ onMounted(load)
           <div class="meta">
             <span class="idx">第 {{ i + 1 }} 题</span>
             <span v-if="(q as any).subject" class="tag">{{ (q as any).subject }}</span>
+            <span
+              v-if="(q as any).answer_conflict"
+              class="warn"
+              :class="{ soft: (q as any).answer_conflict === 'rounding' }"
+            >{{ conflictText(q) }}</span>
           </div>
           <div class="stem">
             <StemText :stem="q.stem" :images="(q as any).images || null" />
           </div>
-          <details v-if="!revealAll" class="ans-fold">
-            <summary>看答案</summary>
-            <p class="ans">{{ q.answer || '（源数据未给出答案）' }}</p>
-            <p v-if="q.analysis" class="ana">{{ q.analysis }}</p>
+
+          <!-- 默认折叠：答案与解析各一条，可分别展开；顶部「直接显示」可一键全开 -->
+          <details v-if="!revealAll" class="fold">
+            <summary>标准答案</summary>
+            <p class="ans">{{ q.answer || '（本题库未给出标准答案）' }}</p>
+            <p v-if="(q as any).answer_derived" class="derived">
+              <span class="derived-tag">推算</span>{{ (q as any).answer_derived }}
+            </p>
+            <p v-if="(q as any).answer_conflict_note" class="warn-note">{{ (q as any).answer_conflict_note }}</p>
           </details>
-          <template v-else>
-            <p class="ans">{{ q.answer || '（源数据未给出答案）' }}</p>
+          <details v-if="!revealAll && q.analysis" class="fold">
+            <summary>看解析</summary>
+            <p class="ana">{{ q.analysis }}</p>
+          </details>
+
+          <template v-if="revealAll">
+            <p class="ans">{{ q.answer || '（本题库未给出标准答案）' }}</p>
+            <p v-if="(q as any).answer_derived" class="derived">
+              <span class="derived-tag">推算</span>{{ (q as any).answer_derived }}
+            </p>
+            <p v-if="(q as any).answer_conflict_note" class="warn-note">{{ (q as any).answer_conflict_note }}</p>
             <p v-if="q.analysis" class="ana">{{ q.analysis }}</p>
           </template>
         </article>
@@ -139,5 +168,24 @@ onMounted(load)
   white-space: pre-wrap;
 }
 .ana { margin: 6px 0 0; font-size: 0.84rem; color: #8a6d1f; white-space: pre-wrap; }
-.ans-fold summary { cursor: pointer; color: #2f5597; font-size: 0.88rem; margin-top: 8px; }
+/* 标准答案（题库原始值）与「推算」值必须一眼分得开——前者是考试判分依据 */
+.derived {
+  margin: 6px 0 0; padding: 6px 12px; border-radius: 8px;
+  background: #f4f6fb; color: #46506b; font-size: 0.92rem; white-space: pre-wrap;
+}
+.derived-tag {
+  display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 4px;
+  background: #dde3f5; color: #2f5597; font-size: 0.74rem; font-weight: 700;
+}
+.warn {
+  font-size: 0.74rem; padding: 1px 8px; border-radius: 999px;
+  background: #fde8e8; color: #b42318; font-weight: 700; border: 1px solid #f5b5b0;
+}
+.warn.soft { background: #fff6e5; color: #8a5a00; border-color: #f0d49b; font-weight: 600; }
+.warn-note {
+  margin: 6px 0 0; padding: 6px 10px; border-radius: 6px;
+  background: #fff6e5; border-left: 3px solid #e0a800; color: #7a5200; font-size: 0.84rem;
+}
+.fold { margin-top: 8px; }
+.fold summary { cursor: pointer; color: #2f5597; font-size: 0.88rem; }
 </style>

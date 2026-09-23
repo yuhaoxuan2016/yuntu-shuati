@@ -197,6 +197,12 @@ export interface ExamQuestion {
   // 题干插图。stem 里用 [IMG:n] 占位指向本数组下标（见 components/StemText.vue）。
   // 云端是绝对 URL（https://yuhaoxuan.cn/qimg/...），本地导入的题库是 data URI。
   images?: string[] | null
+  // 由解析推算出来、**不是题库标准答案**的空值。标准答案才是考试判分依据，两者在 UI 上分开显示。
+  answer_derived?: string | null
+  // 标准答案与解析算出的结果对不上时的标记：'value' | 'unit' | 'rounding' | ''（一致）。
+  // 题库标准答案无论对错都保留，所以这里只做提示、不改答案。
+  answer_conflict?: string | null
+  answer_conflict_note?: string | null
 }
 
 export interface Exam {
@@ -848,7 +854,7 @@ export async function listPublicBanks(): Promise<any[]> {
 const PUBLIC_Q_FIELDS = {
   _local_id: true, _local_bank_id: true, bank_id: true, stem: true,
   type: true, options: true, answer: true, analysis: true, source_index: true,
-  images: true,
+  images: true, answer_derived: true, answer_conflict: true, answer_conflict_note: true,
 }
 const PUBLIC_Q_PAGE = 200
 // 缓存有效期：即使题数没变，超过这个时间也重拉一次（兜住「题数不变但内容被改」的情形）
@@ -871,6 +877,9 @@ function mapPublicQuestion(q: any): ExamQuestion {
     analysis: q.analysis,
     source_index: q.source_index ?? null,
     images: Array.isArray(q.images) ? q.images : null,
+    answer_derived: q.answer_derived || null,
+    answer_conflict: q.answer_conflict || '',
+    answer_conflict_note: q.answer_conflict_note || null,
   }
 }
 
