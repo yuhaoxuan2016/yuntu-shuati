@@ -15,7 +15,7 @@ interface DBSchema {
 }
 
 const DB_NAME = 'shuati-bao-pwa'
-const DB_VERSION = 4
+const DB_VERSION = 5
 
 let dbPromise: Promise<IDBDatabase> | null = null
 
@@ -67,7 +67,12 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('review_records')) {
         const store = db.createObjectStore('review_records', { keyPath: 'id', autoIncrement: true })
         store.createIndex('question_id', 'question_id', { unique: false })
-        store.createIndex('next_review', 'next_review', { unique: false })
+                store.createIndex('next_review', 'next_review', { unique: false })
+      }
+      // v5：公共题库本地缓存（加载优化档2）。keyPath 用 bank_ref，一库一条，整库题目存数组里。
+      // 失效判据由 exam.ts 负责：题库 question_count 变化或缓存超期即重拉。
+      if (!db.objectStoreNames.contains('public_question_cache')) {
+        db.createObjectStore('public_question_cache', { keyPath: 'bank_ref' })
       }
     }
     req.onsuccess = () => resolve(req.result)
@@ -741,4 +746,55 @@ export const idb = {
     }
     return map
   },
+}
+// === 公共题库缓存（加载优化档2）===
+// 缓存 exam.ts 映射后的 ExamQuestion 数组，读出来可直接用，不再走云端。
+export interface PublicQuestionCache {
+  bank_ref: string
+  count: number
+  fetched_at: number
+  questions: any[]
+}
+
+export async function readPublicQuestionCache(bankRef: string): Promise<PublicQuestionCache | null> {
+  try {
+    const db = await openDB()
+    return await new Promise<PublicQuestionCache | null>((resolve) => {
+      const tx = db.transaction('public_question_cache', 'readonly')
+      const req = tx.objectStore('public_question_cache').get(bankRef)
+      req.onsuccess = () => resolve((req.result as PublicQuestionCache) ?? null)
+      req.onerror = () => resolve(null)
+    })
+  } catch {
+    return null
+  }
+}
+
+export async function writePublicQuestionCache(rec: PublicQuestionCache): Promise<void> {
+  try {
+    const db = await openDB()
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction('public_question_cache', 'readwrite')
+      tx.objectStore('public_question_cache').put(rec)
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => resolve()
+      tx.onabort = () => resolve()
+    })
+  } catch {
+    // 缓存写失败不影响主流程（下次仍走云端）
+  }
+}
+
+export async function clearPublicQuestionCache(): Promise<void> {
+  try {
+    const db = await openDB()
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction('public_question_cache', 'readwrite')
+      tx.objectStore('public_question_cache').clear()
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => resolve()
+    })
+  } catch {
+    // 忽略
+  }
 }

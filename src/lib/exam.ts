@@ -5,7 +5,7 @@
 //
 // 未配置 CloudBase 时自动降级为"本地演示模式"（仅本机可用，方便开发测试）
 
-import { idb } from './db'
+import { idb, readPublicQuestionCache, writePublicQuestionCache } from './db'
 
 // 统一错误格式化：CloudBase 常抛普通对象（非 Error 实例），直接 String() 会得到 "[object Object]"
 export function errMsg(e: any): string {
@@ -131,12 +131,13 @@ export function judgeAnswerBool(ans: string | null, options: string[] | null): s
 
 // 智能组卷配额模板：5 个等级 × 3 种题型 = 220 题（从公共题库抽题）
 // 注意：自定义模板功能见 src/lib/compose-template.ts，此处保留为默认规格/兼容旧逻辑
+// 2026-09-23：指向「2026 新版公共题库」（旧库已改名加 (旧) 后缀，仍在线上但不再作默认抽题源）。
 export const COMPOSE_SPEC = [
-  { level: '初级', bank: 'lquiz_banks_8', single: 11, multi: 5, judge: 14 },
-  { level: '中级', bank: 'lquiz_banks_9', single: 11, multi: 5, judge: 14 },
-  { level: '高级', bank: 'lquiz_banks_10', single: 29, multi: 15, judge: 36 },
-  { level: '技师', bank: 'lquiz_banks_11', single: 18, multi: 10, judge: 22 },
-  { level: '安规', bank: 'lquiz_banks_12', single: 11, multi: 5, judge: 14 },
+  { level: '初级', bank: 'lquiz_banks_15', single: 11, multi: 5, judge: 14 },
+  { level: '中级', bank: 'lquiz_banks_16', single: 11, multi: 5, judge: 14 },
+  { level: '高级', bank: 'lquiz_banks_17', single: 29, multi: 15, judge: 36 },
+  { level: '技师', bank: 'lquiz_banks_18', single: 18, multi: 10, judge: 22 },
+  { level: '安规', bank: 'lquiz_banks_14', single: 11, multi: 5, judge: 14 },
 ]
 
 export interface ExamQuestion {
@@ -817,8 +818,10 @@ export async function listPublicBanks(): Promise<any[]> {
         .limit(100)
         .get(), 15000, '读取公共题库')
       const banks = res.data || []
-      // 补充题目数量（并发查询题目集合计数）
+      // 加载优化档1（2026-09-23）：题库文档已有 question_count 就直接用，缺失的才回退 count 查询。
+      // 实测原来每次进首页都会为 12 个库各发一次 count（12 次请求）；新库灌入时已写入该字段。
       await Promise.all(banks.map(async (b: any) => {
+        if (typeof b.question_count === 'number' && b.question_count > 0) return
         try {
           const cnt = await withTimeout<any>(cloudDb.collection('questions')
             .where({ visibility: 'public', bank_ref: b._id })
@@ -837,57 +840,111 @@ export async function listPublicBanks(): Promise<any[]> {
 
 // 读取云端公共题库的题目（用于抽题出卷；按题库云端 _id / bank_ref 关联）
 // 注意：云端题目可能超过 500 道（如合集 2951 题），必须分页拉全量，不能 limit(500) 截断
-export async function listPublicBankQuestions(bankId: string | number): Promise<ExamQuestion[]> {
-  if (await ensureCloud() && isCloud()) {
-    try {
-      const all: any[] = []
-      const pageSize = 200
-      let skip = 0
-      for (;;) {
-        const res = await withTimeout<any>(cloudDb.collection('questions')
-          .where({ visibility: 'public', bank_ref: String(bankId) })
-          .skip(skip)
-          .limit(pageSize)
-          .get(), 20000, '读取公共题库题目')
-        const rows = Array.isArray(res.data) ? res.data : []
-        all.push(...rows)
-        if (rows.length < pageSize) break
-        skip += pageSize
-        if (skip >= 4000) break // 安全上限（单题库超过 4000 题再议）
-      }
-      return all.map((q: any) => ({
-        // 2026-09-15 加固(评审 Important #1，根因侧)：补 `?? q._id` 兜底。
-        // 机制是真实的：若某个云端公共题文档既无 `_local_id` 也无 `id`，映射出的 id 就是 undefined，
-        // 该库**所有题**在去重时塌成同一个键 "undefined"（配额 30 题只入卷 1 题，且 1 ≠ 0 能绕过
-        // 「0 题拒绝发布」门禁），在 `answers[q.id]` 里也塌成同一个下标（判分互相覆盖）。
-        //
-        // 但**今天它并不触发**。实测 scripts/all-questions.json（真实云端导出 7049 条，2026-08-08）：
-        // 全部 7049 条都没有 `id` 字段（印证 `cloud.ts:317`「push 时 id 被删」），也**全部都有
-        // `_local_id`**——defaultSpec() 五库无一例外，安规 lquiz_banks_12 的 1147 条同样全带。
-        // ⚠️ 评审引用的 `cloud.ts:548`「云端题库无 _local_id（如安规 lquiz_banks_12）」说的是
-        // **`quiz_banks` 集合的题库文档**（`CLOUD_COLLECTIONS` 里没有 `lquiz_banks` 这个集合；
-        // `lquiz_banks_12` 是题库文档的 `_id`，被题目文档用作 `bank_ref`），不是 `questions` 集合的
-        // 题目文档；据此推出「安规的题目没有 _local_id」是误读，实测相反。故本行是**防御性加固**，
-        // 不是对已观测线上故障的修复。
-        // 取证脚本：.superpowers/sdd/audit-fix-20260914/tmp-verify/t5/probe-cloud-shape.mjs；
-        // 机制的可执行证明见同目录 harness 的 Q1（对 Task 5 已提交状态咬合）。详见 ExamQuestion 的注释。
-        id: q._local_id ?? q.id ?? q._id,
-        bank_id: q._local_bank_id ?? q.bank_id ?? 0,
-        stem: q.stem,
-        type: q.type,
-        options: q.options,
-        answer: q.answer,
-        analysis: q.analysis,
-        source_index: q.source_index ?? null,
-      }))
-    } catch (e) {
-      console.warn('读取公共题库题目失败：', errMsg(e))
-      return []
-    }
+// 公共题字段裁剪（加载优化档1，2026-09-23）：实测整库原始 624KB，前端实际只用其中 386KB，
+// 这里把不用的 name/_openid/visibility/bank_ref/_id 排除掉，由服务端裁剪后再下发。
+const PUBLIC_Q_FIELDS = {
+  _local_id: true, _local_bank_id: true, bank_id: true, stem: true,
+  type: true, options: true, answer: true, analysis: true, source_index: true,
+}
+const PUBLIC_Q_PAGE = 200
+// 缓存有效期：即使题数没变，超过这个时间也重拉一次（兜住「题数不变但内容被改」的情形）
+const PUBLIC_Q_CACHE_TTL = 24 * 3600 * 1000
+
+function mapPublicQuestion(q: any): ExamQuestion {
+  // 2026-09-15 加固(评审 Important #1，根因侧)：补 `?? q._id` 兜底。
+  // 机制是真实的：若某个云端公共题文档既无 `_local_id` 也无 `id`，映射出的 id 就是 undefined，
+  // 该库**所有题**在去重时塌成同一个键 "undefined"（配额 30 题只入卷 1 题，且 1 ≠ 0 能绕过
+  // 「0 题拒绝发布」门禁），在 `answers[q.id]` 里也塌成同一个下标（判分互相覆盖）。
+  // 实测 scripts/all-questions.json（云端导出 7049 条，2026-08-08）：全部都有 `_local_id`，故本行是
+  // 防御性加固，不是对已观测线上故障的修复。详见 ExamQuestion 的注释。
+  return {
+    id: q._local_id ?? q.id ?? q._id,
+    bank_id: q._local_bank_id ?? q.bank_id ?? 0,
+    stem: q.stem,
+    type: q.type,
+    options: q.options,
+    answer: q.answer,
+    analysis: q.analysis,
+    source_index: q.source_index ?? null,
   }
-  return []
 }
 
+async function fetchPublicQuestionPage(bankRef: string, skip: number): Promise<any[]> {
+  const res = await withTimeout<any>(cloudDb.collection('questions')
+    .where({ visibility: 'public', bank_ref: bankRef })
+    .field(PUBLIC_Q_FIELDS)
+    .skip(skip)
+    .limit(PUBLIC_Q_PAGE)
+    .get(), 20000, '读取公共题库题目')
+  return Array.isArray(res.data) ? res.data : []
+}
+
+// 题库元信息（用 question_count 作缓存版本戳）。
+// 注意查询形状：客户端读必须让 where 是安全规则的子集，所以带上 visibility 而不是 doc(id).get()。
+async function fetchPublicBankMeta(bankRef: string): Promise<any | null> {
+  try {
+    const res = await withTimeout<any>(cloudDb.collection('quiz_banks')
+      .where({ _id: bankRef, visibility: 'public' })
+      .limit(1)
+      .get(), 15000, '读取题库信息')
+    const rows = Array.isArray(res.data) ? res.data : []
+    return rows[0] || null
+  } catch {
+    return null
+  }
+}
+
+// 读取云端公共题库的题目（用于抽题出卷与刷题；按题库云端 _id / bank_ref 关联）
+// 加载优化（2026-09-23，档1+档2）：
+//   档1 = 字段裁剪（服务端只下发要用的字段）+ 分页并行（原来是 200 条一页串行，1134 题要 6 个来回）
+//   档2 = 本地缓存（IndexedDB，keyPath=bank_ref）。命中判据：题库 question_count 未变 且 未超 TTL。
+// 缓存未命中时仍走全量拉取，失败返回 []（与原行为一致）。
+export async function listPublicBankQuestions(bankId: string | number): Promise<ExamQuestion[]> {
+  if (!(await ensureCloud()) || !isCloud()) return []
+  const bankRef = String(bankId)
+  try {
+    const meta = await fetchPublicBankMeta(bankRef)
+    const cloudCount = meta && typeof meta.question_count === 'number' ? meta.question_count : -1
+
+    // 档2：缓存命中直接返回，0 次题目请求
+    if (cloudCount > 0) {
+      const cached = await readPublicQuestionCache(bankRef)
+      if (cached && cached.count === cloudCount
+        && Array.isArray(cached.questions) && cached.questions.length === cloudCount
+        && Date.now() - cached.fetched_at < PUBLIC_Q_CACHE_TTL) {
+        return cached.questions as ExamQuestion[]
+      }
+    }
+
+    // 档1：并行分页拉取（先拿到总数，再一次性并发请求所有页）
+    let total = cloudCount
+    if (total <= 0) {
+      try {
+        const cnt = await withTimeout<any>(cloudDb.collection('questions')
+          .where({ visibility: 'public', bank_ref: bankRef })
+          .count(), 15000, '统计题目数')
+        total = cnt.total || 0
+      } catch { total = 0 }
+    }
+    const pages = total > 0 ? Math.ceil(total / PUBLIC_Q_PAGE) : 1
+    const chunks = await Promise.all(
+      Array.from({ length: pages }, (_, i) => fetchPublicQuestionPage(bankRef, i * PUBLIC_Q_PAGE)),
+    )
+    const rows = chunks.flat()
+    const mapped = rows.map(mapPublicQuestion)
+
+    // 档2：写缓存（失败不影响返回）
+    if (mapped.length) {
+      await writePublicQuestionCache({
+        bank_ref: bankRef, count: mapped.length, fetched_at: Date.now(), questions: mapped,
+      })
+    }
+    return mapped
+  } catch (e) {
+    console.warn('读取公共题库题目失败：', errMsg(e))
+    return []
+  }
+}
 export async function updateExamStatus(id: string, status: Exam['status']): Promise<void> {
   if (await ensureCloud() && isCloud()) {
     // T18-2a（2026-09-16）：`doc(id).update()` 改 `where({_id, _openid})`——属主规则下

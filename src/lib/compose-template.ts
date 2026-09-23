@@ -24,22 +24,23 @@ const STORE_KEY = 'compose_templates'
 const STORE_VERSION = 1
 
 // 公共题库下拉选项（与 COMPOSE_SPEC 原等级对应；模板里可任选）
+// 2026-09-23：改为「2026 新版公共题库」（旧库已改名加 (旧)，仍在线上，用户自定义模板里若指向旧库不受影响）。
 export const BANK_OPTIONS = [
-  { id: 'lquiz_banks_8', name: '初级' },
-  { id: 'lquiz_banks_9', name: '中级' },
-  { id: 'lquiz_banks_10', name: '高级' },
-  { id: 'lquiz_banks_11', name: '技师' },
-  { id: 'lquiz_banks_12', name: '安规' },
+  { id: 'lquiz_banks_15', name: '初级2026' },
+  { id: 'lquiz_banks_16', name: '中级2026' },
+  { id: 'lquiz_banks_17', name: '高级2026' },
+  { id: 'lquiz_banks_18', name: '技师2026' },
+  { id: 'lquiz_banks_14', name: '变电安规2026' },
 ]
 
 // 出厂默认模板：与原智能组卷 5 等级 × 3 题型规格一致
 export function defaultSpec(): ComposeSpecRow[] {
   return [
-    { level: '初级', bank: 'lquiz_banks_8', single: 11, multi: 5, judge: 14 },
-    { level: '中级', bank: 'lquiz_banks_9', single: 11, multi: 5, judge: 14 },
-    { level: '高级', bank: 'lquiz_banks_10', single: 29, multi: 15, judge: 36 },
-    { level: '技师', bank: 'lquiz_banks_11', single: 18, multi: 10, judge: 22 },
-    { level: '安规', bank: 'lquiz_banks_12', single: 11, multi: 5, judge: 14 },
+    { level: '初级', bank: 'lquiz_banks_15', single: 11, multi: 5, judge: 14 },
+    { level: '中级', bank: 'lquiz_banks_16', single: 11, multi: 5, judge: 14 },
+    { level: '高级', bank: 'lquiz_banks_17', single: 29, multi: 15, judge: 36 },
+    { level: '技师', bank: 'lquiz_banks_18', single: 18, multi: 10, judge: 22 },
+    { level: '安规', bank: 'lquiz_banks_14', single: 11, multi: 5, judge: 14 },
   ]
 }
 

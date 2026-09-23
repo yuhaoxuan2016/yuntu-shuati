@@ -409,7 +409,7 @@ async function refreshTemplates() {
   templates.value = (await loadTemplates()) || []
 }
 function addRow() {
-  specRows.value.push({ level: '', bank: BANK_OPTIONS[0]?.id || 'lquiz_banks_8', single: 0, multi: 0, judge: 0 })
+  specRows.value.push({ level: '', bank: BANK_OPTIONS[0]?.id || 'lquiz_banks_15', single: 0, multi: 0, judge: 0 })
 }
 function removeRow(idx: number) {
   if (specRows.value.length <= 1) { toastError('至少保留一行'); return }
