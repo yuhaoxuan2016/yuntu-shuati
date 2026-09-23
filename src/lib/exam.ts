@@ -194,6 +194,9 @@ export interface ExamQuestion {
   answer: string | null
   analysis: string | null
   source_index?: number | null
+  // 题干插图。stem 里用 [IMG:n] 占位指向本数组下标（见 components/StemText.vue）。
+  // 云端是绝对 URL（https://yuhaoxuan.cn/qimg/...），本地导入的题库是 data URI。
+  images?: string[] | null
 }
 
 export interface Exam {
@@ -845,6 +848,7 @@ export async function listPublicBanks(): Promise<any[]> {
 const PUBLIC_Q_FIELDS = {
   _local_id: true, _local_bank_id: true, bank_id: true, stem: true,
   type: true, options: true, answer: true, analysis: true, source_index: true,
+  images: true,
 }
 const PUBLIC_Q_PAGE = 200
 // 缓存有效期：即使题数没变，超过这个时间也重拉一次（兜住「题数不变但内容被改」的情形）
@@ -866,6 +870,7 @@ function mapPublicQuestion(q: any): ExamQuestion {
     answer: q.answer,
     analysis: q.analysis,
     source_index: q.source_index ?? null,
+    images: Array.isArray(q.images) ? q.images : null,
   }
 }
 
