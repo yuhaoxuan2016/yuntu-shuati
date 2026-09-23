@@ -107,12 +107,14 @@
 
     <!-- 公共题库区块（云端直读，无需同步/导入） -->
     <div v-if="publicBanks.length" class="public-section">
+      <!-- 2026-09-23：旧题库沉底并默认折叠 -->
+      <div v-if="oldBankCount" class="old-toggle" @click="showOldBanks = !showOldBanks">{{ showOldBanks ? '收起旧题库' : `展开旧题库 (${oldBankCount})` }}</div>
       <div class="section-header">
         <h3>🌍 公共题库</h3>
         <span class="section-sub">云端官方题库 · 此处仅供展示，练习数据不保存，点「添加到我的题库」导入本地后享进度/收藏/错题</span>
       </div>
       <div class="grid public-grid">
-        <div v-for="b in publicBanks" :key="b._id" class="card public-card">
+        <div v-for="b in sortedBanks" :key="b._id" class="card public-card">
           <div class="card-header">
             <h3>
               {{ b.name }}
@@ -273,6 +275,20 @@ const bankStatsMap = ref<Map<number, Stats>>(new Map())
 const todayStats = ref<TodayStats>({ total: 0, correct: 0, accuracy: 0 })
 const streakDays = ref(0)
 const publicBanks = ref<any[]>([])
+
+// 2026-09-23：题库列表排序——2026 新库在上，名字带 (旧) 的沉底并默认折叠。
+const showOldBanks = ref(false)
+const isOldBank = (b: any) => /\(旧\)/.test(String(b?.name || ''))
+const oldBankCount = computed(() => publicBanks.value.filter(isOldBank).length)
+const sortedBanks = computed(() => {
+  const arr = [...publicBanks.value].sort((a: any, b: any) => {
+    const ao = isOldBank(a) ? 1 : 0
+    const bo = isOldBank(b) ? 1 : 0
+    if (ao !== bo) return ao - bo
+    return String(b?.created_at || '').localeCompare(String(a?.created_at || ''))
+  })
+  return showOldBanks.value ? arr : arr.filter((b: any) => !isOldBank(b))
+})
 const publicExams = ref<Exam[]>([])
 const importingId = ref<string | null>(null)
 const importProgress = ref<{ done: number; total: number } | null>(null)
@@ -938,4 +954,15 @@ onBeforeUnmount(() => { document.removeEventListener('click', onDocClick); docum
 /* 小屏才显示，链接本身的样式在 App.vue（非 scoped，全局生效） */
 .site-beian { display: none; margin: 0 auto 20px; }
 @media (max-width: 768px) { .site-beian { display: block; } }
+
+.old-toggle {
+  display: inline-block;
+  margin: 4px 0 10px;
+  padding: 4px 12px;
+  font-size: 0.82rem;
+  color: #2f5597;
+  border: 1px solid var(--border-color, #d0d5dd);
+  border-radius: 999px;
+  cursor: pointer;
+}
 </style>
