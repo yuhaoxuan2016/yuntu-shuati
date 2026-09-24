@@ -40,6 +40,7 @@ function conflictText(q: any): string {
   if (v === 'value') return '⚠ 答案与解析不一致'
   if (v === 'unit') return '⚠ 单位口径不一致'
   if (v === 'rounding') return '取整口径不同'
+  if (v === 'doubt') return '⚠ 口径与现行规程有别'
   return ''
 }
 
@@ -134,12 +135,12 @@ onMounted(load)
             <p v-if="(q as any).answer_conflict_note" class="warn-note">{{ (q as any).answer_conflict_note }}</p>
           </details>
           <details v-if="!revealAll && q.analysis" class="fold">
-            <summary>看解析</summary>
+            <summary>看解析<span class="ai-tag">AI 生成，仅供参考</span></summary>
             <p class="ana">{{ q.analysis }}</p>
           </details>
           <!-- 知识点总结：不针对本题而是这一类题的通用规律，比解析长，单独折叠 -->
           <details v-if="!revealAll && (q as any).knowledge" class="fold">
-            <summary>知识点总结（举一反三用）</summary>
+            <summary>知识点总结（举一反三用）<span class="ai-tag">AI 生成，仅供参考</span></summary>
             <p class="kno">{{ (q as any).knowledge }}</p>
           </details>
 
@@ -149,6 +150,7 @@ onMounted(load)
               <span class="derived-tag">推算</span>{{ (q as any).answer_derived }}
             </p>
             <p v-if="(q as any).answer_conflict_note" class="warn-note">{{ (q as any).answer_conflict_note }}</p>
+            <p v-if="q.analysis || (q as any).knowledge" class="ai-foot">解析与知识点总结由 AI 批量生成，仅供参考；答案以题库原文为准。</p>
             <p v-if="q.analysis" class="ana">{{ q.analysis }}</p>
             <p v-if="(q as any).knowledge" class="kno">{{ (q as any).knowledge }}</p>
           </template>
@@ -227,4 +229,8 @@ onMounted(load)
   background: #f7f9fc; border-left: 3px solid #2f5597; color: #33384a;
   white-space: pre-wrap; line-height: 1.8;
 }
+.ai-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; font-size: 0.75em;
+  font-weight: 600; color: var(--color-text-muted, #6b7280); background: var(--color-bg-soft, #f3f4f6);
+  border: 1px solid var(--border-color, #d0d5dd); border-radius: 10px; }
+.ai-foot { margin: 8px 0 4px; font-size: 0.786em; color: var(--color-text-muted, #6b7280); }
 </style>

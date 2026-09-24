@@ -211,7 +211,7 @@
               </div>
               <div class="wrong-row"><span class="wrong-label mine">你的答案：</span>{{ w.myAnswer }}</div>
               <div class="wrong-row"><span class="wrong-label correct">正确答案：</span>{{ w.correctAnswer }}</div>
-              <div v-if="w.analysis" class="wrong-analysis">💡 {{ w.analysis }}</div>
+              <div v-if="w.analysis" class="wrong-analysis"><span class="ai-tag">解析·AI 生成</span> {{ w.analysis }}</div>
             </div>
           </div>
           <p v-else class="hint">本场没有错题，太棒了！🎉</p>
@@ -952,4 +952,5 @@ onBeforeUnmount(() => stopTimer())
   .exam-progress { min-width: 100%; }
   .result-panel { padding: 20px 12px; }
 }
+.wrong-analysis .ai-tag { display: inline-block; margin-right: 4px; padding: 1px 6px; font-size: 11px; font-weight: 600; color: #6b7280; background: #f3f4f6; border: 1px solid #d0d5dd; border-radius: 10px; }
 </style>

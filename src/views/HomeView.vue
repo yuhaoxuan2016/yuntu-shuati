@@ -190,6 +190,10 @@
             🌍 提交到公共题库（待审核）
           </button>
           <button v-else-if="b.visibility === 'pending'" disabled>⏳ 已提交，待管理员审核</button>
+          <button v-if="sourceOf(b)" :disabled="updatingId === b.id" @click="updateFromPublicBank(b)">
+            <span v-if="updatingId === b.id">🔄 更新中 {{ updateProgress?.done ?? 0 }}/{{ updateProgress?.total ?? 0 }}</span>
+            <span v-else>🔄 从公共题库更新</span>
+          </button>
           <button @click="exportBank(b)">📤 导出题库</button>
           <button class="danger" @click="del(b.id)">🗑 删除题库</button>
         </div>
@@ -294,6 +298,9 @@ const sortedBanks = computed(() => {
 const publicExams = ref<Exam[]>([])
 const importingId = ref<string | null>(null)
 const importProgress = ref<{ done: number; total: number } | null>(null)
+// 「从公共题库更新」的进度（2026-09-24）
+const updatingId = ref<number | null>(null)
+const updateProgress = ref<{ done: number; total: number } | null>(null)
 const visitStats = ref<{ total: number; today: number } | null>(null)
 const dailyPoem = ref<Poem | null>(null)
 const todayText = ref('')
@@ -572,6 +579,66 @@ function resumePractice() {
 }
 
 // 将云端公共题库完整导入到本地「我的题库」，导入后自动获得进度/收藏/错题功能
+// 本地副本指回它来源的那个公共题库：优先用导入时存的 origin_ref；
+// 2026-09-24 之前导入的副本都没存，只能退回按题库名匹配。
+function sourceOf(b: any): any | null {
+  const ref = String(b?.origin_ref || '').trim()
+  if (ref) {
+    const hit = publicBanks.value.find((p: any) => String(p._id) === ref)
+    if (hit) return hit
+  }
+  return publicBanks.value.find((p: any) => p.name === b?.name) || null
+}
+
+// 「从公共题库更新」：只补题库给的内容字段（解析／知识点／难度／配图）。
+// 刻意**不碰** stem/options/answer —— 那几项用户可能自己改过，覆盖了就找不回来。
+async function updateFromPublicBank(b: any) {
+  if (updatingId.value) return
+  const src = sourceOf(b)
+  if (!src) { toastError('找不到对应的公共题库，无法更新'); return }
+  if (!confirm(`从「${src.name}」更新内容？\n会补齐解析／知识点／难度／配图；不动你的作答进度、错题、收藏。`)) return
+  updatingId.value = b.id
+  try {
+    const pub = await listPublicBankQuestions(src._id)
+    const local = await api.listQuestions(b.id)
+    if (!pub.length || !local.length) { toastError('没有可更新的题目'); return }
+    updateProgress.value = { done: 0, total: local.length }
+    const byIdx = new Map<number, any>()
+    for (const q of pub) if (typeof q.source_index === 'number') byIdx.set(q.source_index, q)
+    let changed = 0, missing = 0
+    for (let i = 0; i < local.length; i++) {
+      const lq: any = local[i]
+      const pq: any = (typeof lq.source_index === 'number' ? byIdx.get(lq.source_index) : undefined) || pub[i]
+      if (!pq) { missing++; continue }
+      const next = {
+        // 一律用 `||` 而不是 `??`：公共库那道题若还没有解析（空串），要把本地已有的留着，
+        // 不能被空串覆盖掉。其余字段同理。
+        analysis: pq.analysis || lq.analysis || '',
+        knowledge: pq.knowledge || lq.knowledge || '',
+        difficulty: pq.difficulty || lq.difficulty || '',
+        difficulty_why: pq.difficulty_why || lq.difficulty_why || '',
+        // 09-24：A 类存疑题的标记也要跟着更新，否则公共库打了标、本地副本永远是哑的
+        answer_conflict: pq.answer_conflict || lq.answer_conflict || '',
+        answer_conflict_note: pq.answer_conflict_note || lq.answer_conflict_note || '',
+        images: (Array.isArray(pq.images) && pq.images.length) ? pq.images : (lq.images || []),
+      }
+      const same = ['analysis', 'knowledge', 'difficulty', 'difficulty_why', 'answer_conflict', 'answer_conflict_note']
+        .every(k => String(lq[k] ?? '') === String(next[k as keyof typeof next] ?? ''))
+        && JSON.stringify(lq.images || []) === JSON.stringify(next.images)
+      if (same) continue
+      await api.updateQuestion({ ...lq, ...next })
+      changed++
+      updateProgress.value = { done: changed, total: local.length }
+    }
+    toastSuccess(`已更新「${b.name}」：${changed} 题补齐${missing ? `，${missing} 题没匹配上` : ''}`)
+  } catch (e) {
+    toastError('更新失败：' + (e instanceof Error ? e.message : String(e)))
+  } finally {
+    updatingId.value = null
+    updateProgress.value = null
+  }
+}
+
 async function importPublicBank(b: any) {
   if (importingId.value) return
   // 背题模式的库（计算题）不提供本地副本，按钮已隐藏，这里再拦一道防异常路径
@@ -598,10 +665,22 @@ async function importPublicBank(b: any) {
     }
     importProgress.value = { done: 0, total: qs.length }
     // 建本地私人副本（private 避免被云同步当成公开题库重复发布）
-    const created = await bankStore.create(b.name, b.description || `来自公共题库：${b.name}`, 'private', b.creator_name || null)
+    const created = await bankStore.create(b.name, b.description || `来自公共题库：${b.name}`, 'private', b.creator_name || null, b._id)
     if (!created?.id) throw new Error('创建本地题库失败')
     // 剥离公共 id/bank_id，分批写入（大题库避免单事务过大 + 实时进度）
     // 判断题归一：云端存为 type:'single' + ["正确","错误"]，导入时统一为 type:'judge' + answer true/false（2026-08-15 修复）
+    // 题库内容字段：解析 / 知识点 / 难度 / 图。
+    // 2026-09-23 之前这里只带了 analysis，导致导入后的本地副本看不到知识点与难度，
+    // 连图都会显示「图片待补」——因为 images 没跟着过来。
+    const contentOf = (q: any) => ({
+      analysis: q.analysis,
+      knowledge: q.knowledge || '',
+      difficulty: q.difficulty || '',
+      difficulty_why: q.difficulty_why || '',
+      answer_conflict: q.answer_conflict || '',
+      answer_conflict_note: q.answer_conflict_note || '',
+      images: Array.isArray(q.images) ? q.images : [],
+    })
     const clean = qs.map(q => {
       const t = classifyQuestionType(q)
       if (t === 'judge') {
@@ -612,7 +691,7 @@ async function importPublicBank(b: any) {
           stem: q.stem,
           options: JSON.stringify(['正确', '错误']),
           answer: judgeAnswerBool(q.answer, opts.length ? opts : null),
-          analysis: q.analysis,
+          ...contentOf(q),
           source_index: q.source_index ?? null,
         }
       }
@@ -621,7 +700,7 @@ async function importPublicBank(b: any) {
         stem: q.stem,
         options: q.options,
         answer: q.answer,
-        analysis: q.analysis,
+        ...contentOf(q),
         source_index: q.source_index ?? null,
       }
     })

@@ -42,7 +42,9 @@ export interface Question {
   // 来源：导入 docx 时 mammoth 抽出的图；渲染由 components/StemText.vue 负责。
   images?: string[] | null;
 }
-export interface NewBank { name: string; description: string | null; visibility?: 'public' | 'private' | 'pending'; creator_name?: string | null }
+// origin_ref：本地副本指回它来源的公共题库（导入时写入）。「从公共题库更新」靠它定位，
+// 没存的话就只能按题库名去猜——2026-09-24 之前导入的副本都是没存的。
+export interface NewBank { name: string; description: string | null; visibility?: 'public' | 'private' | 'pending'; creator_name?: string | null; origin_ref?: string | null }
 
 async function withCount(bank: any): Promise<QuizBank> {
   const qs = await idb.listQuestions(bank.id)

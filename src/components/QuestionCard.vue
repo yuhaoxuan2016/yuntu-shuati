@@ -71,8 +71,16 @@
         <p v-else-if="!question.answer && isJudgeQuestion()">⚠ 参考答案缺失，无法判定对错</p>
         <p v-else>{{ isCorrect ? '✓ 回答正确' : '✗ 回答错误' }}</p>
         <p>正确答案：{{ displayAnswer }}</p>
-        <div v-if="question.analysis" class="analysis">
-          <strong>解析：</strong>{{ question.analysis }}
+        <!-- 09-24：A 类存疑题（答案不改，判分仍以题库为准）在答案下方给一条口径提示 -->
+        <p v-if="(question as any).answer_conflict === 'doubt'" class="doubt-note">
+          ⚠ 本题口径与现行规程有别<span v-if="(question as any).answer_conflict_note">：{{ (question as any).answer_conflict_note }}</span>
+        </p>
+        <!-- 2026-09-23 用户口径：刷题时「答错才展开」解析，答对不再铺开。
+             例外是只读复习场景（错题本/收藏/回顾），那里本来就该看得见。 -->
+        <div v-if="question.analysis && (!isCorrect || readOnly)" class="analysis">
+          <strong>解析：</strong><span class="ai-tag">AI 生成，仅供参考</span>
+          <div>{{ question.analysis }}</div>
+          <p class="ai-foot">答案与题干来自题库原文；解析由 AI 批量生成，可能随规程更新而过时。</p>
         </div>
       </template>
     </div>
@@ -709,6 +717,24 @@ textarea { width: 100%; min-height: 80px; padding: 8px; border: 1px solid var(--
   padding: 3px 10px;
   border-radius: 12px;
   border: 1px solid var(--color-border-light);
+}
+
+.doubt-note {
+  margin: 6px 0 0; font-size: 0.857em; line-height: 1.5;
+  color: var(--color-warning-strong, #a15c00);
+  background: var(--color-warning-light, #fff4d6);
+  border-left: 3px solid var(--color-warning-strong, #a15c00);
+  padding: 6px 9px; border-radius: 4px;
+}
+.analysis .ai-tag {
+  display: inline-block; margin-left: 6px; padding: 1px 6px;
+  font-size: 0.75em; font-weight: 600; vertical-align: 2px;
+  color: var(--color-text-muted, #6b7280);
+  background: var(--color-bg-soft, #f3f4f6);
+  border: 1px solid var(--border-color, #d0d5dd); border-radius: 10px;
+}
+.analysis .ai-foot {
+  margin: 6px 0 0; font-size: 0.786em; color: var(--color-text-muted, #6b7280);
 }
 .ai-section {
   margin-bottom: 16px;

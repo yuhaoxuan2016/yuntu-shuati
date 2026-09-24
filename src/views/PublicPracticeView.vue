@@ -99,8 +99,18 @@
           <textarea v-model="currentAnswer.blank" placeholder="输入你的答案" rows="4"></textarea>
         </div>
 
+        <!-- 09-24：A 类存疑题（答案不改、判分仍以题库为准）标出口径分歧。
+             本页有自己的一套卡片标记，不走 QuestionCard，所以两处都要改。 -->
+        <div v-if="showResult && (currentQuestion as any).answer_conflict === 'doubt'" class="doubt-note">
+          ⚠ 本题口径与现行规程有别<span v-if="(currentQuestion as any).answer_conflict_note">：{{ (currentQuestion as any).answer_conflict_note }}</span>
+        </div>
+
         <!-- 解析 -->
-        <div v-if="showResult && currentQuestion.analysis" class="analysis-box">💡 {{ currentQuestion.analysis }}</div>
+        <div v-if="showResult && currentQuestion.analysis" class="analysis-box">
+          <div class="ana-head">💡 解析<span class="ai-tag">AI 生成，仅供参考</span></div>
+          <div>{{ currentQuestion.analysis }}</div>
+          <p class="ai-foot">答案与题干来自题库原文；解析由 AI 批量生成，可能随规程更新而过时。</p>
+        </div>
 
         <!-- 导航 -->
         <div class="nav-row">
@@ -480,4 +490,10 @@ onMounted(async () => {
   .q-stem { font-size: 15px; }
   .main-left { min-width: 0; flex: 1 1 100%; }
 }
+.doubt-note { margin-bottom: 12px; padding: 8px 12px; font-size: 13px; line-height: 1.5; border-radius: 4px;
+  color: #a15c00; background: #fff4d6; border-left: 3px solid #f59e0b; }
+.analysis-box .ana-head { font-weight: 600; margin-bottom: 4px; }
+.analysis-box .ai-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; font-size: 11px; font-weight: 600;
+  color: #6b7280; background: #f3f4f6; border: 1px solid #d0d5dd; border-radius: 10px; }
+.analysis-box .ai-foot { margin: 6px 0 0; font-size: 11px; color: #6b7280; }
 </style>
