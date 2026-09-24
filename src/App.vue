@@ -449,7 +449,11 @@ async function handleRestart() {
     border-radius: var(--radius-sm);
   }
   .hamburger:active { background: var(--color-border-light); }
-  .mobile-logo { display: flex; align-items: center; gap: 6px; font-size: 16px; font-weight: 700; color: var(--color-primary); flex: 1; }
+  /* 2026-09-24：同一类事故的第二个实例——320px 宽的机器上，品牌名被右侧动作按钮挤成
+     「小/兔错/题本」三行（窄屏普查扫出来的）。既然这一行不能换行，就让品牌名自己省略号收尾：
+     允许收缩（min-width:0，否则 flex 会顶掉右侧按钮），单行 + 溢出省略。 */
+  .mobile-logo { display: flex; align-items: center; gap: 6px; font-size: 16px; font-weight: 700; color: var(--color-primary); flex: 1; min-width: 0; }
+  .mobile-logo span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .mobile-logo-img { width: 26px; height: 26px; border-radius: 5px; }
   .mobile-header-actions { display: flex; gap: 4px; }
   .mobile-nav-link {

@@ -957,8 +957,13 @@ onBeforeUnmount(() => { document.removeEventListener('click', onDocClick); docum
 
 /* 公共题库区块 */
 .public-section { margin-bottom: 24px; }
-.section-header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
-.section-header h3 { margin: 0; font-size: 17px; }
+/* 2026-09-24（rabbit 手机端截图：标题被折成「公」「共题」「库」三行）：
+   `display:flex` 默认不换行，也没有 `flex-wrap`，于是**短标题被长描述挤到 min-content**
+   —— 中文的 min-content 就是「一个字一行」。桌面够宽看不见，手机必现（320~414px 实测都是 3 行）。
+   ⇒ 让整行可以换行（描述自己另起一行），并禁止标题自身收缩/折行。
+   （注：style 块里只能用这种注释——写 `//` 会让 SFC 编译直接报 Unexpected '/'，2026-09-24 踩过） */
+.section-header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.section-header h3 { margin: 0; font-size: 17px; flex: 0 0 auto; white-space: nowrap; }
 .section-sub { font-size: 12px; color: var(--color-text-tertiary); }
 .public-grid { margin-top: 0; }
 .public-card { border-color: var(--color-primary-light); background: linear-gradient(180deg, var(--color-card) 0%, rgba(124, 58, 237, 0.03) 100%); }
