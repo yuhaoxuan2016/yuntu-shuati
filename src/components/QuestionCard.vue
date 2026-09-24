@@ -3,6 +3,15 @@
     <div class="stem" :class="{ 'no-toolbar': examMode }">
       <span class="idx">{{ index + 1 }}.</span>
       <span class="type-tag">{{ typeLabel }}</span>
+      <!-- 2026-09-24：难度徽章。库里 4064+134 道题都标了 difficulty，但此前只有背题页渲染，
+           练习/错题本/收藏这些走 QuestionCard 的页面看不见 ⇒ 在这里补一个常态出口。
+           考试模式不显示（与右上角工具栏同理，别给考生额外提示）。 -->
+      <span
+        v-if="!examMode && diffLabel"
+        class="diff"
+        :class="'d-' + diffKey"
+        :title="diffWhy || '本题难度：' + diffLabel"
+      >难度 {{ diffLabel }}</span>
       <span v-if="elapsedSecs !== null" class="timer" title="本题用时">{{ formatTime(elapsedSecs) }}</span>
       <span class="stem-text"><StemText :stem="question.stem" :images="(question as any).images || null" /></span>
       <!-- 右上角操作按钮组（考试模式/回顾模式下隐藏，防作弊） -->
@@ -84,6 +93,17 @@
           <div>{{ question.analysis }}</div>
           <p class="ai-foot">答案与题干来自题库原文；解析由 AI 批量生成，可能随规程更新而过时。</p>
         </div>
+        <!-- 2026-09-24：知识点总结的常态出口（此前只有背题页渲染，练习/错题本/收藏都看不见）。
+             与解析的分工：解析针对**本题**（三四百字），knowledge 针对**这一类题**的通用规律（600~900 字），
+             所以默认折叠——不展开不占地方，展开的动机是主动想举一反三。
+             标题刻意写「举一反三用」，与 🤖 AI 详细解析面板里的「考查的知识点」（现调、逐题）岔开，
+             两块同时出现时不至于被当成重复内容。 -->
+        <details v-if="(question as any).knowledge" class="kno-fold">
+          <summary>
+            知识点总结（举一反三用）<span class="ai-tag">AI 生成，仅供参考</span>
+          </summary>
+          <p class="kno">{{ (question as any).knowledge }}</p>
+        </details>
       </template>
     </div>
 
@@ -361,6 +381,11 @@ const typeLabel = computed(() => {
   if (isJudgeQuestion()) return '判断'
   return ({ single: '单选', multi: '多选', judge: '判断', blank: '填空', qa: '问答' }[props.question.type] || props.question.type)
 })
+// 2026-09-24：难度与知识点总结的常态出口（库里 4198 道题都带这两个字段，此前只有背题页渲染）。
+// 库内存的是 easy/mid/hard，显示成易/中/难；difficulty_why 走 title，不占版面。
+const diffKey = computed(() => String((props.question as any).difficulty || ''))
+const diffLabel = computed(() => ({ easy: '易', mid: '中', hard: '难' } as Record<string, string>)[diffKey.value] || '')
+const diffWhy = computed(() => String((props.question as any).difficulty_why || ''))
 const displayAnswer = computed(() => {
   if (!props.question.answer) return '（未识别到答案）'
   if (isJudgeQuestion()) {
@@ -738,6 +763,23 @@ textarea { width: 100%; min-height: 80px; padding: 8px; border: 1px solid var(--
 .analysis .ai-foot {
   margin: 6px 0 0; font-size: 0.786em; color: var(--color-text-muted, #6b7280);
 }
+/* 2026-09-24：知识点折叠块与难度徽章，配色沿用背题页 ReciteView 的 fold/kno/diff 一套。
+   底色与文字走主题变量，深色模式下自动跟主题（写死浅色底会在深色卡片上留一块白斑）。
+   注意：style 块里只能用块注释，写成两斜杠开头会让 SFC 编译直接报 Unexpected '/'。 */
+.kno-fold { margin-top: 8px; }
+.kno-fold summary { cursor: pointer; color: var(--color-link, #2f5597); font-size: 0.88rem; }
+.kno {
+  margin-top: 6px; padding: 10px 12px; border-radius: 8px; font-size: 0.86rem; line-height: 1.7;
+  background: var(--color-bg-soft, #f7f9fc); border-left: 4px solid var(--color-link, #2f5597);
+  color: var(--color-text-secondary);
+}
+.diff {
+  display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 0.75rem;
+  border: 1px solid var(--color-border, #d0d5dd); vertical-align: 1px;
+}
+.d-easy { background: #eaf6ec; color: #1b6b2f; border-color: #bfe3c6; }
+.d-mid { background: #fff4e2; color: #8a5a00; border-color: #f0d49b; }
+.d-hard { background: #fdecec; color: #b42318; border-color: #f3bdbc; }
 .ai-section {
   margin-bottom: 16px;
   padding: 12px 14px 12px 16px;

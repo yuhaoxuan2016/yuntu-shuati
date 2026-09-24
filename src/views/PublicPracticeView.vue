@@ -119,6 +119,16 @@
           <p class="ai-foot">答案与题干来自题库原文；解析由 AI 批量生成，可能随规程更新而过时。</p>
         </div>
 
+        <!-- 2026-09-24：知识点总结 + 难度的常态出口。本页不走 QuestionCard（自己一套卡片标记），
+             所以与 QuestionCard 各改一处；口径一致：知识点默认折叠，难度常显、why 走 title。 -->
+        <div v-if="showResult && currentDiffLabel" class="diff-line">
+          难度 <span class="diff" :class="'d-' + currentDiffKey" :title="currentDiffWhy">{{ currentDiffLabel }}</span>
+        </div>
+        <details v-if="showResult && (currentQuestion as any).knowledge" class="kno-fold">
+          <summary>知识点总结（举一反三用）<span class="ai-tag">AI 生成，仅供参考</span></summary>
+          <p class="kno">{{ (currentQuestion as any).knowledge }}</p>
+        </details>
+
         <!-- 导航 -->
         <div class="nav-row">
           <button class="nav-btn" :disabled="current === 0" @click="current--">← 上一题</button>
@@ -269,6 +279,10 @@ const order = computed(() => {
 const currentQuestion = computed(() => order.value[current.value] || null)
 // 显示类型（规范化后），供 q-type 标签使用
 const currentType = computed(() => normType(currentQuestion.value))
+// 2026-09-24：难度与知识点的显示口径（库内存 easy/mid/hard，展示成易/中/难；difficulty_why 走 title）
+const currentDiffKey = computed(() => String((currentQuestion.value as any)?.difficulty || ''))
+const currentDiffLabel = computed(() => ({ easy: '易', mid: '中', hard: '难' } as Record<string, string>)[currentDiffKey.value] || '')
+const currentDiffWhy = computed(() => String((currentQuestion.value as any)?.difficulty_why || ''))
 const currentAnswer = computed<StudentAnswer>(() => {
   const q = currentQuestion.value
   if (!q) return { selected: [], blank: '', judge: null }
@@ -548,6 +562,18 @@ onMounted(async () => {
 .analysis-box .ai-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; font-size: 11px; font-weight: 600;
   color: #6b7280; background: #f3f4f6; border: 1px solid #d0d5dd; border-radius: 10px; }
 .analysis-box .ai-foot { margin: 6px 0 0; font-size: 11px; color: #6b7280; }
+/* 2026-09-24：知识点折叠块 + 难度徽章（与 QuestionCard 同一套口径，配色贴本页既有写法） */
+.diff-line { font-size: 12px; color: #6b7280; margin: -8px 0 12px; }
+.diff { display: inline-block; padding: 0 6px; border-radius: 8px; border: 1px solid #d0d5dd; font-size: 11px; }
+.d-easy { background: #eaf6ec; color: #1b6b2f; border-color: #bfe3c6; }
+.d-mid { background: #fff4e2; color: #8a5a00; border-color: #f0d49b; }
+.d-hard { background: #fdecec; color: #b42318; border-color: #f3bdbc; }
+.kno-fold { margin: -8px 0 16px; }
+.kno-fold summary { cursor: pointer; color: #2f5597; font-size: 12px; }
+.kno {
+  margin-top: 6px; padding: 10px 12px; border-radius: 4px; font-size: 12px; line-height: 1.6;
+  background: #f7f9fc; border-left: 3px solid #2f5597; color: #33384a;
+}
 .prog-tip { margin: 0 0 10px; padding: 7px 12px; font-size: 12px; line-height: 1.5; border-radius: 6px;
   color: #0369a1; background: #f0f9ff; border: 1px solid #bae6fd; }
 </style>

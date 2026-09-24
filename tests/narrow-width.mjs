@@ -34,17 +34,27 @@ const WIDTHS = [320, 360, 390, 414]
 const DESKTOP_WIDTH = 1280
 const HEIGHT = 844
 
+// 行数判据：按**去重后的 rect top** 数行数，不能数 getClientRects() 的个数——
+// 一个含内联子元素（如 .ai-tag）的单行文本本来就会返回多个矩形，那样会把「1 行」误判成 3 行。
 // 要体检的元素：选择器 + 断言（中文标点按字换行是合法行为，但**标题这种短标签被折成多行就是布局事故**）
-const CHECKS = [
+const CHECKS = NO_HEADER ? [] : [
   { sel: '.section-header h3', name: '「🌍 公共题库」标题', maxLines: 1 },
   { sel: '.old-toggle', name: '「展开已归档」开关', maxLines: 1 },
 ]
+// 允许临时加检查项：--check "选择器=最多行数[:说明]"，例如体检练习页的难度徽章
+for (const a of args) {
+  if (!a.startsWith('--check')) continue
+  const raw = a.includes('=') ? a.slice(a.indexOf('=') + 1) : args[args.indexOf(a) + 1]
+  const [spec, name] = String(raw || '').split(':')
+  const [sel, n] = String(spec || '').split('=')
+  if (sel) CHECKS.push({ sel, name: name || sel, maxLines: Number(n) || 1 })
+}
 
 // 顺带做一次「短文本被折成多行」的普查：正文段落折行是正常的，短标签被折成 3 行以上一定是事故。
 // 判据刻意保守（≤10 字 且 ≥3 行），且**只看真的画在视口里的元素**——
 // 侧栏抽屉是靠 translateX 挪出屏外的，它照样有 layout，不过滤就会报出一堆假阳性。
 const AUDIT_JS = `(() => {
-  const lines = el => { const r = document.createRange(); r.selectNodeContents(el); return r.getClientRects().length };
+  const lines = el => { const r = document.createRange(); r.selectNodeContents(el); const ys = new Set(); for (const b of r.getClientRects()) ys.add(Math.round(b.top)); return ys.size };
   const inView = el => {
     if (el.checkVisibility && !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
     const rc = el.getBoundingClientRect();
@@ -124,6 +134,19 @@ try {
     await sleep(500)
     ready = await evalJs(ws, `!!document.querySelector('.section-header')`)
   }
+  // --no-header 时（体检别的页面）没有「等哪个元素」的判据，给一个固定的装载等待——
+  // 否则量到的是空页面，检查项全被静默跳过，等于没测（假绿）。
+  if (NO_HEADER) await sleep(6000)
+
+  // 可选的前置动作：有些体检对象要**答完题**才渲染（知识点折叠块、难度徽章、解析块），
+  // 传一段 JS 在这里跑完再量。例：--pre "document.querySelectorAll('.option').pop().click()"
+  const pre = argOf('--pre', '')
+  if (pre) {
+    await evalJs(ws, pre)
+    await sleep(1200)
+    await evalJs(ws, "(() => { const b = Array.from(document.querySelectorAll('button')).find(x => x.textContent.trim() === '确认答案'); if (b) b.click(); return 1; })()")
+    await sleep(1800)
+  }
   if (!ready) {
     console.error('✗ 等不到 .section-header（公共题库没加载出来）——本次探针没有测到东西，判失败，不报绿。')
     console.error('  页面文字摘要：' + await evalJs(ws, `document.body.innerText.slice(0, 200).replace(/\\n/g, ' | ')`))
@@ -135,7 +158,7 @@ try {
     await sleep(400)
     const got = await evalJs(ws, `(() => {
       const out = { vw: window.innerWidth, items: [] };
-      const lines = el => { const r = document.createRange(); r.selectNodeContents(el); return r.getClientRects().length };
+      const lines = el => { const r = document.createRange(); r.selectNodeContents(el); const ys = new Set(); for (const b of r.getClientRects()) ys.add(Math.round(b.top)); return ys.size };
       for (const sel of ${JSON.stringify(CHECKS.map(c => c.sel))}) {
         const el = document.querySelector(sel);
         if (!el) { out.items.push({ sel, missing: true }); continue }
@@ -148,7 +171,12 @@ try {
     console.log(`\n— 视口 ${got.vw}px`)
     for (const c of CHECKS) {
       const it = got.items.find(i => i.sel === c.sel)
-      if (!it || it.missing) continue
+      if (!it || it.missing) {
+        // 元素没找到 = 这一档**什么都没测**，不能默默跳过（那正是假绿的形状）
+        console.log(`   ✗ ${c.name}：页面上找不到 ${c.sel}（本次未测到）`)
+        failed++
+        continue
+      }
       const ok = it.lines <= c.maxLines
       if (!ok) failed++
       console.log(`   ${ok ? '✓' : '✗'} ${c.name}：${it.w}×${it.h}px，占 ${it.lines} 行（上限 ${c.maxLines}）`)
@@ -170,7 +198,7 @@ try {
     const d = await evalJs(ws, `(() => {
       const hdr = document.querySelector('.section-header');
       if (!hdr) return { missing: true };
-      const lines = el => { const r = document.createRange(); r.selectNodeContents(el); return r.getClientRects().length };
+      const lines = el => { const r = document.createRange(); r.selectNodeContents(el); const ys = new Set(); for (const b of r.getClientRects()) ys.add(Math.round(b.top)); return ys.size };
       const h3 = hdr.querySelector('h3'), sub = hdr.querySelector('.section-sub');
       return { hdrH: Math.round(hdr.getBoundingClientRect().height), h3Lines: lines(h3), subLines: lines(sub), h3Top: Math.round(h3.getBoundingClientRect().top), subTop: Math.round(sub.getBoundingClientRect().top) };
     })()`)
