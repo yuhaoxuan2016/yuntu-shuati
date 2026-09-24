@@ -106,10 +106,16 @@
         </div>
 
         <!-- 解析 -->
+        <!-- 09-24：本页原来对答对答错一律铺开，与本地练习页相反；统一成「答错默认展开、答对可点开」 -->
         <div v-if="showResult && currentQuestion.analysis" class="analysis-box">
-          <div class="ana-head">💡 解析<span class="ai-tag">AI 生成，仅供参考</span></div>
-          <div>{{ currentQuestion.analysis }}</div>
-          <p class="ai-foot">答案与题干来自题库原文；解析由 AI 批量生成，可能随规程更新而过时。</p>
+          <button v-if="!anaVisible" class="ana-open-btn" @click="anaManual = true">看解析<span class="ai-tag">AI 生成，仅供参考</span></button>
+          <template v-else>
+            <div class="ana-head">💡 解析<span class="ai-tag">AI 生成，仅供参考</span>
+              <button v-if="isCurrentCorrect" class="ana-collapse-btn" @click="anaManual = false">收起</button>
+            </div>
+            <div>{{ currentQuestion.analysis }}</div>
+            <p class="ai-foot">答案与题干来自题库原文；解析由 AI 批量生成，可能随规程更新而过时。</p>
+          </template>
         </div>
 
         <!-- 导航 -->
@@ -155,6 +161,14 @@ const current = ref(0)
 const answers = ref<Record<string, StudentAnswer>>({})
 const answeredStatus = ref<Record<string, boolean>>({})
 const showResult = ref(false)
+// 09-24：答对时默认收起解析，但留「看解析」入口；答错/未答对则直接铺开。换题重置手动态。
+const anaManual = ref(false)
+const isCurrentCorrect = computed(() => {
+  const id = currentQuestion.value && (currentQuestion.value as any).id
+  return id !== undefined && id !== null && answeredStatus.value[String(id)] === true
+})
+const anaVisible = computed(() => !isCurrentCorrect.value || anaManual.value)
+watch(current, () => { anaManual.value = false })
 const mode = ref<'order' | 'random'>('order')   // 2026-09-15 修复(P1-31)：'exam' 随选项一并移除（从未实现）
 const typeFilter = ref<string[]>([])
 
@@ -496,4 +510,9 @@ onMounted(async () => {
 .analysis-box .ai-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; font-size: 11px; font-weight: 600;
   color: #6b7280; background: #f3f4f6; border: 1px solid #d0d5dd; border-radius: 10px; }
 .analysis-box .ai-foot { margin: 6px 0 0; font-size: 11px; color: #6b7280; }
+.analysis-wrap { margin-top: 14px; }
+.ana-open-btn { padding: 5px 12px; font-size: 12px; cursor: pointer; color: #6b7280;
+  background: #f3f4f6; border: 1px solid #d0d5dd; border-radius: 14px; }
+.analysis-box .ana-collapse-btn { float: right; margin-left: 8px; padding: 1px 8px; font-size: 11px;
+  cursor: pointer; color: #6b7280; background: transparent; border: 1px solid #d0d5dd; border-radius: 10px; }
 </style>

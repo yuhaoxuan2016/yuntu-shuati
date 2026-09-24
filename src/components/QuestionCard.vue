@@ -77,10 +77,16 @@
         </p>
         <!-- 2026-09-23 用户口径：刷题时「答错才展开」解析，答对不再铺开。
              例外是只读复习场景（错题本/收藏/回顾），那里本来就该看得见。 -->
-        <div v-if="question.analysis && (!isCorrect || readOnly)" class="analysis">
-          <strong>解析：</strong><span class="ai-tag">AI 生成，仅供参考</span>
-          <div>{{ question.analysis }}</div>
-          <p class="ai-foot">答案与题干来自题库原文；解析由 AI 批量生成，可能随规程更新而过时。</p>
+        <!-- 09-24 修正：原口径是「答对不**铺开**」，我上一版做成了答对**根本没有**，答对想看解析没入口。
+             现在：答错／只读回顾 → 默认展开；答对 → 默认收起，但给一个「看解析」按钮。 -->
+        <div v-if="question.analysis" class="analysis-wrap">
+          <button v-if="!anaOpen" class="ana-open-btn" @click="showAna = true">看解析<span class="ai-tag">AI 生成，仅供参考</span></button>
+          <div v-else class="analysis">
+            <strong>解析：</strong><span class="ai-tag">AI 生成，仅供参考</span>
+            <button v-if="canCollapse" class="ana-collapse-btn" @click="showAna = false">收起</button>
+            <div>{{ question.analysis }}</div>
+            <p class="ai-foot">答案与题干来自题库原文；解析由 AI 批量生成，可能随规程更新而过时。</p>
+          </div>
         </div>
       </template>
     </div>
@@ -207,6 +213,11 @@ const emit = defineEmits<{
 
 // 从保存的状态恢复（返回上一题时能看到之前的答案）
 const saved = props.savedState
+// 答对后手动展开解析的开关；换题必须重置，否则上一题的「已展开」会跟过来
+const showAna = ref(false)
+const canCollapse = computed(() => isCorrect.value && !props.readOnly)
+const anaOpen = computed(() => !isCorrect.value || !!props.readOnly || showAna.value)
+watch(() => props.question && (props.question as any).id, () => { showAna.value = false })
 
 // 原始选项（按题目存储顺序）——必须先于 displayMap 定义，
 // 否则 displayMap 的 IIFE 在顶层立即执行时会触发 TDZ 错误（Cannot access 'rawOptions' before initialization），
@@ -733,6 +744,12 @@ textarea { width: 100%; min-height: 80px; padding: 8px; border: 1px solid var(--
   background: var(--color-bg-soft, #f3f4f6);
   border: 1px solid var(--border-color, #d0d5dd); border-radius: 10px;
 }
+.ana-open-btn { margin-top: 8px; padding: 5px 12px; font-size: 0.857em; cursor: pointer;
+  color: var(--color-text-muted, #6b7280); background: var(--color-bg-soft, #f3f4f6);
+  border: 1px solid var(--border-color, #d0d5dd); border-radius: 14px; }
+.ana-collapse-btn { float: right; margin-left: 8px; padding: 1px 8px; font-size: 0.8em; cursor: pointer;
+  color: var(--color-text-muted, #6b7280); background: transparent;
+  border: 1px solid var(--border-color, #d0d5dd); border-radius: 10px; }
 .analysis .ai-foot {
   margin: 6px 0 0; font-size: 0.786em; color: var(--color-text-muted, #6b7280);
 }
