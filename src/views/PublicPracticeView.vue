@@ -70,6 +70,12 @@
         <button class="restart-btn" @click="restart">从头开始</button>
       </div>
 
+      <!-- 09-24 rabbit 口径：公共练习「保存进度」但**不进错题本/统计**。
+           所以只写本机 localStorage，且明说清楚——不然用户以为它在统计里记着。 -->
+      <div v-if="restoredAt" class="prog-tip">
+        已恢复上次进度（{{ current + 1 }}/{{ order.length }}）· 只记在本机浏览器，不进错题本与统计
+      </div>
+
       <!-- 题目卡片 -->
       <div class="question-card">
         <div class="q-stem">
@@ -158,6 +164,33 @@ const answeredStatus = ref<Record<string, boolean>>({})
 const showResult = ref(false)
 const mode = ref<'order' | 'random'>('order')   // 2026-09-15 修复(P1-31)：'exam' 随选项一并移除（从未实现）
 const typeFilter = ref<string[]>([])
+
+// ===== 本机进度（09-24）=====
+// 只存「练到哪一题、本轮对错、模式与题型筛选」，**不写错题本、不写统计**——
+// 想要那些，走「添加到我的题库」导入本地副本那条路（那边才有 bank 行可挂记录）。
+const progKey = computed(() => `pub_progress_${bankId}`)
+const restoredAt = ref<number | null>(null)
+let progReady = false   // 恢复完成前不写盘，否则会把空状态盖掉上次的进度
+function saveProgress() {
+  if (!progReady) return
+  try {
+    localStorage.setItem(progKey.value, JSON.stringify({
+      current: current.value, mode: mode.value, typeFilter: typeFilter.value,
+      answers: answers.value, answeredStatus: answeredStatus.value, at: Date.now(),
+    }))
+  } catch { /* 存储写满/隐私模式：静默降级，进度只是便利功能 */ }
+}
+function restoreProgress(): any {
+  try {
+    const raw = localStorage.getItem(progKey.value)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+function clearProgress() {
+  try { localStorage.removeItem(progKey.value) } catch { /* 同上 */ }
+  restoredAt.value = null
+}
+watch([current, mode, typeFilter, answers, answeredStatus], saveProgress, { deep: true })
 
 // 选项乱序：打乱选择题展示顺序，answers 存原始下标（判分零改动）；localStorage 持久化，默认关
 const shuffleOptions = ref(localStorage.getItem('pub_practice_shuffle') === '1')
@@ -381,6 +414,7 @@ function restart() {
   showResult.value = false
   answers.value = {}
   answeredStatus.value = {}
+  clearProgress()   // 「从头开始」＝连本机进度一起清掉，否则刷新又回到断点
 }
 
 // 切题/切开关时重算选项乱序映射
@@ -425,6 +459,20 @@ onMounted(async () => {
       loadError.value = '题库暂无题目或云端不可用'
     } else {
       buildDisplayMap()
+      // 恢复本机进度：先把模式/筛选/作答状态放回去，**再**夹取题号——
+      // 顺序反了的话，切模式或改筛选会把题号夹到旧长度上。
+      const saved = restoreProgress()
+      if (saved && typeof saved === 'object') {
+        if (saved.mode === 'random' || saved.mode === 'order') mode.value = saved.mode
+        if (Array.isArray(saved.typeFilter)) typeFilter.value = saved.typeFilter.slice()
+        if (saved.answers && typeof saved.answers === 'object') answers.value = saved.answers
+        if (saved.answeredStatus && typeof saved.answeredStatus === 'object') answeredStatus.value = saved.answeredStatus
+        const n = order.value.length
+        const idx = Number(saved.current)
+        current.value = Number.isFinite(idx) ? Math.min(Math.max(0, idx), Math.max(0, n - 1)) : 0
+        showResult.value = !!answeredStatus.value[String(currentQuestion.value && (currentQuestion.value as any).id)]
+        if (idx > 0) restoredAt.value = Number(saved.at) || Date.now()
+      }
     }
   } catch (e: any) {
     console.warn('加载公共题库失败:', e)
@@ -497,4 +545,6 @@ onMounted(async () => {
 .analysis-box .ai-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; font-size: 11px; font-weight: 600;
   color: #6b7280; background: #f3f4f6; border: 1px solid #d0d5dd; border-radius: 10px; }
 .analysis-box .ai-foot { margin: 6px 0 0; font-size: 11px; color: #6b7280; }
+.prog-tip { margin: 0 0 10px; padding: 7px 12px; font-size: 12px; line-height: 1.5; border-radius: 6px;
+  color: #0369a1; background: #f0f9ff; border: 1px solid #bae6fd; }
 </style>

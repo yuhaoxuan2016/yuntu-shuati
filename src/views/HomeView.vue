@@ -111,7 +111,7 @@
       <div v-if="oldBankCount" class="old-toggle" @click="showOldBanks = !showOldBanks">{{ showOldBanks ? '收起旧题库' : `展开旧题库 (${oldBankCount})` }}</div>
       <div class="section-header">
         <h3>🌍 公共题库</h3>
-        <span class="section-sub">云端官方题库 · 此处仅供展示，练习数据不保存，点「添加到我的题库」导入本地后享进度/收藏/错题</span>
+        <span class="section-sub">云端官方题库 · 练习不写错题本与统计（进度只记在本机浏览器），点「添加到我的题库」导入本地后享收藏/错题/掌握度</span>
       </div>
       <div class="grid public-grid">
         <div v-for="b in sortedBanks" :key="b._id" class="card public-card">
