@@ -284,7 +284,10 @@ const publicBanks = ref<any[]>([])
 
 // 2026-09-23：题库列表排序——2026 新库在上，名字带 (旧) 的沉底并默认折叠。
 const showOldBanks = ref(false)
-const isOldBank = (b: any) => /\(旧\)/.test(String(b?.name || ''))
+// 09-24：折叠判据加一条「显式归档」字段——把「变电运维教材」这类**没带 (旧) 后缀**
+// 但已不属当前教材的库也归到沉底折叠组。为什么不走改名：网页版判「已导入」是 `isImported(name)`
+// 按题库名匹配（见 HomeView 的 isImported），改名会让老用户的「✓ 已导入」失效、还能重复导入。
+const isOldBank = (b: any) => /\(旧\)/.test(String(b?.name || '')) || b?.archived === true
 const oldBankCount = computed(() => publicBanks.value.filter(isOldBank).length)
 const sortedBanks = computed(() => {
   const arr = [...publicBanks.value].sort((a: any, b: any) => {
