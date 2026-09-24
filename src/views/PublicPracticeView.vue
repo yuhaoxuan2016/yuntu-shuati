@@ -473,6 +473,9 @@ onMounted(async () => {
         showResult.value = !!answeredStatus.value[String(currentQuestion.value && (currentQuestion.value as any).id)]
         if (idx > 0) restoredAt.value = Number(saved.at) || Date.now()
       }
+      // ⚠️ 这一行曾经漏写：闸定义了、也用在 saveProgress 开头，但从不置真 ⇒ 功能整个是死的
+      // （本地只跑类型检查看不出来，是生产实测「答三题后 localStorage 里没有这条」才抓到的）
+      progReady = true
     }
   } catch (e: any) {
     console.warn('加载公共题库失败:', e)
