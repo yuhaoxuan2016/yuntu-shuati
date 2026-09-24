@@ -108,7 +108,7 @@
     <!-- 公共题库区块（云端直读，无需同步/导入） -->
     <div v-if="publicBanks.length" class="public-section">
       <!-- 2026-09-23：旧题库沉底并默认折叠 -->
-      <div v-if="oldBankCount" class="old-toggle" @click="showOldBanks = !showOldBanks">{{ showOldBanks ? '收起旧题库' : `展开旧题库 (${oldBankCount})` }}</div>
+      <div v-if="oldBankCount" class="old-toggle" @click="showOldBanks = !showOldBanks">{{ showOldBanks ? '收起已归档' : `展开已归档 (${oldBankCount})` }}</div>
       <div class="section-header">
         <h3>🌍 公共题库</h3>
         <span class="section-sub">云端官方题库 · 练习不写错题本与统计（进度只记在本机浏览器），点「添加到我的题库」导入本地后享收藏/错题/掌握度</span>
