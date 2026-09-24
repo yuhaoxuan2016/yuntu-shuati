@@ -124,6 +124,8 @@
           <div class="card-meta">
             <span v-if="b.creator_name" class="creator-pill">👤 {{ b.creator_name }}</span>
             <span class="count-pill">📝 {{ b.question_count || 0 }} 题</span>
+            <!-- 展开归档组时得让用户看懂它为什么沉在这儿：状态写在卡片上，不靠分组标题猜 -->
+            <span v-if="b.archived === true" class="archived-pill">📦 已归档 · 不再更新</span>
           </div>
           <div class="actions">
             <button class="primary-btn" @click="$router.push(b.mode === 'recite' ? `/recite/${b._id}?name=${encodeURIComponent(b.name)}` : `/public-practice/${b._id}/${encodeURIComponent(b.name)}`)">{{ b.mode === 'recite' ? '开始背题' : '开始刷题' }}</button>
@@ -284,10 +286,11 @@ const publicBanks = ref<any[]>([])
 
 // 2026-09-23：题库列表排序——2026 新库在上，名字带 (旧) 的沉底并默认折叠。
 const showOldBanks = ref(false)
-// 09-24：折叠判据加一条「显式归档」字段——把「变电运维教材」这类**没带 (旧) 后缀**
-// 但已不属当前教材的库也归到沉底折叠组。为什么不走改名：网页版判「已导入」是 `isImported(name)`
-// 按题库名匹配（见 HomeView 的 isImported），改名会让老用户的「✓ 已导入」失效、还能重复导入。
-const isOldBank = (b: any) => /\(旧\)/.test(String(b?.name || '')) || b?.archived === true
+// 折叠判据**只看云端的 archived 字段**（09-24 收敛）：名字正则 `/(旧)/` 已删除——
+// 留着它等于两套真值，谁改了题库名就会突然从归档组浮回顶部。
+// 6 个 (旧) 库与「变电运维教材」都已打 archived:true（脚本 set-bank-archived.cjs --all-legacy）。
+// ⇒ 以后归档/取消归档只改云，零代码。
+const isOldBank = (b: any) => b?.archived === true
 const oldBankCount = computed(() => publicBanks.value.filter(isOldBank).length)
 const sortedBanks = computed(() => {
   const arr = [...publicBanks.value].sort((a: any, b: any) => {
@@ -1054,4 +1057,6 @@ onBeforeUnmount(() => { document.removeEventListener('click', onDocClick); docum
   border-radius: 999px;
   cursor: pointer;
 }
+.archived-pill { padding: 2px 8px; border-radius: 10px; font-size: 11px;
+  color: #6b7280; background: #f3f4f6; border: 1px dashed #b6bcc6; }
 </style>
