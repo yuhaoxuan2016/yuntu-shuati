@@ -496,7 +496,15 @@ onMounted(async () => {
       //      在**执行删除的那一刻**重新读一次（防 bankStatsMap 是本轮早先算的、期间题目被加回来了），
       //      以及绕开 `bankStatsMap` 这层缓存。复审据此指出：只有「统计与删除之间发生了写入」
       //      这一种情形能被它拦住，同源失真它拦不住。
-      const emptyPublicShells = bankStore.banks.filter(b => b.cloud_shared && statsOk.has(b.id) && bankStatsMap.value.get(b.id)?.total === 0)
+      //
+      // 2026-09-24（**随「删掉别再回来」一起收口**）：判据补 `visibility === 'public'`。
+      //   这段清理的原文承诺是「删除仅限本地，不影响云端公共数据」，可 `cloud_shared` 这个代用判据
+      //   对**私人题库也是 true**（writeLocal 拉下来的每一行都标 cloud_shared）⇒ 它其实会删掉
+      //   「自己建的、还没加题的私人题库」。此前删了也就本地少一行（云端那份还在，下次同步再拉回来）；
+      //   现在删除会随上传落到云端 + 进删除账本，等于把一次静默的本地清理升级成**永久删云端**。
+      //   口径回到它原本要清的「空公共壳」：只有 visibility=public 的才算（那类文档客户端本就无权删，
+      //   云端删除会被 ACL 拒掉，账本也不影响——公共题库的拉取本来就被 pullCollection 跳过）。
+      const emptyPublicShells = bankStore.banks.filter(b => b.cloud_shared && b.visibility === 'public' && statsOk.has(b.id) && bankStatsMap.value.get(b.id)?.total === 0)
       for (const shell of emptyPublicShells) {
         try {
           const localCount = (await idb.listQuestions(shell.id)).length

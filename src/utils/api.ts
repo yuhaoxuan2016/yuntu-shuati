@@ -24,8 +24,21 @@ export function addDays(dateStr: string, days: number): string {
 // 考试快照的 id 透传进来）。纯类型放宽，本函数只做等值比较与转存，运行时行为不变。
 // 2026-09-18 放宽（重审 A-15）：集合面从三个「记录类」扩到 `questions`/`quiz_banks`，
 // 且 `questionId` 允许 null（对 `questions` 表示"整库全部题目"，对 `quiz_banks` 无意义）。
-function markCloudDeleted(coll: 'favorites' | 'wrong_questions' | 'mastered_questions' | 'questions' | 'quiz_banks', bankId: number, questionId: number | string | null) {
-  import('../lib/cloud').then(m => m.markCloudDeleted(coll, bankId, questionId)).catch(() => {})
+// 2026-09-24：`cloudId` —— 题库/题目的云端 `_id`。能拿到就带上：删除云端那条时按 `_id`/`bank_ref`
+//   精确定位，不再只认「本设备当初分配的本地 id」（换过身份/设备的文档只认 cloud_id，否则删不掉、下次又拉回来）。
+function markCloudDeleted(
+  coll: 'favorites' | 'wrong_questions' | 'mastered_questions' | 'questions' | 'quiz_banks',
+  bankId: number, questionId: number | string | null, cloudId: string | null = null,
+) {
+  import('../lib/cloud').then(m => m.markCloudDeleted(coll, bankId, questionId, cloudId)).catch(() => {})
+}
+
+/** 取题库的云端 `_id`（没推上去过 / 取不到 → null） */
+async function bankCloudId(bankId: number): Promise<string | null> {
+  try {
+    const b: any = await idb.getBank?.(bankId)
+    return b?.cloud_id ?? null
+  } catch { return null }
 }
 
 export interface QuizBank {
@@ -80,8 +93,11 @@ export const api = {
     // 下一次同步会把整个题库连同题目一起拉回来「复活」（`scheduleCloudPush` 是空函数，
     // 而 `db.deleteBank` 的级联删除只作用于 IndexedDB）。
     // 题库与题目各一条：题目用整库语义 `null`，避免逐题写标记把 localStorage 撑爆。
-    markCloudDeleted('quiz_banks', id, null)
-    markCloudDeleted('questions', id, null)
+    // 2026-09-24：带上题库的 cloud_id（拿得到时）——云端删除按它定位，并写进删除账本，
+    //   保证「云端删不掉的那种（旧身份/缺 _local_id）」下次下载也不会再回来。
+    const cid = await bankCloudId(id)
+    markCloudDeleted('quiz_banks', id, null, cid)
+    markCloudDeleted('questions', id, null, cid)
     await idb.deleteBank(id)
     scheduleCloudPush()
   },
@@ -91,7 +107,7 @@ export const api = {
   },
   async clearBankQuestions(bankId: number): Promise<void> {
     // A-15：同上——清空题目也要在云端删，否则下次同步整库题目原样回来
-    markCloudDeleted('questions', bankId, null)
+    markCloudDeleted('questions', bankId, null, await bankCloudId(bankId))
     await idb.clearBankQuestions(bankId)
     scheduleCloudPush()
   },
@@ -100,7 +116,8 @@ export const api = {
   //   那是当时的实况；现在题目集合已纳入标记机制，这里逐题打标记（该路径的 id 数量就是本次导入
   //   重新选择的那几十上百条，逐条可接受）。
   async deleteQuestions(bankId: number, ids: number[]): Promise<void> {
-    for (const qid of ids) markCloudDeleted('questions', bankId, qid)
+    const cid = await bankCloudId(bankId)   // 2026-09-24：同 deleteBank，按题库云端 _id 锚定
+    for (const qid of ids) markCloudDeleted('questions', bankId, qid, cid)
     await idb.deleteQuestions(bankId, ids)
     scheduleCloudPush()
   },

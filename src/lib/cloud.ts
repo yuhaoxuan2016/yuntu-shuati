@@ -6,6 +6,16 @@
 // 未配置时自动降级为纯本地模式，不抛错。
 
 import { idb, normalizeTs } from './db'
+import {
+  addLedgerEntry,
+  buildLedgerIndex,
+  isSuppressed,
+  loadLedger,
+  type LedgerColl,
+  type LedgerEntry,
+  type LedgerIndex,
+  type LedgerKV,
+} from './sync-ledger'
 
 // P2-7（T10a，2026-09-15）引入的时间戳归一化 helper 原本定义在本文件；
 // T10b（2026-09-15）把它**搬到 `db.ts` 并在此重新导出**，原因：5 处 `last_review` 比较里有两处在
@@ -27,6 +37,9 @@ export const CLOUD_COLLECTIONS = [
   'settings',
 ] as const
 export type CloudCollection = (typeof CLOUD_COLLECTIONS)[number]
+
+// 删除账本只覆盖有「用户删除」语义的五个集合（settings 没有删除概念）
+const LEDGER_COLLS = new Set<string>(['quiz_banks', 'questions', 'favorites', 'wrong_questions', 'mastered_questions'])
 
 // 云同步配置（存 localStorage，避免进 IndexedDB 造成循环依赖）
 const CFG_KEY = 'cloudbase_config'
@@ -243,7 +256,7 @@ const SYNC_DELETED_KEY = 'sync_deleted'
 // 2026-09-18 扩充（重审 A-15）：`question_id` 允许 `null` = **整库**语义
 //   （`quiz_banks` 用不到 question_id；`questions` 传 null 表示"删该库的全部题目"）。
 //   为什么不逐题打标记：一个 2000 题的题库会往 localStorage 写 2000 条标记，量级不可接受。
-type DeletedMark = { bank_id: number; question_id: number | string | null; tries?: number }
+type DeletedMark = { bank_id: number; question_id: number | string | null; cloud_id?: string | null; at?: number; tries?: number }
 
 function getDeletedMarks(): Record<string, DeletedMark[]> {
   try {
@@ -258,16 +271,61 @@ function getDeletedMarks(): Record<string, DeletedMark[]> {
 function saveDeletedMarks(obj: Record<string, DeletedMark[]>): void {
   try { localStorage.setItem(SYNC_DELETED_KEY, JSON.stringify(obj)) } catch { /* ignore */ }
 }
+
+// ===== 删除账本接线（2026-09-24）=====
+// 判据与理由全在 `sync-ledger.ts`（纯函数、跑 `node scripts/lib/sync-ledger.test.cjs` 验）；
+// 这里只做两件事：接上 localStorage、在「删除发生的那一刻」记账。
+//
+// 为什么记账要在删除的那一刻、而不是等 push：
+//   「下载」是独立的动作（不先 push）。删完立刻点下载时，若账本还没写，云端那条就又下来了。
+function ledgerKV(): LedgerKV {
+  try {
+    const ls = window.localStorage
+    return { getItem: k => ls.getItem(k), setItem: (k, v) => ls.setItem(k, v) }
+  } catch {
+    // 隐私模式 / 存储被禁：退化成内存账本，本会话内仍然生效（不抛错）
+    const mem = new Map<string, string>()
+    return { getItem: k => (mem.has(k) ? mem.get(k)! : null), setItem: (k, v) => { mem.set(k, v) } }
+  }
+}
+
+/** 下载前建一次索引（账本上限 300 条，读一次就够） */
+export function loadDeletedLedgerIndex(): LedgerIndex {
+  return buildLedgerIndex(loadLedger(ledgerKV()))
+}
 // 记录一条删除标记（供 api 层在删除类操作时调用）
 // T8b（2026-09-16）：`questionId` 随 `ExamQuestion.id` / `DeletedMark.question_id` 一起放宽，纯类型改动。
 // A-15（2026-09-18）：`questionId` 可为 null —— 见上面 DeletedMark 的「整库」语义说明。
-export function markCloudDeleted(collection: CloudCollection, bankId: number, questionId: number | string | null): void {
+// 2026-09-24：补 `cloudId`（题库/题目的云端 `_id`，能拿到就带上，删除时按它精确定位；换过身份的
+//   文档 `_local_id` 对不上，只有 `_id` 才认得出是同一份）＋ `at`（删除时刻，账本弱键的时间闸门），
+//   并**同步写一笔删除账本** —— 账本是「下载时不要再拉回来」的终身凭据，与标记（待办）分开存。
+export function markCloudDeleted(
+  collection: CloudCollection, bankId: number, questionId: number | string | null,
+  cloudId: string | null = null,
+): void {
   const marks = getDeletedMarks()
   const list = marks[collection] || (marks[collection] = [])
-  if (!list.some(m => m.bank_id === bankId && m.question_id === questionId)) {
-    list.push({ bank_id: bankId, question_id: questionId })
+  const hit = list.find(m => m.bank_id === bankId && m.question_id === questionId)
+  if (hit) {
+    // 老标记没带 cloud_id、这次拿到了 → 补上（删除时是按 _local_id 找的，那份可能永远找不到）
+    if (cloudId && !hit.cloud_id) { hit.cloud_id = cloudId; saveDeletedMarks(marks) }
+  } else {
+    list.push({ bank_id: bankId, question_id: questionId, cloud_id: cloudId, at: Date.now() })
     saveDeletedMarks(marks)
   }
+  recordDeletedLedger({
+    coll: collection as LedgerColl,
+    cloud_id: cloudId,
+    local_id: bankId,
+    question_id: questionId,
+    sync_key: getSyncKey(),
+    at: Date.now(),
+  })
+}
+
+/** 记一笔账本（写盘在 sync-ledger.ts，坏存储不抛错） */
+export function recordDeletedLedger(entry: LedgerEntry): void {
+  addLedgerEntry(entry, ledgerKV())
 }
 // P0-2（T10a，2026-09-15）**删除必须带属主过滤**。
 // 原实现只按 { _local_bank_id, question_id } 查删。⚠️ 2026-09-15 复核（含线上逐集合实读）更正两处：
@@ -297,12 +355,43 @@ export function markCloudDeleted(collection: CloudCollection, bankId: number, qu
 //   · favorites / wrong_questions / mastered_questions：pushOne 写的是 `_local_bank_id` + `question_id`
 //   · questions：写的是 `_local_bank_id` + `_local_id`（题目本地 id）；`question_id === null` ⇒ 整个题库的题
 //   · quiz_banks：只写 `_local_id`（本地题库 id），与 question_id 无关
+//
+// 2026-09-24（rabbit 报「删掉一同步又回来」）：**知道 cloud_id 时改用云端 `_id` 定位**。
+//   原因：`_local_id` 只是「推送它的那台设备当时分配的本地 id」，换过设备/身份后对不上号
+//   （云端文档 `_openid` 是旧 uid 时，用它做条件的删除命中 0 条，而「命中 0 条」被当成删成功 ⇒ 复活）。
+//   题目的整库/逐题删除同理，改用 `bank_ref`（题库云端 `_id`，pushOne 写入）锚定。
+//   两个形态都带 `_openid` 属主条件 —— 集合 ACL 要求查询条件是规则子集（write: doc._openid == auth.openid）。
+//
+// 2026-09-24（**实测到 403 之后补**）：`quiz_banks`/`questions` 的写规则是**合取**——
+//   `doc._openid == auth.openid && doc.visibility != "public"`，**两半都要体现在查询里**，否则整条被拒。
+//   第一版改完只加了 `_id`/`bank_ref`，实测 `where({_id, _openid}).remove()` 直接 **403 Permission denied**，
+//   标记重试到上限后只能靠账本兜底。现在按 pushDoc 里那份实测矩阵的同款写法补上 `visibility: _.neq('public')`。
+//   ⚠️ 这也解释了 rabbit 报的「删掉又回来」：**原实现的 where 从来没过 ACL 这一关**（09-18 写下、没人真跑过）。
+function visibilityGuard(): any {
+  return db.command.neq('public')
+}
+/** 单条删除的条件：`_id` + 属主，**且**（只对 quiz_banks/questions）带上规则的另一半 visibility */
+function removeWhere(r: any, coll: CloudCollection): Record<string, any> {
+  const w: Record<string, any> = { _id: r._id, _openid: authedUid }
+  if (coll === 'quiz_banks' || coll === 'questions') w.visibility = visibilityGuard()
+  return w
+}
 function deletedMarkWhere(coll: CloudCollection, m: DeletedMark): Record<string, any> {
-  if (coll === 'quiz_banks') return { _local_id: m.bank_id, _openid: authedUid }
+  const vis = visibilityGuard()
+  if (coll === 'quiz_banks') {
+    return m.cloud_id
+      ? { _id: m.cloud_id, _openid: authedUid, visibility: vis }
+      : { _local_id: m.bank_id, _openid: authedUid, visibility: vis }
+  }
   if (coll === 'questions') {
-    return m.question_id == null
-      ? { _local_bank_id: m.bank_id, _openid: authedUid }
-      : { _local_bank_id: m.bank_id, _local_id: m.question_id, _openid: authedUid }
+    if (m.question_id == null) {
+      return m.cloud_id
+        ? { bank_ref: m.cloud_id, _openid: authedUid, visibility: vis }
+        : { _local_bank_id: m.bank_id, _openid: authedUid, visibility: vis }
+    }
+    return m.cloud_id
+      ? { bank_ref: m.cloud_id, _local_id: m.question_id, _openid: authedUid, visibility: vis }
+      : { _local_bank_id: m.bank_id, _local_id: m.question_id, _openid: authedUid, visibility: vis }
   }
   return { _local_bank_id: m.bank_id, question_id: m.question_id, _openid: authedUid }
 }
@@ -333,8 +422,13 @@ async function removeCloudDocsByMark(coll: CloudCollection, m: DeletedMark, sync
       // 属主型写规则（`doc._openid == auth.openid`）下客户端查询条件必须是规则子集，
       // `doc(id)` 形态连属主自己都会被拒（campaign 实盘地雷）。r 来自上面 `where({_openid: authedUid})`
       // 的查询结果，`_id` + `_openid` 双等值条件命中至多一行，语义与单文档删除等价。
+      // 2026-09-24：**这一句才是真正被 ACL 拒的地方**（上面那句只是查询，删不删得动看这里）。
+      //   实测矩阵（自有探针文档，见本文件底部的临时探针记录）：
+      //     `where({_id,_openid}).remove()`                    → 403 Permission denied
+      //     `where({_id,_openid,visibility:_.neq('public')}).remove()` → OK（删 1 条）
+      //   所以 `quiz_banks`/`questions` 必须把规则的**另一半**（`visibility != "public"`）也带上。
       try {
-        await withTimeout(db.collection(coll).where({ _id: r._id, _openid: authedUid }).remove(), 20000, '删除同步')
+        await withTimeout(db.collection(coll).where(removeWhere(r, coll)).remove(), 20000, '删除同步')
         removed++
       } catch (e: any) {
         // 2026-09-18 修复（重审 A-02）：原来这里是空的 catch——单条失败被吞掉，与本轮"没东西可删"
@@ -569,15 +663,19 @@ async function pullCollection(collection: CloudCollection, localIds: Set<string>
 // 全量同步：云端 → 本地（合并，updated_at 新的赢）
 // P1-19：返回值加 truncated —— 拉取命中分页上限时为 true。截断**不是错误**（同步确实完成了一部分），
 // 所以不写 cloudState.error（那会让状态行显示成失败），只如实向上返回，由设置页附加提示。
-export async function syncFromCloud(): Promise<{ pulled: number; truncated: boolean }> {
-  if (!(await ensureApp())) return { pulled: 0, truncated: false }
-  if (!isAuthed()) return { pulled: 0, truncated: false }
+// 2026-09-24：返回值加 suppressed —— 命中**删除账本**（本机删过的云端文档）而主动跳过的条数。
+//   这与 truncated 一样属于「如实告知、不是失败」：用户删过的东西不再回来，是预期行为。
+export async function syncFromCloud(): Promise<{ pulled: number; truncated: boolean; suppressed: number }> {
+  if (!(await ensureApp())) return { pulled: 0, truncated: false, suppressed: 0 }
+  if (!isAuthed()) return { pulled: 0, truncated: false, suppressed: 0 }
   cloudState.syncing = true
   cloudState.error = null
   try {
     let pulled = 0
     let truncated = false
+    let suppressed = 0
     resetSyncCaches() // 2026-08-23：每次同步重建 cloud_id/stem/题库 索引（防缓存过期）
+    const ledgerIndex = loadDeletedLedgerIndex() // 2026-09-24：删除账本（本机删过的不再下载）
     for (const coll of CLOUD_COLLECTIONS) {
       const pulledColl = await pullCollection(coll, new Set())
       if (pulledColl.truncated) truncated = true
@@ -592,6 +690,12 @@ export async function syncFromCloud(): Promise<{ pulled: number; truncated: bool
       }
 
       for (const cd of cloudDocs) {
+        // 删除账本命中：这份云端文档本机删过（且它比删除时刻旧），跳过 —— 这就是「删掉的别回来」的闸门。
+        // 放在写入之前，且不动 localMap：本地那份已经不存在了，没有可比较的时间。
+        if (LEDGER_COLLS.has(coll) && isSuppressed(ledgerIndex, coll as LedgerColl, cd)) {
+          suppressed++
+          continue
+        }
         // 2026-08-16 修复：云端文档 push 时 id 被删、只留 _id + _local_id（数字），
         // 原逻辑 String(cd.id ?? cd._id) 永远匹配不上本地数字 id → 每次全量重写且 updated_at 冲突比较失效。
         // 优先用 _local_id 匹配本地，其次 cloud_id，最后回退 _id。
@@ -613,11 +717,11 @@ export async function syncFromCloud(): Promise<{ pulled: number; truncated: bool
       }
     }
     cloudState.lastSyncAt = now()
-    return { pulled, truncated }
+    return { pulled, truncated, suppressed }
   } catch (e: any) {
     cloudState.error = '同步失败：' + (e?.message || String(e))
     console.warn('syncFromCloud 失败：', e)
-    return { pulled: 0, truncated: false }
+    return { pulled: 0, truncated: false, suppressed: 0 }
   } finally {
     cloudState.syncing = false
   }
@@ -762,7 +866,8 @@ async function stampSyncedByKey(coll: 'wrong_questions' | 'mastered_questions' |
 //   syncFromCloud **首句 `cloudState.error = null`** 抹掉 ⇒ 设置页看到的是「同步完成」（T8a 复审 MF-2）。
 //   修法：进入拉取前先记下推送侧的 error，拉取结束后若拉取侧没有写出新的 error，就把它放回 cloudState；
 //   并把 failed / truncated / error 一并返回给调用方，让提示按两侧的真实结果分流。
-export async function syncAll(): Promise<{ pulled: number; pushed: number; failed: number; skipped: number; truncated: boolean; error: string | null }> {
+// 2026-09-24：把拉取侧的 suppressed（命中删除账本、主动跳过的条数）一并上抛，设置页如实告知。
+export async function syncAll(): Promise<{ pulled: number; pushed: number; failed: number; skipped: number; truncated: boolean; suppressed: number; error: string | null }> {
   const pushRes = await pushToCloud()
   const pushError = cloudState.error // 拉取会把 error 清空，先抓在手里
   const pullRes = await syncFromCloud()
@@ -773,6 +878,7 @@ export async function syncAll(): Promise<{ pulled: number; pushed: number; faile
     failed: pushRes.failed,
     skipped: pushRes.skipped,   // A-03：透传给设置页，让「公共内容推不上去」这件事被说出来
     truncated: pullRes.truncated,
+    suppressed: pullRes.suppressed,   // 2026-09-24：本机删过、这次跳过没下载的条数
     error: cloudState.error,
   }
 }

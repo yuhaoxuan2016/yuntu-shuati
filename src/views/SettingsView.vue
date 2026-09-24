@@ -101,6 +101,14 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.50</span>
+          <ul>
+            <li>云同步拆成三个动作，方向写在按钮上：<b>上传（本地 → 云端）</b>、<b>下载（云端 → 本地）</b>、<b>双向同步</b>——此前只有一个「同步数据」，看不出是推还是拉</li>
+            <li>修复：<b>本机删掉的题库/题目，同步后又被拉回来</b>。上传时云端那条会一并删掉；若云端那份属于旧身份（客户端无权删），则本机记一笔永久账本，下载时直接跳过，不再复活——状态行会如实写「已跳过 N 条」</li>
+            <li>云端删除改为按题库/题目的<b>云端 ID</b> 精确定位（此前只认「当初推送它的那台设备分配的本地 id」，换过设备/浏览器就删不掉）</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.49</span>
           <ul>
             <li>2026 新版五库共 4064 题补齐「解析 + 知识点总结 + 难易度」；并标明<b>解析由 AI 生成，仅供参考</b>，题干与答案仍是题库原文</li>
@@ -477,9 +485,14 @@
           </div>
           <div class="cloud-actions">
             <button class="data-btn" :disabled="!cloudEnvId.trim() || cloudSyncing" @click="saveCloudConfig">{{ cloudSyncing ? '☁️ 同步中...' : '☁️ 连接并同步' }}</button>
-            <button class="data-btn" :disabled="!cloudSaved || cloudSyncing" @click="doSync">{{ cloudSyncing ? '🔄 同步中...' : '🔄 同步数据' }}</button>
+            <!-- 2026-09-24（rabbit）：一个「同步」说不清方向 → 拆成上传/下载/双向三件，与小程序端对齐。
+                 上传＝只推（本地 → 云端）；下载＝只拉（云端 → 本地，按 updated_at 合并，不覆盖本地）；
+                 双向＝先推后拉（老行为）。各自结果单独报，别让用户猜刚才发生了什么。 -->
+            <button class="data-btn" :disabled="!cloudSaved || cloudSyncing" @click="doUpload">{{ syncAction === 'up' ? '⬆️ 上传中...' : '⬆️ 上传（本地 → 云端）' }}</button>
+            <button class="data-btn" :disabled="!cloudSaved || cloudSyncing" @click="doDownload">{{ syncAction === 'down' ? '⬇️ 下载中...' : '⬇️ 下载（云端 → 本地）' }}</button>
+            <button class="data-btn" :disabled="!cloudSaved || cloudSyncing" @click="doSync">{{ syncAction === 'both' ? '🔁 同步中...' : '🔁 双向同步' }}</button>
           </div>
-          <p class="hint cloud-tip">① 昵称默认随机生成，可改成好记的；换设备填<b>同一昵称</b>即可拉回私人进度。② 之后题库、错题、收藏有改动时点「同步数据」推送到云端。③ ⚠️ 这个昵称<b>等同于你的跨设备身份</b>（云端按它区分数据归属）：<b>请勿使用真实姓名、手机号等个人信息</b>；也不要用太短或太好猜的昵称——别人用了同名昵称就会与你的云端数据互相覆盖。</p>
+          <p class="hint cloud-tip">① 昵称默认随机生成，可改成好记的；换设备填<b>同一昵称</b>即可拉回私人进度。② <b>上传</b>＝把本机改动推到云端（题库、错题、收藏、进度）；<b>下载</b>＝把云端的拉回本机（按修改时间合并，不覆盖本机较新的数据）；拿不准就点<b>双向同步</b>。③ 本机<b>删掉</b>的题库/题目，上传时云端也会删掉；之后下载不会再把它拉回来（云端那份若属于旧身份、客户端无权删，就只在本机拦住，不再下载）。④ ⚠️ 这个昵称<b>等同于你的跨设备身份</b>（云端按它区分数据归属）：<b>请勿使用真实姓名、手机号等个人信息</b>；也不要用太短或太好猜的昵称——别人用了同名昵称就会与你的云端数据互相覆盖。</p>
           <p v-if="syncNicknameMsg" class="hint warn">{{ syncNicknameMsg }}</p>
           <p v-if="cloudStatusText" class="hint" :class="{ warn: cloudError }">{{ cloudStatusText }}</p>
 
@@ -883,12 +896,13 @@ async function saveCloudConfig() {
     // 2026-09-18 修复（重审 A-03）：把「客户端无权写的公共内容」如实报出来。
     //   原先这些条目被计进「推送 N 条」里，用户以为改动已上云，其实永远不会——本地改动只在本机生效。
     const skipTip = res.skipped ? ` · 跳过 ${res.skipped} 条（公共内容客户端无权改，仅本地生效）` : ''
+    const ledgerTip = suppressedTip(res.suppressed)
     // #36（2026-09-15 复审 MUST-FIX 3）：全域只有两个 syncAll 调用点，另一个是 doSync（已按 st.error 分流）。
     // 这里原先只看 `st.authed` ⇒ 云端**部分失败**（st.error 非空）时状态行仍显示绿色「✓ 已连接云端」，
     // 与 doSync 的诚实口径不一致。现改为同口径；「配置已保存」仍如实告知（那件事确实成功了），
     // 但同步没完成时另给一条失败提示，不让绿字掩盖问题。
     if (st.authed && !st.error) {
-      cloudStatusText.value = `✓ 已连接云端 · 推送 ${res.pushed} 条 · 拉取 ${res.pulled} 条${truncTip}${skipTip}`
+      cloudStatusText.value = `✓ 已连接云端 · 推送 ${res.pushed} 条 · 拉取 ${res.pulled} 条${truncTip}${skipTip}${ledgerTip}`
       toastSuccess('云同步配置已保存')
     } else {
       cloudStatusText.value = st.error || '未连接云端'
@@ -904,11 +918,96 @@ async function saveCloudConfig() {
   }
 }
 
+// ===== 三个同步动作（2026-09-24）=====
+// 原先是单个「🔄 同步数据」（= 先推后拉），用户看不出方向：「我点的是上传还是下载？」
+// 现在拆成 上传 / 下载 / 双向 三件。**共用同一套结果文案**，口径与失败分流跟老 doSync 一致。
+const syncAction = ref<'' | 'up' | 'down' | 'both'>('')
+
+// 「本机删过、这次没下载」的提示。不是错误、也不该藏着：用户删过的东西不再回来是**预期**，
+// 但得让他知道「确实跳过了 N 条」，而不是以为数据丢了。
+function suppressedTip (n?: number): string {
+  return n ? ` · 已跳过 ${n} 条（本机删过的，不再下载回来）` : ''
+}
+
+function truncTipOf (truncated: boolean, action: 'up' | 'down' | 'both'): string {
+  if (!truncated) return ''
+  const how = action === 'up' ? '' : '（可再点一次「下载」续拉）'
+  return ` · ⚠️ 有集合超出单次同步上限，本次未同步完整${how}`
+}
+
+function skipTipOf (skipped: number): string {
+  return skipped ? ` · 跳过 ${skipped} 条（公共内容客户端无权改，仅本地生效）` : ''
+}
+
+// 每次动作结束都按「两侧真实结果」更新状态行与提示（未授权 / 推送部分失败 / 拉取截断 / 删除账本跳过）
+function reportSyncResult (
+  action: 'up' | 'down' | 'both',
+  res: { pushed: number; pulled: number; failed: number; skipped: number; truncated: boolean; suppressed: number },
+  st: { authed: boolean; error: string | null },
+  okToast: string,
+) {
+  cloudError.value = !!st.error
+  const tips = truncTipOf(res.truncated, action) + skipTipOf(res.skipped) + suppressedTip(res.suppressed)
+  if (!st.authed || st.error) {
+    cloudStatusText.value = st.error || '云端未授权'
+    toastError('同步未完成：' + (st.error || '云端未授权'))
+    return
+  }
+  if (action === 'up') cloudStatusText.value = `✓ 已上传 · 推送 ${res.pushed} 条${tips}`
+  else if (action === 'down') cloudStatusText.value = `✓ 已下载 · 拉取 ${res.pulled} 条${tips}`
+  else cloudStatusText.value = `✓ 同步完成 · 推送 ${res.pushed} 条 · 拉取 ${res.pulled} 条${tips}`
+  toastSuccess(okToast)
+}
+
+// 上传：只推（本地 → 云端）
+async function doUpload() {
+  if (!cloudSaved.value) { toastError('请先保存配置'); return }
+  if (syncAction.value) return
+  syncAction.value = 'up'
+  cloudSyncing.value = true
+  try {
+    const mod = await import('../lib/cloud')
+    const res = await mod.pushToCloud()
+    const st = mod.getCloudStatus()
+    reportSyncResult('up', { ...res, pulled: 0, truncated: false, suppressed: 0 }, st, '上传完成')
+  } catch (e) {
+    cloudError.value = true
+    cloudStatusText.value = '上传失败：' + (e instanceof Error ? e.message : String(e))
+    toastError('上传失败')
+  } finally {
+    cloudSyncing.value = false
+    syncAction.value = ''
+  }
+}
+
+// 下载：只拉（云端 → 本地，按 updated_at 合并）
+async function doDownload() {
+  if (!cloudSaved.value) { toastError('请先保存配置'); return }
+  if (syncAction.value) return
+  syncAction.value = 'down'
+  cloudSyncing.value = true
+  try {
+    const mod = await import('../lib/cloud')
+    const res = await mod.syncFromCloud()
+    const st = mod.getCloudStatus()
+    reportSyncResult('down', { pushed: 0, failed: 0, skipped: 0, ...res }, st, '下载完成')
+  } catch (e) {
+    cloudError.value = true
+    cloudStatusText.value = '下载失败：' + (e instanceof Error ? e.message : String(e))
+    toastError('下载失败')
+  } finally {
+    cloudSyncing.value = false
+    syncAction.value = ''
+  }
+}
+
 async function doSync() {
   if (!cloudSaved.value) {
     toastError('请先保存配置')
     return
   }
+  if (syncAction.value) return
+  syncAction.value = 'both'
   cloudSyncing.value = true
   try {
     const mod = await import('../lib/cloud')
@@ -923,24 +1022,16 @@ async function doSync() {
     //    （等价于「不在拉取开头清掉推送侧 error」），并把 failed / truncated / error 一并返回。
     // ⇒ 现在**三支都诚实**：未授权、拉取侧失败、推送侧部分失败（及其条数）。
     // 另：P1-19 的 truncated 只在成功分支附加提示（截断不是失败，不该让状态行变红）。
-    cloudError.value = !!st.error
-    if (st.authed && !st.error) {
-      // P1-19（T10b）：拉取截断（命中分页上限）不是错误，但要显式提示，否则「同步完成」会掩盖数据少了一截
-      const truncTip = res.truncated ? ' · ⚠️ 有集合超出单次同步上限，本次未同步完整（可再点一次「同步数据」续拉）' : ''
-      // A-03：同上一处调用点，把「无权写的公共内容」如实报出（这是第二个 syncAll 调用点）
-      const skipTip = res.skipped ? ` · 跳过 ${res.skipped} 条（公共内容客户端无权改，仅本地生效）` : ''
-      cloudStatusText.value = `✓ 同步完成 · 推送 ${res.pushed} 条 · 拉取 ${res.pulled} 条${truncTip}${skipTip}`
-      toastSuccess('同步完成')
-    } else {
-      cloudStatusText.value = st.error || '同步中...'
-      toastError('同步未完成：' + (st.error || '云端未授权'))
-    }
+    // 2026-09-24：这段分流与三条提示搬进了 `reportSyncResult`（上传/下载/双向共用一套口径，
+    //   否则三个动作各写一份，迟早只有一处被修）。新增的 suppressed（删除账本跳过）也走那里。
+    reportSyncResult('both', res, st, '同步完成')
   } catch (e) {
     cloudError.value = true
     cloudStatusText.value = '同步失败：' + (e instanceof Error ? e.message : String(e))
     toastError('同步失败')
   } finally {
     cloudSyncing.value = false
+    syncAction.value = ''
   }
 }
 
@@ -1322,7 +1413,7 @@ input, select { padding: 6px; border: 1px solid var(--color-border); border-radi
 .cloud-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .cloud-row label { font-size: 13px; color: var(--color-text-secondary); white-space: nowrap; }
 .cloud-row .dir-input { flex: 1; }
-.cloud-actions { display: flex; gap: 8px; }
+.cloud-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .bind-box { margin-top: 16px; padding: 14px; border: 1px dashed var(--color-border); border-radius: var(--radius-md); background: var(--color-bg); }
 .bind-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; color: var(--color-text); }
 .bind-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
