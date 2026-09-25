@@ -101,6 +101,12 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.53</span>
+          <ul>
+            <li>新增<b>「发现新版本」提示</b>：装了网页版之后浏览器会缓存旧版壳（清缓存也未必管用），现在会自动比对线上版本，有新版本时在底部弹一条提示，点「刷新」即更新</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.52</span>
           <ul>
             <li>首页新增<b>本机存储提醒</b>：题库与进度只存在你本机浏览器里，清缓存/换浏览器/换电脑都会丢——没配过云同步时会提示一次，可在设置里配「同步昵称」并点上传（团队共用时每人用自己的昵称）</li>

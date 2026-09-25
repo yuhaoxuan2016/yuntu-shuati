@@ -68,6 +68,16 @@
     </aside>
     <main class="content"><RouterView :key="route.fullPath" /></main>
 
+    <!-- 2026-09-25（rabbit 实测停在 1.2.48 旧壳后要求）：发现新版本横幅。
+         PWA 的 Service Worker 会连 index.html 一起预缓存，用户会长期停在旧壳里——
+         这里定时拿线上 index.html 的入口哈希跟当前页面的比，不一致就提示一次；
+         点「刷新」走的是同一套「注销 SW + 清缓存 + reload」。 -->
+    <div v-if="updateReady" class="update-bar">
+      <span class="update-bar-text">🔔 小兔错题本有新版本</span>
+      <button class="update-bar-btn" @click="applyUpdate">点此刷新</button>
+      <button class="update-bar-x" title="稍后再说（本次不再提示）" @click="updateReady = false">稍后</button>
+    </div>
+
     <Toast />
 
     <!-- 联系我二维码弹窗 -->
@@ -104,6 +114,7 @@ import { useBankStore } from './stores/bank'
 import { autoCheckOnStartup } from './utils/updater'
 import { sharePage } from './lib/share'
 import { toastSuccess, toastError } from './utils/toast'
+import { checkForUpdate } from './lib/update-check'
 import Toast from './components/Toast.vue'
 
 const route = useRoute()
@@ -200,6 +211,20 @@ onMounted(() => {
   autoCheckOnStartup().catch(e => console.error('启动检查更新失败：', e))
 })
 
+// 新版本检测的排程（dev 不启：入口没哈希）。装载后 20 秒首查，之后每 20 分钟；
+// 切回前台/窗口聚焦再查一次——手机端「切回来」是最常见的时机。
+onMounted(() => {
+  if (import.meta.env.DEV) return
+  updateTimer = window.setTimeout(() => { pokeUpdate(); updateTimer = window.setInterval(pokeUpdate, 20 * 60 * 1000) }, 20000)
+  document.addEventListener('visibilitychange', onVisible)
+  window.addEventListener('focus', onFocus)
+})
+onBeforeUnmount(() => {
+  if (updateTimer !== null) { window.clearTimeout(updateTimer); window.clearInterval(updateTimer) }
+  document.removeEventListener('visibilitychange', onVisible)
+  window.removeEventListener('focus', onFocus)
+})
+
 // 全局分享：读当前页面动态标题（考试页会覆盖为考试名），手机端调系统面板、桌面端复制链接
 async function handleShare() {
   const url = location.href
@@ -212,8 +237,12 @@ async function handleShare() {
 // @ts-ignore
 async function handleRestart() {
   if (!confirm('确认重启应用吗？（将强制刷新并清除缓存）')) return
+  await forceRefresh()
+}
+
+// 强刷：注销所有 Service Worker + 清 CacheStorage → reload。刷新按钮与新版本横幅共用这一条路。
+async function forceRefresh() {
   try {
-    // 强刷：清 Service Worker 缓存 → 硬刷新，确保拿到最新版本
     if ('serviceWorker' in navigator) {
       const regs = await navigator.serviceWorker.getRegistrations()
       await Promise.all(regs.map(r => r.unregister()))
@@ -228,11 +257,38 @@ async function handleRestart() {
     if (msg) {
       const div = document.createElement('div')
       div.style.cssText = 'position:fixed;top:24px;right:24px;padding:10px 16px;background:#fee2e2;color:#b91c1c;border-radius:6px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.15);max-width:340px;'
-      div.textContent = '重启失败：' + msg + '。请手动关闭并重新打开应用。'
+      div.textContent = '刷新失败：' + msg + '。请手动关闭并重新打开应用。'
       document.body.appendChild(div)
       setTimeout(() => div.remove(), 5000)
     }
   }
+}
+
+// ===== 新版本检测（2026-09-25）=====
+// 判据在 lib/update-check.ts（拿线上 index.html 的入口哈希与当前页面的对比）。
+// 频率：装载后 20 秒查一次（首屏别抢带宽），此后每 20 分钟一次，另外切回前台/窗口聚焦时各查一次
+// （手机端切回来是最常见的时机）。dev 下不查——入口是 /src/main.ts，没有哈希可比。
+const updateReady = ref(false)
+let updateTimer: number | null = null
+
+async function pokeUpdate() {
+  try {
+    const outdated = await checkForUpdate()
+    if (outdated) updateReady.value = true
+  } catch { /* 检查失败就当没有新版，别打扰用户 */ }
+}
+
+function onVisible() {
+  if (document.visibilityState === 'visible') pokeUpdate()
+}
+
+// focus 单独一支：窗口重新聚焦本身就意味着「回到前台」，不再要求 visibilityState（那条判据在
+// 无头/隐藏页里恒为 hidden，会让这个入口永远测不到）。
+function onFocus() { pokeUpdate() }
+
+function applyUpdate() {
+  updateReady.value = false
+  forceRefresh()
 }
 </script>
 
@@ -498,5 +554,25 @@ async function handleRestart() {
   }
   .content { padding: 14px; }
   .content { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+}
+
+/* 2026-09-25：新版本横幅（固定底部居中，不遮移动端顶部导航） */
+.update-bar {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  max-width: calc(100vw - 24px); padding: 10px 14px; z-index: 95;
+  background: var(--color-card, #fff); color: var(--color-text);
+  border: 1px solid var(--color-border, #e5e7eb); border-radius: 999px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+}
+.update-bar-text { font-size: 13px; }
+.update-bar-btn {
+  padding: 5px 14px; font-size: 13px; cursor: pointer; color: #fff;
+  background: var(--color-primary); border: none; border-radius: 999px;
+}
+.update-bar-btn:hover { background: var(--color-primary-dark); }
+.update-bar-x {
+  padding: 4px 8px; font-size: 12px; cursor: pointer; color: var(--color-text-muted, #6b7280);
+  background: transparent; border: none;
 }
 </style>
