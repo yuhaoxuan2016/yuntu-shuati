@@ -923,6 +923,21 @@ async function fetchPublicBankMeta(bankRef: string): Promise<any | null> {
 //   档1 = 字段裁剪（服务端只下发要用的字段）+ 分页并行（原来是 200 条一页串行，1134 题要 6 个来回）
 //   档2 = 本地缓存（IndexedDB，keyPath=bank_ref）。命中判据：题库 question_count 未变 且 未超 TTL。
 // 缓存未命中时仍走全量拉取，失败返回 []（与原行为一致）。
+// 分页完整性判据（2026-09-25 rabbit 报「导入不完整」后抽出来的纯函数）：
+// 返回「少回了、需要重取」的页号。最后一页该有多少条＝total 的余数而不是整页，
+// 这个 off-by-one 正是最容易写错的地方，所以单独抽出来配断言（tests/public-fetch-pages.test.cjs）。
+export function shortPages(chunks: any[][], total: number, pageSize: number): number[] {
+  if (!(total > 0) || !(pageSize > 0) || !Array.isArray(chunks)) return []
+  const pages = Math.max(1, Math.ceil(total / pageSize))
+  const out: number[] = []
+  for (let i = 0; i < pages; i++) {
+    const expect = Math.max(0, Math.min(pageSize, total - i * pageSize))
+    const got = Array.isArray(chunks[i]) ? chunks[i].length : 0
+    if (got < expect) out.push(i)
+  }
+  return out
+}
+
 export async function listPublicBankQuestions(bankId: string | number): Promise<ExamQuestion[]> {
   if (!(await ensureCloud()) || !isCloud()) return []
   const bankRef = String(bankId)
@@ -955,9 +970,25 @@ export async function listPublicBankQuestions(bankId: string | number): Promise<
       } catch { total = 0 }
     }
     const pages = total > 0 ? Math.ceil(total / PUBLIC_Q_PAGE) : 1
-    const chunks = await Promise.all(
+    const chunks: any[][] = await Promise.all(
       Array.from({ length: pages }, (_, i) => fetchPublicQuestionPage(bankRef, i * PUBLIC_Q_PAGE)),
     )
+    // 2026-09-25（rabbit 报「导入不完整」）：原实现「拉到多少算多少」——某页少回（服务端截断/网络抖动）
+    //   会静默变成一份短集合，一路写进缓存并导入。这里按「每页应有多少条」核对：缺哪页就重取哪页（最多两轮），
+    //   两轮后仍缺就如实打日志（数量对不上不再无声无息）。
+    if (total > 0) {
+      for (let round = 0; round < 2; round++) {
+        const bad = shortPages(chunks, total, PUBLIC_Q_PAGE)
+        if (!bad.length) break
+        console.warn(`公共题分页不全，重取第 ${bad.join(',')} 页（第 ${round + 1} 轮）`)
+        const refilled = await Promise.all(
+          bad.map(i => fetchPublicQuestionPage(bankRef, i * PUBLIC_Q_PAGE).catch(() => [] as any[])),
+        )
+        bad.forEach((i, k) => { chunks[i] = refilled[k] || [] })
+      }
+      const got = chunks.reduce((n, c) => n + (Array.isArray(c) ? c.length : 0), 0)
+      if (got < total) console.warn(`公共题库 ${bankRef} 只取到 ${got}/${total} 条（重取两轮后仍缺 ${total - got}）`)
+    }
     const rows = chunks.flat()
     const mapped = rows.map(mapPublicQuestion)
 

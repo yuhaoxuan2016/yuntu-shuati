@@ -747,6 +747,17 @@ async function importPublicBank(b: any) {
       importProgress.value = null
       return
     }
+    // 2026-09-25（rabbit 报「导入不完整」）：抓取可能短（某页少回），导入前如实核对一次，
+    // 少了就让用户自己决定——别默默导一份残缺副本进去（页面里已有「重取缺页」的兜底，这里是第二道）。
+    const expect = Number(b.question_count) || 0
+    if (expect > 0 && qs.length < expect) {
+      const go = confirm(`云端「${b.name}」共 ${expect} 题，本次只取到 ${qs.length} 题（有页面没拉全）。\n仍要导入这 ${qs.length} 题吗？\n点「取消」可稍后重试。`)
+      if (!go) {
+        importingId.value = null
+        importProgress.value = null
+        return
+      }
+    }
     importProgress.value = { done: 0, total: qs.length }
     // 建本地私人副本（private 避免被云同步当成公开题库重复发布）
     const created = await bankStore.create(b.name, b.description || `来自公共题库：${b.name}`, 'private', b.creator_name || null, b._id)
