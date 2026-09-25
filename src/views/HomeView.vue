@@ -60,7 +60,9 @@
       </div>
     </div>
 
-    <!-- 学习计划入口 -->
+    <!-- 学习计划入口：有计划→进度卡；没有→创建入口。
+         2026-09-25（rabbit 发现手机端没有按钮）：原先整块是 `v-if="studyPlan"`，而侧栏里也没有这一项、
+         手机端侧栏还是抽屉 ⇒ **没计划的人全站找不到入口**（只能自己敲 #/study-plan）。 -->
     <div v-if="studyPlan" class="study-plan-card" @click="$router.push('/study-plan')">
       <div class="sp-left">
         <img class="sp-icon" src="/icons/plan.gif" alt="📋" />
@@ -74,6 +76,16 @@
           <div class="sp-progress-fill" :style="{ width: todayProgress + '%' }"></div>
         </div>
         <div class="sp-progress-text">{{ todayProgress }}%</div>
+      </div>
+      <div class="sp-arrow">›</div>
+    </div>
+    <div v-else class="study-plan-card" @click="$router.push('/study-plan')">
+      <div class="sp-left">
+        <img class="sp-icon" src="/icons/plan.gif" alt="📋" />
+        <div>
+          <div class="sp-title">智能学习计划</div>
+          <div class="sp-sub">按遗忘曲线安排复习 · 点此创建</div>
+        </div>
       </div>
       <div class="sp-arrow">›</div>
     </div>
@@ -195,11 +207,22 @@
           <button class="primary-btn" @click="$router.push(`/practice/${b.id}`)">开始刷题</button>
         </div>
 
+        <!-- 2026-09-25（rabbit）：「导入的副本能从公共题库更新」这件事原先只藏在 ⋯ 菜单里，很多人不知道 ⇒
+             在卡片上给一条可点的提示。动作本身有兜底：公共库列表没加载出来时会 toast「找不到对应的公共题库」。
+             更新只补解析／知识点／难度／配图，不动题面、作答进度、错题、收藏（见 updateFromPublicBank）。 -->
+        <div v-if="isImportedCopy(b)" class="pub-sync-hint" @click.stop="updateFromPublicBank(b)">
+          <span v-if="updatingId === b.id">🔄 更新中 {{ updateProgress?.done ?? 0 }}/{{ updateProgress?.total ?? 0 }}</span>
+          <span v-else>🔄 本库来自公共题库 · 点此更新解析/知识点</span>
+        </div>
+
         <div v-if="openMenuId === b.id" class="dropdown-menu" @click.stop>
           <button @click="$router.push(`/wrong/${b.id}`)">📕 错题本</button>
           <button @click="$router.push(`/favorites/${b.id}`)">⭐ 收藏夹</button>
           <button @click="$router.push(`/import/${b.id}`)">📥 导入题目</button>
-          <button v-if="b.visibility !== 'public' && b.visibility !== 'pending'" @click="submitForReview(b)">
+          <!-- 2026-09-25（rabbit）：从公共题库导入到本地的副本**不给**「提交到公共题库」——内容本来就是
+               公开的，再提交只会制造一份重复的待审核题库。判据 isImportedCopy：origin_ref（导入时写的
+               本地标记，不依赖网络）优先，老副本才退回按题库名匹配。 -->
+          <button v-if="!isImportedCopy(b) && b.visibility !== 'public' && b.visibility !== 'pending'" @click="submitForReview(b)">
             🌍 提交到公共题库（待审核）
           </button>
           <button v-else-if="b.visibility === 'pending'" disabled>⏳ 已提交，待管理员审核</button>
@@ -641,6 +664,16 @@ function sourceOf(b: any): any | null {
   return publicBanks.value.find((p: any) => p.name === b?.name) || null
 }
 
+// 是否「从公共题库导入到本地的副本」——决定要不要给「提交到公共题库」。
+// ⚠️ 不能只看 sourceOf：它要么在**已加载的公共库列表**里命中、要么返回 null，而那份列表是云端拉的；
+//    拉不到时，即使本地库明明写着 origin_ref 也会被判成 null、提交按钮又冒出来。
+//    origin_ref 是导入时写在本地库上的标记（HomeView.importPublicBank 传的 b._id），不依赖网络 ⇒ 先看它；
+//    2026-09-24 之前导的老副本没这个字段，才退回 sourceOf 按题库名匹配。
+function isImportedCopy(b: any): boolean {
+  if (String(b?.origin_ref || '').trim()) return true
+  return !!sourceOf(b)
+}
+
 // 「从公共题库更新」：只补题库给的内容字段（解析／知识点／难度／配图）。
 // 刻意**不碰** stem/options/answer —— 那几项用户可能自己改过，覆盖了就找不回来。
 async function updateFromPublicBank(b: any) {
@@ -1035,6 +1068,9 @@ onBeforeUnmount(() => { document.removeEventListener('click', onDocClick); docum
 .import-btn:hover:not(:disabled) { background: var(--color-primary); color: #fff; transform: translateY(-1px); }
 .import-btn:disabled { cursor: default; opacity: 0.7; }
 .imported-tag { margin-top: 8px; font-size: 12px; color: var(--color-success-deep); background: var(--color-success-bg); padding: 4px 10px; border-radius: 12px; text-align: center; }
+/* 「本库来自公共题库 · 点此更新」（2026-09-25）：可点的胶囊提示，沿用 imported-tag 的观感 */
+.pub-sync-hint { margin-top: 8px; padding: 6px 10px; border-radius: 12px; text-align: center; font-size: 12px; cursor: pointer; color: var(--color-info-strong); background: rgba(37, 99, 235, 0.08); transition: background 0.15s; }
+.pub-sync-hint:hover { background: rgba(37, 99, 235, 0.15); }
 .import-progress { margin-top: 8px; }
 .import-bar { height: 6px; background: var(--color-border-light); border-radius: 3px; overflow: hidden; }
 .import-fill { height: 100%; background: linear-gradient(90deg, var(--color-primary), var(--color-primary-dark)); border-radius: 3px; transition: width 0.2s; }
