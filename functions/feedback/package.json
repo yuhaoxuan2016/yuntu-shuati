@@ -1,0 +1,9 @@
+{
+  "name": "feedback",
+  "version": "1.0.0",
+  "description": "意见反馈收录端（公开可调）：校验 + 限流 + 写 feedback 集合 + 推钉钉单聊",
+  "main": "index.js",
+  "dependencies": {
+    "@cloudbase/node-sdk": "^2.10.0"
+  }
+}

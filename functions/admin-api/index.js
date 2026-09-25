@@ -203,6 +203,10 @@ exports.main = async (event = {}) => {
       case 'delete-user-data': return await deleteUserData(payload.uid)
       case 'clear-personal': return await clearPersonal()
       case 'reset-exams-acl': return await resetExamsAcl()   // 【未实现】只回 NOT_IMPLEMENTED，见函数注释
+      // 2026-09-25：意见反馈的读/删。写入端在独立云函数 `feedback`（公开可调、无口令），
+      // 这里只负责「管理员能看能删」——公开面与口令面刻意分在两个函数里，见 feedback/index.js 头部注释。
+      case 'list-feedback': return await listFeedback(payload.limit)
+      case 'delete-feedback': return await deleteFeedback(payload.id)
       default:
         return { ok: false, code: 'UNKNOWN_ACTION', message: `未知操作: ${action}` }
     }
@@ -218,6 +222,33 @@ exports.main = async (event = {}) => {
 }
 
 // ===== 实现 =====
+
+// 意见反馈列表（新→旧）。字段全给出来，面板侧只负责显示；不在这里做摘要/裁剪，
+// 免得以后想加「按类型筛」「导出」还要回头改函数。
+async function listFeedback(limit) {
+  const n = Math.min(Math.max(Number(limit) || 100, 1), 500)
+  const res = await db.collection('feedback').orderBy('created_at', 'desc').limit(n).get()
+  const rows = res.data || []
+  return {
+    ok: true,
+    total: rows.length,
+    items: rows.map(f => ({
+      _id: f._id,
+      category: f.category, category_label: f.category_label,
+      title: f.title, body: f.body, contact: f.contact || '',
+      page: f.page || '', ua: f.ua || '', version: f.version || '',
+      id_source: f.id_source || '', claim_uid: f.claim_uid || '', claim_sync_key: f.claim_sync_key || '',
+      _openid: f._openid || '',
+      created_at: f.created_at, pushed: !!f.pushed, push_error: f.push_error || '',
+    })),
+  }
+}
+
+async function deleteFeedback(id) {
+  if (!id) return { ok: false, message: '缺少 id' }
+  await db.collection('feedback').doc(id).remove()
+  return { ok: true, message: `已删除反馈 ${id}` }
+}
 
 async function listExams() {
   const all = []

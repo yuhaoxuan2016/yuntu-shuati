@@ -20,6 +20,17 @@
     <!-- 云朵彩蛋欢迎条（触发过彩蛋后显示） -->
     <div v-if="cloudEgg" class="cloud-welcome-bar">☁️ 小兔错题本 已经准备就绪，旅行者请开始今天的练习 ⭐</div>
 
+    <!-- 本机存储提醒（有数据但没配云同步时显示一次；点「知道了」长期不再打扰） -->
+    <div v-if="showCacheTip" class="local-tip">
+      <span class="local-tip-icon">⚠️</span>
+      <span class="local-tip-text">
+        你的题库与进度只存在<b>本机浏览器</b>：清缓存、换浏览器或换设备都会丢。
+        去设置里配一次<b>云同步</b>并点「上传」，或定期用「导出备份」留一份。
+      </span>
+      <button class="local-tip-btn" @click="$router.push('/settings')">去设置</button>
+      <button class="local-tip-x" title="知道了，不再提示" @click="dismissCacheTip">知道了</button>
+    </div>
+
     <!-- 访问统计 -->
     <div v-if="visitStats" class="visit-bar">
       👁 累计访问 <b>{{ visitStats.total }}</b> 次 · 今日 <b>{{ visitStats.today }}</b> 次
@@ -273,6 +284,30 @@ const gaLink = gaNumber
 const cloudEgg = (() => {
   try { return localStorage.getItem('cloud_egg_triggered') === '1' } catch { return false }
 })()
+
+// 2026-09-25（rabbit 开放给团队后要求）：**本机存储提醒**。
+// 网页版的题库/进度/错题/收藏全在本机 IndexedDB —— 清缓存、换浏览器、换设备就没了。
+// 只在「有数据 且 没配过云同步」时提示；点过「知道了」就长期不再打扰（存 localStorage）。
+// 判据直接读 cloudbase_config（避免把 cloud.ts 拉进首页 chunk）：enabled && envId 才算配过。
+const CACHE_TIP_KEY = 'local_cache_tip_dismissed_v1'
+const showCacheTip = ref(false)
+function cloudConfigured(): boolean {
+  try {
+    const raw = localStorage.getItem('cloudbase_config')
+    if (!raw) return false
+    const cfg = JSON.parse(raw)
+    return Boolean(cfg && cfg.enabled && cfg.envId)
+  } catch { return false }
+}
+function updateCacheTip(): void {
+  let dismissed = false
+  try { dismissed = localStorage.getItem(CACHE_TIP_KEY) === '1' } catch { /* 存储被禁：照常提示 */ }
+  showCacheTip.value = !dismissed && bankStore.banks.length > 0 && !cloudConfigured()
+}
+function dismissCacheTip(): void {
+  try { localStorage.setItem(CACHE_TIP_KEY, '1') } catch { /* ignore */ }
+  showCacheTip.value = false
+}
 const newName = ref('')
 const newDesc = ref('')
 const newCreator = ref('')
@@ -516,6 +551,8 @@ onMounted(async () => {
           console.info('[云同步] 已清理空公共题库壳：', shell.name)
         } catch (e) { console.warn('清理空公共题库壳失败：', shell.name, e) }
       }
+      // 题库加载完才知道「有没有数据可丢」——本机存储提醒在这里判一次
+      updateCacheTip()
     }),
   ])
   // 计算今日统计 & 连续天数
@@ -827,6 +864,30 @@ onBeforeUnmount(() => { document.removeEventListener('click', onDocClick); docum
   border-radius: var(--radius-md);
 }
 .visit-bar b { color: var(--color-primary); font-weight: 600; }
+
+/* 本机存储提醒（2026-09-25）：注意 flex-wrap——容器窄时让按钮换行，别把文字挤成一行一个字 */
+.local-tip {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
+  margin-bottom: 16px; padding: 10px 14px; font-size: 13px; line-height: 1.6;
+  color: var(--color-text-secondary);
+  background: var(--color-warning-light, #fffbeb);
+  border: 1px solid var(--color-warning-strong, #f0d49b);
+  border-radius: var(--radius-md);
+}
+.local-tip-icon { flex: 0 0 auto; }
+.local-tip-text { flex: 1 1 220px; min-width: 0; }
+.local-tip-text b { color: var(--color-text); font-weight: 600; }
+.local-tip-btn {
+  flex: 0 0 auto; padding: 4px 12px; font-size: 13px; cursor: pointer;
+  color: #fff; background: var(--color-primary); border: none; border-radius: var(--radius-md);
+}
+.local-tip-btn:hover { background: var(--color-primary-dark); }
+.local-tip-x {
+  flex: 0 0 auto; padding: 4px 10px; font-size: 13px; cursor: pointer;
+  color: var(--color-text-muted, #6b7280); background: transparent;
+  border: 1px solid var(--color-border, #e5e7eb); border-radius: var(--radius-md);
+}
+.local-tip-x:hover { background: var(--color-border-light, #f5f6f8); }
 
 /* 每日一诗卡 */
 .poem-card { margin-bottom: 16px; padding: 14px 16px; background: linear-gradient(135deg, var(--color-surface) 0%, var(--color-surface) 100%); border: 1px solid var(--color-border, #eee); border-left: 3px solid var(--color-primary); border-radius: var(--radius-md); }
