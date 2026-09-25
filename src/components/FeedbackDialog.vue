@@ -373,10 +373,19 @@ function close() {
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
   display: flex;
-  align-items: center;
+  /* align-items 用 flex-start 而不是 center：配合面板的 margin:auto —— 放得下时居中，
+     放不下时从顶部排布、由遮罩滚动（center 会在两头都切掉内容且滚不到） */
+  align-items: flex-start;
   justify-content: center;
   z-index: 9999;
   backdrop-filter: blur(2px);
+  /* 2026-09-25 修复（rabbit 手机截图：底栏那一排按钮被切在屏幕外）：
+     手机上 100vh 是**地址栏收起后**的高度，比眼前看得见的区域高；面板按 vh 定高又垂直居中，
+     底部就被推到屏幕外——而遮罩自己不滚、页面又被 position:fixed 钉住 ⇒ 那排按钮永远够不着。
+     ⇒ 遮罩自己当滚动容器（留 12px 边距 + 底部安全区），面板 margin:auto。 */
+  overflow-y: auto;
+  padding: 12px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
 }
 .modal {
   background: var(--bg, #fff);
@@ -385,9 +394,33 @@ function close() {
   width: 90%;
   max-width: 640px;
   max-height: 90vh;
+  max-height: 90dvh; /* 动态视口高：跟着地址栏/工具条收缩，才是移动端「看得见的高度」；不支持的浏览器用上一行 */
+  margin: auto;      /* 与遮罩的 align-items:flex-start 配合：放得下居中、放不下可滚 */
   display: flex;
   flex-direction: column;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  /* 2026-09-25：全局移动端块给 .modal-body 强行加了 `width:100% !important`，而它默认是 content-box
+     ⇒ 296 的面板里量出 336 的正文（padding 20×2 加在外面），内容被切在屏幕右缘。
+     border-box 让 width:100% 把 padding 算进去，与「面板多宽正文就多宽」的意图一致。 */
+  box-sizing: border-box;
+}
+/* 全局移动端块（style.css ≤768px）是按「.modal=遮罩 / .modal-body=面板」的命名写的（HomeView 那套），
+   本组件命名相反 ⇒ 会被它加上面板内边距与圆角，看上去像面板里又套了两个框。
+   这里用组件自身作用域（优先级更高）把那两处修饰复位。 */
+@media (max-width: 768px) {
+  .modal {
+    padding: 0;
+    width: 100%;
+    /* 手机档把上限收到 84：真机地址栏/工具条一般占 5~8% 高，收到 84 后**即使浏览器不支持 dvh、
+       退回 vh（=地址栏收起时的高度）也还留得住余量**，不至于又把底栏顶出屏幕。
+       支持的浏览器用 84dvh，直接按「看得见的高度」算。 */
+    max-height: 84vh;
+    max-height: 84dvh;
+  }
+  .modal-body {
+    padding: 16px;
+    border-radius: 0;
+  }
 }
 .feedback-dialog {
   max-width: 720px;
@@ -419,6 +452,7 @@ function close() {
   padding: 20px;
   overflow-y: auto;
   flex: 1;
+  box-sizing: border-box;
 }
 .modal-foot {
   display: flex;

@@ -287,10 +287,17 @@ html[data-font-size="large"] { font-size: 18px; }
     width: 100% !important;
     min-width: 0 !important;
     max-width: 100%;
+    /* 2026-09-25：移动端 100vh 是「地址栏收起后」的高度，比看得见的区域高 ⇒ 用 dvh（动态视口高）。
+       不支持的浏览器用上一行 vh，行为与修复前一致。 */
     max-height: 86vh;
+    max-height: 86dvh;
     overflow-y: auto;
     padding: 16px;
     border-radius: var(--radius-lg);
+    /* 这条 width:100% !important 是配 content-box 写的会**量出比容器更宽**的盒子
+       （FeedbackDialog 实盘：296px 面板里量到 336px 正文，内容被切在屏幕右缘）。
+       统一按 border-box 算，width:100% 才等于「跟容器一样宽」。 */
+    box-sizing: border-box;
   }
   .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table { max-width: 100%; }
