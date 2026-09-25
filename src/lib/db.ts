@@ -750,6 +750,9 @@ export const idb = {
 // === 公共题库缓存（加载优化档2）===
 // 缓存 exam.ts 映射后的 ExamQuestion 数组，读出来可直接用，不再走云端。
 export interface PublicQuestionCache {
+  // 2026-09-25：字段口径版本。**加/改任何随题下发的字段都要 +1**——
+  // 否则老客户端会拿着 24h 内的旧缓存继续用，新字段永远不出现（本次 face_revised 就撞上了）。
+  schema?: number
   bank_ref: string
   count: number
   fetched_at: number

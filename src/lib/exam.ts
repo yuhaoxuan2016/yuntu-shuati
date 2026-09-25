@@ -863,6 +863,8 @@ const PUBLIC_Q_FIELDS = {
 const PUBLIC_Q_PAGE = 200
 // 缓存有效期：即使题数没变，超过这个时间也重拉一次（兜住「题数不变但内容被改」的情形）
 const PUBLIC_Q_CACHE_TTL = 24 * 3600 * 1000
+// 字段口径版本：新增随题下发的字段（如 face_revised）时 +1，强制客户端失效一次旧缓存
+const PUBLIC_Q_CACHE_SCHEMA = 2
 
 function mapPublicQuestion(q: any): ExamQuestion {
   // 2026-09-15 加固(评审 Important #1，根因侧)：补 `?? q._id` 兜底。
@@ -936,6 +938,7 @@ export async function listPublicBankQuestions(bankId: string | number): Promise<
       const cached = await readPublicQuestionCache(bankRef)
       if (cached && cached.count === cloudCount
         && Array.isArray(cached.questions) && cached.questions.length === cloudCount
+        && (cached as any).schema === PUBLIC_Q_CACHE_SCHEMA
         && Date.now() - cached.fetched_at < PUBLIC_Q_CACHE_TTL) {
         return cached.questions as ExamQuestion[]
       }
@@ -962,6 +965,7 @@ export async function listPublicBankQuestions(bankId: string | number): Promise<
     if (!noLocalCopy && mapped.length) {
       await writePublicQuestionCache({
         bank_ref: bankRef, count: mapped.length, fetched_at: Date.now(), questions: mapped,
+        schema: PUBLIC_Q_CACHE_SCHEMA,
       })
     }
     return mapped

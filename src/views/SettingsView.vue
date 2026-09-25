@@ -101,6 +101,12 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.56</span>
+          <ul>
+            <li>修复：题面校对标记在部分浏览器里要等 24 小时缓存过期才出现——公共题库缓存加了「字段口径版本」，发版即失效重拉</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.55</span>
           <ul>
             <li>题面<b>校对过的题现在自己带标记</b>：题目下方写「✎ 题面已校对（日期，错别字/标点）· 答案未改动」，点开能看逐处改动（共 65 处，技师 54 / 高级 10 / 中级 1）——省得有人以为题目被人偷改</li>
