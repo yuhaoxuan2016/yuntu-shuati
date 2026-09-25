@@ -5,7 +5,13 @@ node_modules/
 dist/
 
 # Scripts (运维/调试脚本，含本机凭据配置 - DO NOT upload)
-scripts/
+# 用 scripts/* 而不是 scripts/：目录级排除会让 ! 例外失效（git 不再往被排除的目录里看），
+# 改成内容级排除才能单独放行几个文件。
+scripts/*
+# 只放行「读数/监控」三件——它们不含任何密钥，凭据一律走 _creds.mjs 引用：
+!scripts/fetch-visit-stats.mjs
+!scripts/check-credits-reading.mjs
+!scripts/monitor-usage.mjs
 # 腾讯云密钥已收敛为唯一一份 scripts/.creds.env。下面这条是显式兜底：
 # 万一将来有人解除 scripts/ 的整目录忽略，密钥文件本身仍然进不了仓库。
 **/.creds.env
@@ -88,7 +94,13 @@ node_modules/
 dist/
 
 # Scripts (运维/调试脚本，含本机凭据配置 - DO NOT upload)
-scripts/
+# 用 scripts/* 而不是 scripts/：目录级排除会让 ! 例外失效（git 不再往被排除的目录里看），
+# 改成内容级排除才能单独放行几个文件。
+scripts/*
+# 只放行「读数/监控」三件——它们不含任何密钥，凭据一律走 _creds.mjs 引用：
+!scripts/fetch-visit-stats.mjs
+!scripts/check-credits-reading.mjs
+!scripts/monitor-usage.mjs
 # 腾讯云密钥已收敛为唯一一份 scripts/.creds.env。下面这条是显式兜底：
 # 万一将来有人解除 scripts/ 的整目录忽略，密钥文件本身仍然进不了仓库。
 **/.creds.env
