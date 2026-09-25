@@ -13,6 +13,7 @@ const zlib = require('zlib')
 
 const app = cloudbase.init({ env: cloudbase.SYMBOL_CURRENT_ENV })
 const db = app.database()
+const _ = db.command
 
 // T18-2h（2026-09-16）：备份的**异地第二副本**——打包 POST 到轻量服务器。
 // 令牌走环境变量 BACKUP_TOKEN（与服务器端接收器同一把，只写不放读）；服务器无任何云密钥。
@@ -76,11 +77,26 @@ function firstDoc(res) {
 async function dumpCollection(name) {
   // 管理端 SDK 直查全量（无 where）：客户端「无条件查询返回空」的地雷只作用于受规则约束的客户端，
   // 云函数是管理端权限，不受此限（admin-server 的 pullAll 同款写法已在线上验证多年）。
+  //
+  // 2026-09-25 修复：原实现是 `skip(offset).limit(PAGE)` 的**无过滤深分页**——跳过的行数随页号线性增长
+  //   （整轮接近二次），questions 涨到 5.4 万条后跑不完函数的 120s 超时，被**静默切断**：
+  //   实盘 `backups/2026-09-25/` 只有 8/12 个集合、`backup_meta` 停在 09-24（登记写在主循环之后，
+  //   连失败都没机会上报）。改成 `_id` 游标：`where({_id: gt(last)}) + orderBy('_id','asc')`，
+  //   走主键索引，单页成本与深度无关。等价性实测（同一全集 54,018/54,018、双向零差异）见
+  //   scripts/probe-slowquery-20260925.cjs。
+  //   ⚠️ 备份文件里**行的顺序**由自然顺序变成 `_id` 升序：集合与条目一个不增一个不减，恢复按 _id。
   const all = []
-  for (let skip = 0; skip < 100000; skip += PAGE) {
-    const res = await db.collection(name).skip(skip).limit(PAGE).get()
+  let lastId = null
+  for (let page = 0; ; page++) {
+    // 游标必须单调前进：万一 gt 没生效（返回同一页），这里要炸掉而不是转到内存耗尽
+    if (page > 200) throw new Error(`${name} 分页超过 200 页，游标疑似未推进（lastId=${String(lastId)}）`)
+    let q = db.collection(name)
+    if (lastId !== null) q = q.where({ _id: _.gt(lastId) })
+    const res = await q.orderBy('_id', 'asc').limit(PAGE).get()
     const rows = (res && res.data) || []
+    if (!rows.length) break
     all.push(...rows)
+    lastId = rows[rows.length - 1]._id
     if (rows.length < PAGE) break
   }
   return all
