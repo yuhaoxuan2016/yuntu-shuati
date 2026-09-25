@@ -10,7 +10,7 @@
         <div class="modal-body">
           <p class="intro">
             遇到 Bug？想要新功能？有其他建议？<br />
-            {{ feedbackEmail ? '告诉我们，反馈会直接发到维护者邮箱。' : '告诉我们，可复制或保存内容后自行发送。' }}
+            {{ feedbackEmail ? '点「直接提交」即可（维护者在后台能看到）；也可以发邮件或复制内容。' : '点「直接提交」即可（维护者在后台能看到）；也可以复制或保存内容后自行发送。' }}
           </p>
 
           <div class="field">
@@ -86,7 +86,12 @@
 
         <footer class="modal-foot">
           <button class="btn-secondary" @click="close" :disabled="submitting">取消</button>
-          <button v-if="feedbackEmail" class="btn-primary" @click="sendToEmail" :disabled="!canSubmit || submitting">
+          <!-- 2026-09-25：主按钮改为「直接提交」——mailto 在手机上基本没人配邮件客户端（rabbit 原话「发邮件很多人不会用」）。
+               提交走公开云函数 feedback，写好文案 + 联系方式的用户点一下就完事；邮件/复制/保存降级为备选通道。 -->
+          <button class="btn-primary" @click="submitDirect" :disabled="!canSubmit || submitting">
+            📮 直接提交
+          </button>
+          <button v-if="feedbackEmail" class="btn-secondary" @click="sendToEmail" :disabled="!canSubmit || submitting">
             📧 发送到邮箱
           </button>
           <button class="btn-secondary" @click="copyToClipboard" :disabled="!canSubmit || submitting">
@@ -212,6 +217,43 @@ function assembleMarkdown(): string {
     if (logs.length) parts.push('', `## 最近运行日志（最后 ${logs.length} 行）\n\`\`\`\n${logs.join('\n')}\n\`\`\``)
   }
   return parts.join('\n')
+}
+
+// 2026-09-25：直接提交（走公开云函数 feedback，不需要口令、也不需要用户配过云同步）。
+// 「附加日志」「附加系统信息」两个勾选框与其它通道**同一口径**——勾了就真带上（这两条历史上假过，
+// 见 buildPayload 里 P2-19/MF-6 的注释）。联系方式走独立字段，后台一眼能看到该怎么回人。
+async function submitDirect() {
+  if (!canSubmit.value) { toastError('请填写标题和详细描述'); return }
+  submitting.value = true
+  resultMsg.value = ''
+  try {
+    const logs = includeLogs.value ? getRecentLogs() : []
+    const bodyParts = [description.value.trim()]
+    if (logs.length) bodyParts.push(`---\n最近运行日志（最后 ${logs.length} 行）\n${logs.join('\n')}`)
+    const mod = await import('../lib/cloud')
+    const res = await mod.submitFeedback({
+      category: category.value,
+      title: title.value.trim(),
+      body: bodyParts.join('\n\n'),
+      contact: contact.value.trim(),
+      page: String(location.hash || ''),
+      ua: includeSystemInfo.value ? navigator.userAgent : '',
+    })
+    if (res.ok) {
+      resultOk.value = true
+      resultMsg.value = res.notified === true ? '✓ 已提交，维护者会收到通知' : '✓ 已提交，维护者会在后台看到'
+      toastSuccess('反馈已提交')
+    } else {
+      resultOk.value = false
+      resultMsg.value = `✗ ${res.message || '提交失败'}（可改用「复制到剪贴板」发我）`
+      toastError('提交失败')
+    }
+  } catch (e) {
+    resultOk.value = false
+    resultMsg.value = '✗ 提交失败：' + (e instanceof Error ? e.message : String(e))
+  } finally {
+    submitting.value = false
+  }
 }
 
 async function copyToClipboard() {

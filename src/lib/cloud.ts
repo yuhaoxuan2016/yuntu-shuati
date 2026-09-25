@@ -1277,6 +1277,43 @@ export async function callAdminApi(action: string, password: string, payload: Re
 }
 
 /**
+ * 提交意见反馈（2026-09-25）。
+ *
+ * 走**公开**云函数 `feedback`：不需要管理员口令，也不需要用户配过云同步——匿名身份能调就行。
+ * 身份随包带一个「自称」的 `claim`（uid + 同步昵称），云端会把它记成不可信字段（只用于限流与排查）；
+ * 这点很重要：网页端取不到可靠身份（见本文件里 ALLOW_LEGACY_FLAT_IMPORT 的注释），所以**不要**把
+ * claim 当身份用。
+ *
+ * 失败时如实回报 code（TOO_FAST / TOO_MANY / NO_CLOUD / CALL_FAILED），由调用方提示用户改用复制/邮箱。
+ */
+export async function submitFeedback(payload: {
+  category: string
+  title: string
+  body: string
+  contact?: string
+  page?: string
+  ua?: string
+  version?: string
+}): Promise<{ ok: boolean; code?: string; message?: string; id?: string; notified?: boolean }> {
+  if (!(await ensureApp())) {
+    return { ok: false, code: 'NO_CLOUD', message: '云环境未连接，可改用「复制到剪贴板」发我' }
+  }
+  try {
+    const claim = { uid: authedUid || '', sync_key: getSyncKey() }
+    const res: any = await app.callFunction({ name: 'feedback', data: { ...payload, claim } })
+    const out: any = res?.result ?? res
+    return out && typeof out === 'object' ? out : { ok: false, code: 'BAD_RESPONSE', message: '响应异常' }
+  } catch (e: any) {
+    // 函数未部署 / 网络异常都落这里。原文只进控制台，对外给可读提示。
+    // ⚠️ 2026-09-25：CloudBase SDK 抛出的 `e.message` 有时是**对象**（实测 CORS 被拒那次就是），
+    //   直接 `String(e?.message)` 会得到 `[object Object]`——用户看到的就是句废话。这里做一次提取。
+    console.warn('feedback 调用失败：', e?.message || e)
+    const raw = e?.message && typeof e.message === 'object' ? JSON.stringify(e.message) : String(e?.message || e || '')
+    return { ok: false, code: 'CALL_FAILED', message: '提交失败：' + raw.slice(0, 120) }
+  }
+}
+
+/**
  * 凭小程序生成的绑定码切换身份
  * @returns 成功时返回新的 uid
  */

@@ -569,6 +569,7 @@
           {{ adminConnecting ? '连接中...' : '🔑 连接并加载考试' }}
         </button>
         <button class="data-btn" :disabled="!adminConnected || adminBusy" @click="adminLoadBanks">📚 加载题库</button>
+        <button class="data-btn" :disabled="!adminConnected || adminBusy" @click="adminLoadFeedback">📨 加载意见反馈</button>
       </div>
       <p v-if="adminStatusText" class="hint" :class="{ warn: adminStatusError }">{{ adminStatusText }}</p>
 
@@ -606,6 +607,30 @@
             </div>
           </div>
           <p v-else class="hint">点「📚 加载题库」查看公共题库</p>
+        </div>
+
+        <!-- 2026-09-25：意见反馈。写入端是公开云函数 feedback（网页/小程序提交都进这里），
+             本面板只负责看与删。id_source='claim' 表示「身份是客户端自报的、不可信」——
+             用来判断同一台设备的连续反馈，不当作可靠身份。 -->
+        <div class="admin-list">
+          <h4>意见反馈（{{ adminFeedback?.length || 0 }}）</h4>
+          <div v-if="adminFeedback && adminFeedback.length" class="admin-item">
+            <div v-for="f in adminFeedback" :key="f._id" class="admin-item-row">
+              <div class="admin-item-info">
+                <div class="admin-item-title">{{ f.category_label || f.category }}：{{ f.title }}</div>
+                <div class="admin-item-meta">
+                  <span>{{ (f.created_at || '').replace('T', ' ').slice(0, 16) }}</span>
+                  <span v-if="f.contact">· 联系方式：{{ f.contact }}</span>
+                  <span v-if="f.version">· v{{ f.version }}</span>
+                  <span v-if="f.id_source === 'claim'" title="身份由客户端自报，不可信">· 自报身份</span>
+                  <span v-if="f.push_error" title="钉钉推送失败原因">· 推送未达</span>
+                </div>
+                <div class="admin-item-body">{{ f.body }}</div>
+              </div>
+              <button class="data-btn danger" :disabled="adminBusy" @click="adminDeleteFeedback(f)">删除</button>
+            </div>
+          </div>
+          <p v-else class="hint">点「📨 加载意见反馈」查看（最多 100 条，新→旧）</p>
         </div>
 
         <div class="admin-danger">
@@ -1237,8 +1262,9 @@ const adminStatusText = ref('')
 const adminStatusError = ref(false)
 const adminExams = ref<Array<Record<string, any>> | null>(null)
 const adminBanks = ref<Array<Record<string, any>> | null>(null)
+const adminFeedback = ref<Array<Record<string, any>> | null>(null)
 
-interface AdminRes { ok: boolean; message?: string; code?: string; total?: number; exams?: any[]; banks?: any[]; deleted?: number }
+interface AdminRes { ok: boolean; message?: string; code?: string; total?: number; exams?: any[]; banks?: any[]; items?: any[]; deleted?: number }
 
 // 口令只存内存、随请求发给云函数；节流与锁定在函数端（P1-38：15 分钟内 5 次失败 → 锁 30 分钟）
 // cloud.ts 按本文件既有约定走动态 import（保持 SDK 不进本视图 chunk）
@@ -1288,6 +1314,36 @@ async function adminLoadBanks() {
     adminSetStatus(`✓ 已加载 ${res.total} 个题库`)
   } catch (e) {
     adminSetStatus('✗ 加载失败：' + (e instanceof Error ? e.message : String(e)), true)
+  } finally {
+    adminBusy.value = false
+  }
+}
+
+// 2026-09-25：意见反馈的读/删（写入端是公开云函数 feedback）
+async function adminLoadFeedback() {
+  adminBusy.value = true
+  try {
+    const res = await adminCall('list-feedback', { limit: 100 })
+    if (!res.ok) { adminSetStatus('✗ ' + (res.message || '加载失败'), true); return }
+    adminFeedback.value = res.items || []
+    adminSetStatus(`✓ 已加载 ${res.total} 条反馈`)
+  } catch (e) {
+    adminSetStatus('✗ 加载失败：' + (e instanceof Error ? e.message : String(e)), true)
+  } finally {
+    adminBusy.value = false
+  }
+}
+
+async function adminDeleteFeedback(f: any) {
+  if (!adminConfirm(`确定删除这条反馈？\n「${f.title}」`)) return
+  adminBusy.value = true
+  try {
+    const res = await adminCall('delete-feedback', { id: f._id })
+    if (!res.ok) { adminSetStatus('✗ ' + (res.message || '删除失败'), true); return }
+    adminSetStatus('✓ ' + (res.message || '已删除'))
+    await adminLoadFeedback()
+  } catch (e) {
+    adminSetStatus('✗ 删除失败：' + (e instanceof Error ? e.message : String(e)), true)
   } finally {
     adminBusy.value = false
   }
