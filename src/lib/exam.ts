@@ -201,6 +201,9 @@ export interface ExamQuestion {
   // 难易度：'easy' | 'mid' | 'hard'，空 = 未判定
   difficulty?: string | null
   difficulty_why?: string | null
+  // 2026-09-25：题面被校对修订过时带上的记录（{at, why, edits[]}）。
+  // 目的：读者一眼能看出「改过什么、答案没动」，不是谁偷偷改题。
+  face_revised?: { at?: string; why?: string; edits?: Array<{ field?: string; old?: string; new?: string }> } | null
 }
 
 export interface Exam {
@@ -854,6 +857,8 @@ const PUBLIC_Q_FIELDS = {
   type: true, options: true, answer: true, analysis: true, source_index: true,
   images: true, answer_derived: true, answer_conflict: true, answer_conflict_note: true,
   knowledge: true, difficulty: true, difficulty_why: true,
+  // 2026-09-25：「题面校对过」标记（跨端展示，方便读者核对，见 analysis-4064/FACE-FIX-LOG.md）
+  face_revised: true,
 }
 const PUBLIC_Q_PAGE = 200
 // 缓存有效期：即使题数没变，超过这个时间也重拉一次（兜住「题数不变但内容被改」的情形）
@@ -882,6 +887,7 @@ function mapPublicQuestion(q: any): ExamQuestion {
     knowledge: q.knowledge || null,
     difficulty: q.difficulty || '',
     difficulty_why: q.difficulty_why || null,
+    face_revised: q.face_revised || null,
   }
 }
 

@@ -101,6 +101,12 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.55</span>
+          <ul>
+            <li>题面<b>校对过的题现在自己带标记</b>：题目下方写「✎ 题面已校对（日期，错别字/标点）· 答案未改动」，点开能看逐处改动（共 65 处，技师 54 / 高级 10 / 中级 1）——省得有人以为题目被人偷改</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.54</span>
           <ul>
             <li>修复设置页「当前版本」显示错误：那里此前是写死的 <code>1.2.48-web</code>（桌面版时代的遗留空实现），线上跑着 1.2.53 也照样显示 1.2.48 —— 现在改成构建时注入的<b>真实版本</b>，一眼看出自己是不是最新</li>

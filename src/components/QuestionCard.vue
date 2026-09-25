@@ -24,6 +24,23 @@
       </div>
     </div>
 
+    <!-- 2026-09-25（rabbit 要求）：题面校对标记。让读者一眼看到「改过什么、答案没动」，
+         而不是怀疑有人偷偷改题（清单见 analysis-4064/FACE-FIX-LOG.md）。 -->
+    <div v-if="faceRev" class="face-rev">
+      <span class="face-rev-line">
+        <b>✎ 题面已校对</b>
+        <span v-if="faceRev.at">（{{ faceRev.at }}<span v-if="faceRev.why">，{{ faceRev.why }}</span>）</span>
+        · <b>答案未改动</b>
+      </span>
+      <details v-if="faceRev.edits && faceRev.edits.length" class="face-rev-details">
+        <summary>看改动内容（{{ faceRev.edits.length }} 处）</summary>
+        <div v-for="(e, i) in faceRev.edits" :key="i" class="face-rev-row">
+          <span class="face-rev-field">{{ e.field === 'options' ? '选项' : '题干' }}</span>
+          <code>{{ e.old }}</code> → <code>{{ e.new }}</code>
+        </div>
+      </details>
+    </div>
+
     <!-- 选择题 -->
     <!-- P2-14：readOnly（复盘/只读回顾）与 submitted 同等对待，否则未答题的卡片在复盘里仍可点选 -->
     <div v-if="isChoice" class="options">
@@ -386,6 +403,8 @@ const typeLabel = computed(() => {
 const diffKey = computed(() => String((props.question as any).difficulty || ''))
 const diffLabel = computed(() => ({ easy: '易', mid: '中', hard: '难' } as Record<string, string>)[diffKey.value] || '')
 const diffWhy = computed(() => String((props.question as any).difficulty_why || ''))
+// 题面校对记录（云端 face_revised 字段；没有就不渲染）
+const faceRev = computed(() => (props.question as any).face_revised || null)
 const displayAnswer = computed(() => {
   if (!props.question.answer) return '（未识别到答案）'
   if (isJudgeQuestion()) {
@@ -773,6 +792,17 @@ textarea { width: 100%; min-height: 80px; padding: 8px; border: 1px solid var(--
   background: var(--color-bg-soft, #f7f9fc); border-left: 4px solid var(--color-link, #2f5597);
   color: var(--color-text-secondary);
 }
+.face-rev {
+  margin: 0 0 10px; padding: 8px 10px; border-radius: 8px; font-size: 0.8rem;
+  background: var(--color-bg-soft, #f7f8fa); border: 1px dashed var(--color-border, #d0d5dd);
+  color: var(--color-text-secondary);
+}
+.face-rev-line b { color: var(--color-text); }
+.face-rev-details { margin-top: 4px; }
+.face-rev-details summary { cursor: pointer; color: var(--color-link, #2f5597); font-size: 0.78rem; }
+.face-rev-row { margin-top: 3px; font-size: 0.78rem; line-height: 1.5; }
+.face-rev-field { display: inline-block; margin-right: 4px; color: var(--color-text-muted, #6b7280); }
+.face-rev-row code { background: rgba(0,0,0,0.05); padding: 0 3px; border-radius: 3px; }
 .diff {
   display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 0.75rem;
   border: 1px solid var(--color-border, #d0d5dd); vertical-align: 1px;

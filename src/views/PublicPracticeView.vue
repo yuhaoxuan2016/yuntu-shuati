@@ -84,6 +84,22 @@
           <span class="q-text">{{ currentQuestion.stem }}</span>
         </div>
 
+        <!-- 2026-09-25：题面校对标记（与 QuestionCard 同口径；本页有自己的卡片标记） -->
+        <div v-if="currentQuestion.face_revised" class="face-rev">
+          <span class="face-rev-line">
+            <b>✎ 题面已校对</b>
+            <span v-if="currentQuestion.face_revised.at">（{{ currentQuestion.face_revised.at }}<span v-if="currentQuestion.face_revised.why">，{{ currentQuestion.face_revised.why }}</span>）</span>
+            · <b>答案未改动</b>
+          </span>
+          <details v-if="currentQuestion.face_revised.edits && currentQuestion.face_revised.edits.length" class="face-rev-details">
+            <summary>看改动内容（{{ currentQuestion.face_revised.edits.length }} 处）</summary>
+            <div v-for="(e, i) in currentQuestion.face_revised.edits" :key="i" class="face-rev-row">
+              <span class="face-rev-field">{{ e.field === 'options' ? '选项' : '题干' }}</span>
+              <code>{{ e.old }}</code> → <code>{{ e.new }}</code>
+            </div>
+          </details>
+        </div>
+
         <!-- 选择题 -->
         <div v-if="isChoice" class="options">
           <button v-for="(opt, i) in displayOptions" :key="i" class="option"
@@ -527,6 +543,16 @@ onMounted(async () => {
 
 .question-card { padding: 24px; background: var(--color-card); border: 1px solid var(--color-border-light); border-radius: var(--radius-lg); margin-bottom: 14px; }
 .q-stem { font-size: 16px; line-height: 1.6; margin-bottom: 18px; }
+.face-rev {
+  margin: -8px 0 14px; padding: 8px 10px; border-radius: 4px; font-size: 12px;
+  background: #f7f8fa; border: 1px dashed #d0d5dd; color: #5f6672;
+}
+.face-rev-line b { color: #33384a; }
+.face-rev-details { margin-top: 4px; }
+.face-rev-details summary { cursor: pointer; color: #2f5597; font-size: 12px; }
+.face-rev-row { margin-top: 3px; font-size: 12px; line-height: 1.5; }
+.face-rev-field { display: inline-block; margin-right: 4px; color: #6b7280; }
+.face-rev-row code { background: rgba(0,0,0,0.05); padding: 0 3px; border-radius: 3px; }
 .q-idx { font-weight: bold; margin-right: 6px; }
 .q-type { padding: 2px 8px; background: var(--color-border-light); border-radius: var(--radius-sm); font-size: 12px; margin-right: 8px; }
 .options { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
