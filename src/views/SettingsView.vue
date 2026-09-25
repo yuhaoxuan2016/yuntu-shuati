@@ -91,7 +91,7 @@
     <section>
       <h3>更新</h3>
       <p class="hint">当前版本：<b>{{ currentVersion }}</b></p>
-      <p class="hint">网页版没有独立的更新检查——刷新页面（或手机端右上角 🔄 按钮）即获取最新版本；下方按钮可直接刷新</p>
+      <p class="hint">这个数字是<b>真正在跑的构建</b>（构建时注入）。有新版本时首页会自动弹提示，点它即更新；也可以直接点下面的按钮强制刷新</p>
       <div class="data-actions">
         <button class="data-btn" @click="manualCheckUpdate">
           🔄 刷新页面
@@ -100,6 +100,12 @@
       </div>
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
+        <div class="log-entry">
+          <span class="log-version">v1.2.54</span>
+          <ul>
+            <li>修复设置页「当前版本」显示错误：那里此前是写死的 <code>1.2.48-web</code>（桌面版时代的遗留空实现），线上跑着 1.2.53 也照样显示 1.2.48 —— 现在改成构建时注入的<b>真实版本</b>，一眼看出自己是不是最新</li>
+          </ul>
+        </div>
         <div class="log-entry">
           <span class="log-version">v1.2.53</span>
           <ul>
@@ -722,7 +728,10 @@ import { api } from '../utils/api'
 import { toastSuccess, toastError } from '../utils/toast'
 import { updateAppearanceCache } from '../lib/theme'
 
-const currentVersion = ref('1.2.48-web')
+// 真实版本：构建时由 vite 的 define 注入（读 package.json，见 vite.config.ts）。
+// 此前这里是写死的 '1.2.48-web'（桌面版时代的遗留），线上跑 1.2.53 也照样显示 1.2.48 ——
+// 拿它判断「我跑的是哪版」必然误判（2026-09-25 rabbit 就被它带偏过一次）。
+const currentVersion = ref(typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev')
 const checkingUpdate = ref(false)
 const showUpdateLog = ref(false)
 // 意见反馈弹窗的开关（2026-09-15 用户裁定新增入口）
@@ -861,8 +870,8 @@ onMounted(async () => {
     } catch (e) {
     console.error('获取数据库信息失败：', e)
     }
-    // 读取应用版本（PWA 固定版本号）
-    currentVersion.value = '1.2.48-web'
+    // 读取应用版本（构建时注入的真值；此处不再覆盖，避免又退回写死）
+    currentVersion.value = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev'
     // 读取云同步配置
     loadCloudConfig()
     // 读取同步昵称

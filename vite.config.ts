@@ -1,7 +1,7 @@
 import { defineConfig, type Plugin } from "vite";
 import vue from "@vitejs/plugin-vue";
 import { VitePWA } from "vite-plugin-pwa";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // P2-35：分享标签的降级。
@@ -111,8 +111,15 @@ export const NAVIGATE_FALLBACK_DENYLIST = PROTECTED_PREFIXES.map(
 export default defineConfig(({ mode }) => {
   const isDesktop = mode === "desktop";
 
+  // 2026-09-25：把真实版本注入前端。此前设置页显示的「当前版本」是 updater.ts 里**写死的
+  // '1.2.48-web'**（桌面版时代的空实现遗留），线上 1.2.53 的包里也是这个字符串——
+  // 拿它判断「我跑的是哪版」必然误判。这里从 package.json 读版本号（不走 VITE_*，
+  // 免得再踩「忘改服务器 build.env 就静默为空」那个坑）。
+  const pkgVersion = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
+
   return {
     base: isDesktop ? "./" : "/",
+    define: { __APP_VERSION__: JSON.stringify(`${pkgVersion}-web`) },
 
     plugins: [
       vue(),
