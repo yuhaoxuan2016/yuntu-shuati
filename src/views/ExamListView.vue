@@ -18,6 +18,13 @@
     </div>
 
     <div v-if="loading" class="loading">加载中...</div>
+    <!-- 2026-09-27：列表为空但还有已归档的 ⇒ 直接说清"东西还在"，避免被理解成数据没了 -->
+    <div v-else-if="!shownExams.length && archivedExams.length && !showArchived" class="empty">
+      <div class="empty-icon">📦</div>
+      <p class="empty-title">暂无进行中的考试</p>
+      <p class="empty-tip">你还有 <b>{{ archivedExams.length }}</b> 场已归档的考试，点下面展开看看</p>
+      <button class="empty-action" @click="showArchived = true">展开已归档（{{ archivedExams.length }}）</button>
+    </div>
     <div v-else-if="!shownExams.length" class="empty">
       <div class="empty-icon">📋</div>
       <p class="empty-title">{{ tab === 'public' ? '还没有公共考试' : '你还没有创建考试' }}</p>
@@ -25,7 +32,11 @@
       <button class="empty-action" @click="$router.push('/exam/create')">+ 创建考试</button>
     </div>
     <div v-else class="exam-cards">
-      <div v-for="e in shownExams" :key="e._id" class="exam-card">
+      <!-- 2026-09-27：归档区开关（归档的考试默认撤下，打开可查看并取消归档） -->
+      <div v-if="archivedExams.length" class="arch-toggle" @click="showArchived = !showArchived">
+        {{ showArchived ? '收起已归档' : `显示已归档（${archivedExams.length}）` }}
+      </div>
+      <div v-for="e in shownExams" :key="e._id" class="exam-card" :class="{ 'is-archived': e.archived }">
         <div class="card-top">
           <div class="card-title">
             {{ e.title }}
@@ -34,6 +45,11 @@
             </span>
           </div>
           <span class="status-badge" :class="e.status">{{ statusText(e.status) }}</span>
+          <span v-if="e.archived" class="status-badge">📦 已归档</span>
+          <!-- 归档/取消归档：只对「我的考试」里自己创建的开放（公共列表里别人的考试不显示） -->
+          <button v-if="tab === 'mine' && isMine(e)" class="act-btn" @click.stop="toggleArchived(e)">
+            {{ e.archived ? '取消归档' : '归档' }}
+          </button>
         </div>
         <p class="card-desc">{{ e.description || '（无描述）' }}</p>
         <div class="card-meta">
@@ -60,7 +76,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { listExams, deleteExam, getCurrentUid, isExamOwner, errMsg, examShareUrl, type Exam } from '../lib/exam'
+import { listExams, deleteExam, setExamArchived, getCurrentUid, isExamOwner, errMsg, examShareUrl, type Exam } from '../lib/exam'
 import { toastSuccess, toastError } from '../utils/toast'
 import { sharePage } from '../lib/share'
 
@@ -76,10 +92,33 @@ const myUid = ref<string | null>(null)
 const isMine = (e: Exam) => isExamOwner(e, myUid.value)
 
 // 公共考试：visibility 为 public（非创建者看到的都是 public）
-const publicExams = computed(() => exams.value.filter(e => e.visibility !== 'private'))
+// 2026-09-27：已归档（exams.archived === true）的考试不再出现在列表里 —— 归档＝从视图撤下，
+// 数据与成绩都保留（管理端仍可查、可取消归档）。与题库的 archived 折叠同语义。
+const publicExams = computed(() => exams.value.filter(e => e.visibility !== 'private' && !(e as any).archived))
 // 我的考试：自己创建的（含 private 自建）
-const myExams = computed(() => exams.value.filter(e => isMine(e)))
-const shownExams = computed(() => tab.value === 'public' ? publicExams.value : myExams.value)
+const myExams = computed(() => exams.value.filter(e => isMine(e) && !(e as any).archived))
+// 归档区（2026-09-27）：已归档的默认不显示；开关打开后追加在列表末尾，可在卡片上取消归档
+const showArchived = ref(false)
+const archivedExams = computed(() => exams.value.filter(e =>
+  (e as any).archived && (tab.value === 'public' ? e.visibility !== 'private' : isMine(e))))
+const shownExams = computed(() => {
+  const base = tab.value === 'public' ? publicExams.value : myExams.value
+  return showArchived.value ? [...base, ...archivedExams.value] : base
+})
+async function toggleArchived(e: any) {
+  const next = !(e as any).archived
+  // 公共考试的归档影响面是「所有人」——每个考生的列表里都会消失，不只是自己。
+  // 属主仍可自助归档（写规则允许），但必须先把后果讲明白。
+  const isPublic = e.visibility !== 'private'
+  const tip = next
+    ? (isPublic
+      ? `归档公共考试「${e.title}」？\n\n⚠️ 这会让它对所有人下架——其他考生的列表里也会消失。\n考试数据与成绩都会保留，可随时取消归档。`
+      : `归档「${e.title}」？归档后从列表撤下，数据与成绩保留。`)
+    : `取消归档「${e.title}」？取消后重新出现在列表里。`
+  if (!window.confirm(tip)) return
+  const ok = await setExamArchived(e._id, next)
+  if (ok) { (e as any).archived = next } else { alert('操作失败，请重试') }
+}
 
 onMounted(async () => {
   try {
@@ -163,6 +202,15 @@ async function remove(id: string) {
 .card-meta { display: flex; gap: 12px; font-size: 12px; color: var(--color-text-tertiary); margin-bottom: 14px; flex-wrap: wrap; }
 .card-meta .expired { color: var(--color-danger); font-weight: 600; }
 .card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+/* 2026-09-27：归档区开关（原先只有类名没有样式，手机上会渲染成浏览器默认样子） */
+.arch-toggle {
+  display: block; text-align: center; padding: 10px 14px; margin-bottom: 12px;
+  border: 1px dashed var(--color-border); border-radius: var(--radius-md);
+  background: var(--color-card); color: var(--color-text-secondary);
+  font-size: 13px; cursor: pointer;
+}
+.arch-toggle:hover { background: var(--color-border-light); }
+.exam-card.is-archived { opacity: 0.62; }
 .act-btn { padding: 6px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-card); cursor: pointer; font-size: 13px; color: var(--color-text); }
 .act-btn:hover { background: var(--color-border-light); }
 .act-btn.primary { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }

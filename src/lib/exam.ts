@@ -214,6 +214,8 @@ export interface Exam {
   questions: ExamQuestion[]   // 考试题目的完整快照（含答案，供判分）
   status: 'draft' | 'published' | 'closed'
   visibility?: 'public' | 'private'   // 公共考试（所有人可考）/ 自建考试（仅自己可见）
+  archived?: boolean                  // 2026-09-27：归档后从两端列表撤下（数据与成绩保留）
+  archived_at?: number
   deadline?: string | null     // 截止时间 ISO 字符串；为空表示不限时
   shuffle_options?: boolean    // 答题时是否乱序选项（默认 true；false = 按原顺序展示）
   created_at: string
@@ -1041,7 +1043,7 @@ export async function deleteExam(id: string): Promise<void> {
 
 // ===== 成绩 =====
 
-export async function submitExamResult(result: ExamResult): Promise<void> {
+export async function submitExamResult(result: ExamResult): Promise<string | null> {
   // 生成查询码（若没有）：考试ID后4位 + 6位随机字符，大写字母数字
   // 2026-09-18 修复（重审 D-05）：随机部分从 **4 位加长到 6 位**。
   //   原为 4 位（32^4 ≈ 105 万），且前半段「考试ID后4位」是**可推出**的（知道考试就知道种子）
@@ -1056,52 +1058,31 @@ export async function submitExamResult(result: ExamResult): Promise<void> {
     result.query_code = seed + '-' + rand
   }
   if (await ensureCloud() && isCloud()) {
-    // 云端写入封装：碰到 auth 错误时刷新登录态重试一次
-    const writeToCloud = async (): Promise<boolean> => {
-      const uid = await getCurrentUid()
-      if (uid) {
-        const existing = await cloudDb.collection('exam_results')
-          .where({ exam_id: result.exam_id, student_name: result.student_name, _openid: uid })
-          .get()
-        if (existing.data?.length) {
-          // T18-2a（2026-09-16）：`doc(id).update()` 改 `where({_id, _openid})`（同文件两条 Exam
-          // 写路径的同一形态）。existing 来自上面带 `_openid: uid` 的查询，双条件命中至多一行。
-          await cloudDb.collection('exam_results').where({ _id: existing.data[0]._id, _openid: uid }).update({
-            answers: result.answers, correct: result.correct, wrong: result.wrong,
-            unanswered: result.unanswered, score: result.score, accuracy: result.accuracy,
-            duration_ms: result.duration_ms, submitted_at: result.submitted_at, query_code: result.query_code,
-          })
-          return true
-        }
-      }
-      await cloudDb.collection('exam_results').add(result)
-      return true
-    }
-    try {
-      await writeToCloud()
-      return
-    } catch (e) {
-      if (isAuthError(e)) {
-        console.warn('交卷遇到权限错误，尝试刷新登录态重试…')
-        if (await refreshAuth()) {
-          try {
-            await writeToCloud()
-            return
-          } catch (e2) {
-            // 重试仍失败，抛出第二次错误
-            throw e2
-          }
-        }
-      }
-      // 非 auth 错误或刷新失败，抛出原始错误
-      throw e
-    }
+    // 2026-09-27：原先成绩由**客户端**构造后直写 exam_results（写规则允许写自己的文档）
+    // ⇒ 改包/控制台把 score 改成任意值即可刷分，还能换姓名重复刷榜。
+    // 现改由 `examGate('submit')` 服务端判分 + 写库，分数只认服务端结果；查询码由服务端回传。
+    // 刻意**不做**「服务端不可用就回落客户端直写」的降级——那条路正是被堵的后门。
+    const g: any = await gradeAndSubmitViaServer(result)
+    return g && g.query_code ? String(g.query_code) : null
   }
   const results = getLocalResults()
   const idx = results.findIndex(r => r.exam_id === result.exam_id && r.student_name === result.student_name)
   if (idx >= 0) results[idx] = result
   else results.push(result)
   saveLocalResults(results)
+  return result.query_code || null
+}
+
+// 交卷（服务端判分 + 落库）。入参只取作答与考生标识，分数不由客户端提供。
+async function gradeAndSubmitViaServer(result: ExamResult): Promise<any> {
+  const g = await examGate('submit', {
+    examId: String(result.exam_id || ''),
+    answers: result.answers || {},
+    studentName: String(result.student_name || ''),
+    durationMs: result.duration_ms ?? null,
+  })
+  if (!g?.ok) throw new Error(g?.message || '成绩提交失败，请重试')
+  return g
 }
 
 // 按查询码查找答卷（用于错题回看）
@@ -1109,11 +1090,18 @@ export async function findResultByCode(examId: string, code: string): Promise<Ex
   const normalized = code.trim().toUpperCase()
   if (!normalized) return null
   if (await ensureCloud() && isCloud()) {
-    const res = await cloudDb.collection('exam_results')
-      .where({ exam_id: examId, query_code: normalized })
-      .limit(1)
-      .get()
-    return res.data?.[0] || null
+    // 2026-09-27：改走闸门 —— `exam_results` 收紧为「仅属主可读」后直读会失效。
+    // 闸门不可用时回退直读（收紧前有效，收紧后自然失败），不影响调用方的错误处理。
+    const g: any = await examGate('resultByCode', { code: normalized })
+    if (g?.ok && g.result) return g.result as ExamResult
+    if (g?.code === 'NOT_FOUND') return null
+    try {
+      const res = await cloudDb.collection('exam_results')
+        .where({ exam_id: examId, query_code: normalized })
+        .limit(1)
+        .get()
+      return res.data?.[0] || null
+    } catch { return null }
   }
   return getLocalResults().find(r => r.exam_id === examId && (r.query_code || '').toUpperCase() === normalized) || null
 }
@@ -1183,14 +1171,38 @@ function formatAnswerRaw(q: ExamQuestion, a: { selected: number[]; blank: string
   return a.blank || null
 }
 
+// 归档 / 取消归档考试（2026-09-27）。归档＝从两端列表撤下，数据与成绩都保留。
+// 客户端 update 必须：① `where({_id, _openid})` 形态（属主型写规则下 doc(id) 会被拒）；
+// ② 载荷带 `data` 包裹（**客户端**形态；服务端 node-sdk 反而是不带 data 的，见 scripts 里的踩坑记录）。
+export async function setExamArchived(id: string, archived: boolean): Promise<boolean> {
+  if (await ensureCloud() && isCloud()) {
+    const uid = await getCurrentUid()
+    if (!uid) return false
+    try {
+      const res: any = await cloudDb.collection('exams')
+        .where({ _id: id, _openid: uid })
+        .update({ data: { archived, archived_at: Date.now() } })
+      // updated 可能为 0（目标值未变也算成功）⇒ 只要没抛错就按成功处理
+      return Number(res?.updated ?? res?.stats?.updated ?? 0) > 0 || true
+    } catch (e) { console.warn('归档失败：', errMsg(e)); return false }
+  }
+  return false
+}
+
 export async function listExamResults(examId: string): Promise<ExamResult[]> {
   if (await ensureCloud() && isCloud()) {
-    const res = await cloudDb.collection('exam_results')
-      .where({ exam_id: examId })
-      .orderBy('score', 'desc')
-      .limit(500)
-      .get()
-    return res.data || []
+    // 2026-09-27：改走闸门（服务端只认该场考试属主，且不回归答明细）；失败回退直读（收紧前有效）
+    const g: any = await examGate('resultsOfExam', { examId })
+    if (g?.ok && Array.isArray(g.results)) return g.results as ExamResult[]
+    if (g && !g.ok && (g.code === 'NOT_OWNER' || g.code === 'NOT_FOUND')) return []
+    try {
+      const res = await cloudDb.collection('exam_results')
+        .where({ exam_id: examId })
+        .orderBy('score', 'desc')
+        .limit(500)
+        .get()
+      return res.data || []
+    } catch { return [] }
   }
   return getLocalResults().filter(r => r.exam_id === examId).sort((a, b) => b.score - a.score)
 }

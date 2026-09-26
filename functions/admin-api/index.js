@@ -196,6 +196,7 @@ exports.main = async (event = {}) => {
     switch (action) {
       case 'list-exams': return await listExams()
       case 'delete-exam': return await deleteExam(payload.examId)
+      case 'archive-exam': return await setExamArchived(payload.examId, payload.archived)
       case 'delete-all-exams': return await deleteAllExams(payload.visibility)
       case 'list-banks': return await listBanks()
       case 'delete-bank': return await deleteBank(payload.bankId, payload.bankRef)
@@ -263,6 +264,20 @@ async function listExams() {
     _id: e._id, title: e.title, visibility: e.visibility, question_count: e.questions?.length || 0,
     created_at: e.created_at, creator_name: e.creator_name, _openid: e._openid,
   })) }
+}
+
+// 2026-09-27：管理员归档 / 取消归档任意考试（含别人创建的公共考试）。
+// 普通用户只能动自己的（写规则限定属主）；这条走管理端，不受属主限制。
+// ⚠️ 服务端 update 载荷**直接用字段名**，不能像客户端那样包 `data` —— 包了会变成给文档加一个
+//    名为 data 的字段，回执照样报 updated:1 但目标字段读不到（本项目已踩过一次）。
+async function setExamArchived(examId, archived) {
+  const id = String(examId || '')
+  if (!id) return { ok: false, msg: '缺少 examId' }
+  const cur = await db.collection('exams').doc(id).get().catch(() => null)
+  const d = firstDoc(cur)
+  if (!d) return { ok: false, msg: '考试不存在' }
+  await db.collection('exams').doc(id).update({ archived: !!archived, archived_at: Date.now() })
+  return { ok: true, examId: id, title: String(d.title || ''), archived: !!archived }
 }
 
 async function deleteExam(examId) {

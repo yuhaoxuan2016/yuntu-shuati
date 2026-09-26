@@ -101,6 +101,18 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.57</span>
+          <ul>
+            <li>考试归档：已归档的考试默认收起在列表末尾，可展开查看、可随时取消归档（自己建的考试可自助归档；管理员可归档任意考试）</li>
+            <li>成绩安全：交卷判分后由服务端落库（堵住改包刷分）；凭查询码回看增加身份校验，陌生人拿到码也取不到标准答案</li>
+            <li>云端私人数据（错题 / 收藏 / 练习记录）收紧为仅本人可读写，此前任何访客都能读到</li>
+            <li>组卷模板真正上云（此前注释写了跨设备同步、实际没上），并支持小程序与网页版互通</li>
+            <li>新增：题库内搜题、收藏批量清空、抽题历史记录</li>
+            <li>考试列表：若无进行中的考试，会直接提示"还有 N 场已归档"，一键展开（不再让人以为数据没了）</li>
+            <li>过期考试自动归档：有截止时间的考试过了 7 天自动收起（每天凌晨自动处理，无需手动）</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.56</span>
           <ul>
             <li>修复：题面校对标记在部分浏览器里要等 24 小时缓存过期才出现——公共题库缓存加了「字段口径版本」，发版即失效重拉</li>
@@ -610,6 +622,10 @@
                   <span v-if="e.creator_name">· {{ e.creator_name }}</span>
                 </div>
               </div>
+              <!-- 2026-09-27：管理员归档（可归档/取消归档任意考试，含别人建的公共考试）-->
+              <button class="data-btn" :disabled="adminBusy" @click="adminArchiveExam(e)">
+                {{ e.archived ? '取消归档' : '归档' }}
+              </button>
               <button class="data-btn danger" :disabled="adminBusy" @click="adminDeleteExam(e)">删除</button>
             </div>
           </div>
@@ -1378,6 +1394,26 @@ async function adminDeleteFeedback(f: any) {
 
 function adminConfirm(msg: string): boolean {
   return window.confirm(msg)
+}
+
+// 2026-09-27：管理员归档 / 取消归档任意考试（普通用户只能动自己的；这条走管理端）
+async function adminArchiveExam(e: any) {
+  const next = !e.archived
+  const tip = next
+    ? `归档「${e.title}」？${e.visibility !== 'private' ? '\n\n⚠️ 这是公共考试：归档后所有考生的列表里都会收起。' : ''}\n数据与成绩保留，可随时取消归档。`
+    : `取消归档「${e.title}」？`
+  if (!adminConfirm(tip)) return
+  adminBusy.value = true
+  try {
+    const res = await adminCall('archive-exam', { examId: e._id, archived: next })
+    if (!res.ok) { adminSetStatus('✗ ' + (res.message || '归档失败'), true); return }
+    e.archived = next
+    adminSetStatus(`✓ ${next ? '已归档' : '已取消归档'}`)
+  } catch (e2) {
+    adminSetStatus('✗ 归档失败：' + (e2 instanceof Error ? e2.message : String(e2)), true)
+  } finally {
+    adminBusy.value = false
+  }
 }
 
 async function adminDeleteExam(e: any) {

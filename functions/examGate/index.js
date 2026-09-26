@@ -141,7 +141,11 @@ function gradeAll(questions, answers) {
 }
 
 // ===== 动作实现 =====
-const LIST_FIELDS = ['_id', 'title', 'description', 'duration_minutes', 'deadline', 'created_at', 'question_count']
+// 2026-09-27：补 `archived` —— 归档的考试要在两端列表里被前端滤掉，闸门必须把该标记下发，
+// 否则 publicExamView 只回白名单字段、前端拿不到 archived，归档对公共列表完全无效。
+// 2026-09-27：再补 `visibility` —— 列表卡片要按它渲染「🌍 公共 / 🔒 自建」徽章。
+// 不下发时前端拿到 undefined，徽章判断会失真（rabbit 反馈「我创建的公共考试显示成自建」即源于此类歧义）。
+const LIST_FIELDS = ['_id', 'title', 'description', 'duration_minutes', 'deadline', 'created_at', 'question_count', 'archived', 'visibility']
 
 async function fetchAll(collection, where, max = 2000) {
   const all = []
@@ -225,7 +229,26 @@ async function actGrade(payload) {
   return { ok: true, ...result, key: (isPublic && hasAnswer) ? key : null }
 }
 
-async function actReviewByCode(payload) {
+// ===== 调用者身份（2026-09-27，B 口径回看校验用）=====
+// 身份来自云函数环境变量（node-sdk auth().getUserInfo() 读 WX_OPENID / TCB_UUID / TCB_CUSTOM_USER_ID）：
+// 小程序＝裸 openid；网页版匿名＝匿名 uid；网页版绑定后＝`wx_<openid>`。
+// 三种形态**同源但不同形**，故比对前统一剥 `wx_` 前缀，「小程序交卷 → 网页端回看」才匹配得上。
+function normId(v) {
+  return String(v == null ? '' : v).replace(/^wx_/, '').trim()
+}
+
+function callerCandidates(event) {
+  const out = []
+  try {
+    const info = app.auth().getUserInfo() || {}
+    for (const v of [info.openId, info.uid, info.customUserId]) if (v) out.push(String(v))
+  } catch (e) { /* 无身份上下文（管理端调用）时忽略 */ }
+  const u = event && event.userInfo
+  if (u && u.openId) out.push(String(u.openId))
+  return [...new Set(out.filter(Boolean))]
+}
+
+async function actReviewByCode(payload, event) {
   const code = String((payload && payload.code) || '').trim().toUpperCase()
   if (!code) return { ok: false, message: '缺少查询码' }
   const res = await db.collection('exam_results').where({ query_code: code }).limit(1).get()
@@ -233,17 +256,171 @@ async function actReviewByCode(payload) {
   if (!result) return { ok: false, code: 'NOT_FOUND', message: '未找到该查询码的成绩' }
   const exam = await loadExam(result.exam_id)
   if (!exam) return { ok: false, code: 'NOT_FOUND', message: '考试不存在或已被删除' }
-  return { ok: true, result, exam: publicExamView(exam, true, false) }
+
+  // 2026-09-27：原先凭码即回**整卷含答案**，等于「成绩表可读 ⇒ 答案公开」（生产实测复现）。
+  // 现按 B 口径：属主无条件可取；考生凭「码 + 身份归一后匹配本人」取自己那份；
+  // 其余人只回成绩 + 剥答案的卷（与 action='paper' 同口径，题面本就不是机密）。
+  const cands = callerCandidates(event).map(normId)
+  const ownerIds = [exam._openid, exam.creator_openid].filter(Boolean).map(normId)
+  const candidateIds = [result._openid].filter(Boolean).map(normId)
+  const isOwner = cands.some(c => ownerIds.includes(c))
+  const isCandidate = cands.some(c => candidateIds.includes(c))
+  // 身份一个都取不到（仅管理端/无上下文调用会走到）⇒ 退回旧行为，避免误伤真实两端；此支由日志监控
+  const unknownCaller = cands.length === 0
+  const allowFull = isOwner || isCandidate || unknownCaller
+  console.log('[examGate] reviewByCode',
+    JSON.stringify({ code4: code.slice(0, 4), cands: cands.length, isOwner, isCandidate, unknownCaller, allowFull }))
+  return { ok: true, result, exam: publicExamView(exam, true, !allowFull) }
+}
+
+// 交卷落库（2026-09-27）：分数此前由**客户端**构造后 `add` 进 exam_results（规则允许写自己的文档）
+// ⇒ 改包/控制台把 score 改成任意值即可刷分。现由服务端判分并写库，分数只认服务端结果。
+// 入参只收 answers（不收 score/correct），身份取自平台注入（不受客户端自报影响）。
+async function actSubmit(payload) {
+  const examId = String((payload && payload.examId) || '')
+  const answers = (payload && payload.answers) || {}
+  const studentName = String((payload && payload.studentName) || '').trim() || '匿名'
+  const durationMs = payload && payload.durationMs != null ? payload.durationMs : null
+  if (!examId) return { ok: false, message: '缺少 examId' }
+  const exam = await loadExam(examId)
+  if (!exam) return { ok: false, code: 'NOT_FOUND', message: '考试不存在或已被删除' }
+
+  const questions = Array.isArray(exam.questions) ? exam.questions : []
+  if (!questions.length) return { ok: false, code: 'EMPTY_PAPER', message: '这场考试没有题目' }
+  const r = gradeAll(questions, answers)
+
+  // 查询码规则与两端一致：考试 id 后 4 位 + '-' + 6 位（去易混字符）
+  const seed = examId.slice(-4).toUpperCase()
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  let rand = ''
+  for (let i = 0; i < 6; i++) rand += chars[Math.floor(Math.random() * chars.length)]
+  const queryCode = seed + '-' + rand
+
+  let callerId = ''
+  try {
+    const info = app.auth().getUserInfo() || {}
+    callerId = String(info.customUserId || info.uid || info.openId || '')
+  } catch (e) { /* 无身份上下文 */ }
+
+  const row = {
+    exam_id: examId,
+    exam_title: String(exam.title || ''),
+    student_name: studentName,
+    answers,
+    correct: r.correct, wrong: r.wrong, unanswered: r.unanswered,
+    score: r.score, accuracy: r.accuracy,
+    duration_ms: durationMs,
+    submitted_at: Date.now(),
+    query_code: queryCode,
+  }
+  try {
+    if (callerId) {
+      row._openid = callerId
+      const ex = await db.collection('exam_results')
+        .where({ exam_id: examId, student_name: studentName, _openid: callerId }).limit(1).get()
+      const prev = firstDoc(ex)
+      if (prev && prev._id) {
+        // 同一场 + 同姓名 + 同身份 ⇒ 覆盖（沿用两端既有语义：同名重考覆盖上次）
+        await db.collection('exam_results').doc(prev._id).update({ data: row })
+      } else {
+        await db.collection('exam_results').add({ data: row })
+      }
+    } else {
+      // 取不到身份（管理端/无上下文调用）⇒ 只新增，不做 upsert，避免覆盖同名他人成绩
+      await db.collection('exam_results').add({ data: row })
+    }
+  } catch (e) {
+    console.error('[examGate] submit 写库失败', e && e.message)
+    return { ok: false, code: 'WRITE_FAILED', message: '成绩保存失败，请重试' }
+  }
+  return { ok: true, ...r, query_code: queryCode, key: {} }
+}
+
+// 按查询码取成绩（2026-09-27）：`exam_results` 收紧读规则后客户端不能再直读，改走这里。
+// 返回成绩全文（含该考生自己的作答——网页端错题回顾需要 `answers`），但**不含整卷标准答案**。
+// 「凭码查分」仍是码即凭据（码由考生本人持有，且答题时使用）；要标准答案得走 reviewByCode 的身份校验。
+async function actResultByCode(payload) {
+  const code = String((payload && payload.code) || '').trim().toUpperCase()
+  if (!code) return { ok: false, message: '缺少查询码' }
+  const res = await db.collection('exam_results').where({ query_code: code }).limit(1).get()
+  const result = firstDoc(res)
+  if (!result) return { ok: false, code: 'NOT_FOUND', message: '未找到该查询码的成绩' }
+  const exam = await loadExam(result.exam_id)
+  return { ok: true, result, examTitle: exam ? String(exam.title || '') : '' }
+}
+
+// 某场考试的成绩榜。**仅该场考试属主可取** —— 否则任何人都能列出别人的姓名与分数。
+// 返回字段刻意不含 `answers`（作答明细属考生隐私，榜单不需要）。
+async function actResultsOfExam(payload) {
+  const examId = String((payload && payload.examId) || '')
+  if (!examId) return { ok: false, message: '缺少 examId' }
+  const exam = await loadExam(examId)
+  if (!exam) return { ok: false, code: 'NOT_FOUND', message: '考试不存在' }
+  let callerId = ''
+  try {
+    const info = app.auth().getUserInfo() || {}
+    callerId = String(info.customUserId || info.uid || info.openId || '')
+  } catch (e) { /* 无身份上下文 */ }
+  const norm = (s) => String(s == null ? '' : s).replace(/^wx_/, '')
+  if (!callerId || norm(exam._openid) !== norm(callerId)) {
+    return { ok: false, code: 'NOT_OWNER', message: '只有这场考试的创建者可以查看成绩排行' }
+  }
+  const rows = await fetchAll('exam_results', { exam_id: examId }, 2000)
+  const results = rows.map(r => ({
+    student_name: r.student_name, score: r.score, correct: r.correct, wrong: r.wrong,
+    unanswered: r.unanswered, accuracy: r.accuracy, submitted_at: r.submitted_at,
+    duration_ms: r.duration_ms, query_code: r.query_code,
+  })).sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0))
+  return { ok: true, results, total: results.length }
+}
+
+// 自动归档过期考试（2026-09-27，由 timer 触发器每天调用一次）。
+// 规则：有 deadline 且已过 ARCHIVE_AFTER_DAYS 天 ⇒ archived=true（无 deadline 的不动，它不是"过期"）。
+// 幂等、无鉴权、可重复调用；放这里而不是 admin-api，是因为 timer 触发没有身份、admin-api 有口令鉴权。
+const ARCHIVE_AFTER_DAYS = 7
+
+async function actAutoArchive() {
+  const now = Date.now()
+  const rows = await fetchAll('exams', null, 5000)
+  let n = 0
+  for (const e of rows) {
+    if (e.archived === true) continue
+    const raw = e.deadline
+    if (!raw) continue
+    const dl = typeof raw === 'number' ? raw : Date.parse(String(raw))
+    if (!Number.isFinite(dl)) continue
+    if (now - dl < ARCHIVE_AFTER_DAYS * 86400000) continue
+    try {
+      await db.collection('exams').doc(String(e._id)).update({ archived: true, archived_at: now, archived_by: 'auto' })
+      n++
+    } catch (err) {
+      console.error('[examGate] 自动归档失败', String(e._id), err && err.message)
+    }
+  }
+  console.log('[examGate] autoArchive 完成，归档', n, '场（阈值', ARCHIVE_AFTER_DAYS, '天）')
+  return { ok: true, archived: n, thresholdDays: ARCHIVE_AFTER_DAYS }
 }
 
 exports.main = async (event = {}) => {
+  // 2026-09-27：timer 触发器调用时**没有 action**（event 形如 {Type:'Timer', TriggerName:...}）
+  // ⇒ 若直接走下面的 switch 会落进 default 当成"未知操作"，定时任务等于空跑。这里先分流。
+  if (!event.action && (event.Type === 'Timer' || event.TriggerName)) {
+    try { return await actAutoArchive() } catch (e) {
+      console.error('[examGate] timer autoArchive 失败', e)
+      return { ok: false, code: 'AUTO_ARCHIVE_FAILED' }
+    }
+  }
   const { action, payload = {} } = event
   try {
     switch (action) {
+      case 'autoArchive': return await actAutoArchive()
       case 'list': return await actList()
       case 'paper': return await actPaper(payload)
       case 'grade': return await actGrade(payload)
-      case 'reviewByCode': return await actReviewByCode(payload)
+      case 'submit': return await actSubmit(payload)
+      case 'resultByCode': return await actResultByCode(payload)
+      case 'resultsOfExam': return await actResultsOfExam(payload)
+      case 'reviewByCode': return await actReviewByCode(payload, event)
       default: return { ok: false, code: 'UNKNOWN_ACTION', message: '未知操作: ' + action }
     }
   } catch (e) {

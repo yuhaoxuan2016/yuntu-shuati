@@ -605,7 +605,8 @@ async function doSubmit(reason: string) {
       duration_ms: startMs ? Date.now() - startMs : null,
       submitted_at: new Date().toISOString(),
     }
-    await submitExamResult(result)
+    // 2026-09-27：查询码改由服务端生成后回传（成绩也已由服务端判分写库）
+    result.query_code = (await submitExamResult(result)) || result.query_code
     // P1-27：定时器只在**交卷成功后**才停。旧实现在 `await` 之前就 clearInterval/clearTimeout，
     // 提交失败（网络/权限异常，submitExamResult 会 throw）后计时永久死掉：倒计时不再走动、
     // 时间到也不再自动交卷，学生只能刷新页面重来。

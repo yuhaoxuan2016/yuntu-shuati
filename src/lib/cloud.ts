@@ -760,7 +760,9 @@ export async function pushToCloud(): Promise<{ pushed: number; failed: number; s
       if (coll === 'questions') {
         const seenByStem = new Set<string>()
         dirty = dirty.filter(r => {
-          const key = String(r.bank_ref ?? r._local_bank_id ?? r.bank_id ?? '') + '||' + String(r.stem || '').trim()
+          // 2026-09-27：与拉取侧同口径补上 type —— 只按「题库+题干」会把另一题型的同名题当成重复丢掉
+          const key = String(r.bank_ref ?? r._local_bank_id ?? r.bank_id ?? '') + '||'
+            + String(r.stem || '').trim() + '\u0000' + String(r.type || '')
           if (seenByStem.has(key)) return false
           seenByStem.add(key)
           return true
@@ -1002,7 +1004,10 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
         for (const x of all) {
           if (x.cloud_id) cloudMap.set(x.cloud_id, x)
           const s = (x.stem || '').trim()
-          if (s && !stemMap.has(s)) stemMap.set(s, x)
+          // 2026-09-27：内容去重键由「stem」补成「stem+type」。源包存在同题干跨题型出题
+          // （编码跨题型不唯一的已知教训），只按 stem 会把另一题型的题合并掉 → 静默丢一道。
+          // 取舍：type 缺失的历史行与云端带回 type 的行会对不上，结果是**多一份**（可清理）而非少一道（不可逆）。
+          if (s) { const k = `${s}\u0000${String(x.type || '')}`; if (!stemMap.has(k)) stemMap.set(k, x) }
         }
         qCloudIdx = { bankId, cloudMap, stemMap }
       }
@@ -1014,7 +1019,8 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
       // 2) 兜底：内容级去重——同题库下同 stem 已存在 → 视为同一题（公共题导副本、旧数据无 cloud_id 都靠它）
       if (!localQ && stem) {
         await ensureIdx()
-        localQ = qCloudIdx!.stemMap.get(stem) ?? null
+        // 键须与索引构建处同构（含 type），否则命中不了、每题都新增
+        localQ = qCloudIdx!.stemMap.get(`${stem}\u0000${String(q.type || '')}`) ?? null
       }
       if (localQ) {
         // 已存在：保留本地 id 与本地 cloud_id，仅按最新内容更新
@@ -1140,7 +1146,9 @@ async function listAllSettings(): Promise<any[]> {
   // 让云端文档能改写它等于把密钥交给云端；自定义端点改由本机设置页显式确认（ai_base_url_ack）。
   // 2026-08-21 修复：此前无 _id → pushDoc 走 add 不带 _id 分支 → 每次手动同步都新增 5 条重复文档，
   // settings 集合无限膨胀。现在带稳定 _id（uid 前缀 + key），pushDoc 双写变成 upsert 语义。
-  const keys = ['ai_model', 'daily_records', 'last_practice', 'practice_progress']
+  // 2026-09-27：补上 compose_templates —— compose-template.ts 头部注释一直写着「走现有云同步链路，
+  // 跨设备自动同步」，但这个推送清单里从来没有它 ⇒ 模板其实没上云，换电脑/清缓存就丢。
+  const keys = ['ai_model', 'daily_records', 'last_practice', 'practice_progress', 'compose_templates']
   const out: any[] = []
   for (const k of keys) {
     const v = await idb.getSetting(k)
