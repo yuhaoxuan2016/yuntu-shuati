@@ -439,7 +439,10 @@ async function loadSubsProgress () {
   }
   subsProgress.value = out
 }
-watch(subscribedBanks, () => { loadSubsProgress() }, { immediate: true })
+// ⚠️ 不要 immediate（2026-09-28 白屏事故）：`subs` 的声明在本块**之后**（约 464 行），
+// immediate 会在 setup 期立刻求值 subscribedBanks → 访问未初始化的 `subs` → TDZ 报错 → 首页白屏。
+// 首次数据由 `subs` 加载完成（loadSubs → subscribedBanks 变化）驱动，行为等价。
+watch(subscribedBanks, () => { loadSubsProgress() })
 function subsPct (b: any): number {
   const x = subsProgress.value[String(b && b._id)]
   if (!x || !x.total) return 0
