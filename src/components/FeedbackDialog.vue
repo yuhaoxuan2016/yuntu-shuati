@@ -52,16 +52,9 @@
             <span class="char-count">{{ description.length }} / 2000</span>
           </div>
 
-          <div class="field">
-            <label>联系方式（可选）</label>
-            <input
-              v-model="contact"
-              maxlength="60"
-              placeholder="邮箱 / QQ / 微信 / GitHub ID"
-              class="text-input"
-            />
-            <p class="hint">方便作者回复你；不填则不回复</p>
-          </div>
+          <!-- 2026-09-27 移除「联系方式」字段：小程序审核以《运营规范常见拒绝情形》3.4
+               「涉及收集、存储用户身份信息」拒绝（用户主动填微信号/手机/QQ 即判定依据）。
+               网页端同步去掉，两端保持一致；反馈功能与钉钉推送均照旧。 -->
 
           <div class="field">
             <label class="checkbox-label">
@@ -131,7 +124,6 @@ const categories = [
 const category = ref('bug')
 const title = ref('')
 const description = ref('')
-const contact = ref('')
 const includeLogs = ref(true)
 const includeSystemInfo = ref(true)
 const submitting = ref(false)
@@ -210,7 +202,6 @@ function assembleMarkdown(): string {
     '## 详细描述',
     description.value.trim(),
   ]
-  if (contact.value.trim()) parts.push('', `## 联系方式\n${contact.value.trim()}`)
   if (includeSystemInfo.value) parts.push('', `## 系统信息\n${navigator.userAgent}`)
   if (includeLogs.value) {
     const logs = getRecentLogs()
@@ -221,7 +212,8 @@ function assembleMarkdown(): string {
 
 // 2026-09-25：直接提交（走公开云函数 feedback，不需要口令、也不需要用户配过云同步）。
 // 「附加日志」「附加系统信息」两个勾选框与其它通道**同一口径**——勾了就真带上（这两条历史上假过，
-// 见 buildPayload 里 P2-19/MF-6 的注释）。联系方式走独立字段，后台一眼能看到该怎么回人。
+// 见 buildPayload 里 P2-19/MF-6 的注释）。
+// 2026-09-27：不再收「联系方式」（小程序审核 3.4 收集存储用户身份信息）；需要私下沟通请用户自行复制内容。
 async function submitDirect() {
   if (!canSubmit.value) { toastError('请填写标题和详细描述'); return }
   submitting.value = true
@@ -235,7 +227,6 @@ async function submitDirect() {
       category: category.value,
       title: title.value.trim(),
       body: bodyParts.join('\n\n'),
-      contact: contact.value.trim(),
       page: String(location.hash || ''),
       ua: includeSystemInfo.value ? navigator.userAgent : '',
     })

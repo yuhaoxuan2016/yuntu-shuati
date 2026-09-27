@@ -55,7 +55,10 @@ exports.main = async (event = {}) => {
       category_label: CATS[category],
       title,
       body,
-      contact: clip(event.contact, LIMITS.contact),
+      // 2026-09-27：**不再接收联系方式** —— 微信审核以《运营规范常见拒绝情形》3.4
+      // 「涉及收集、存储用户身份信息」拒绝（用户主动填微信号/手机/QQ 是判定依据）。
+      // 注意：这里只删这个字段，**钉钉推送通道照旧保留**（下面的 notifyDingtalk 不动）。
+      contact: '',
       // 系统信息（客户端勾选才带）
       page: clip(event.page, LIMITS.page),
       ua: clip(event.ua, LIMITS.ua),
@@ -103,7 +106,7 @@ function pushDingTalk (doc) {
     `💌 新反馈［${doc.category_label}］${doc.title}`,
     '',
     doc.body.slice(0, 300) + (doc.body.length > 300 ? '…' : ''),
-    doc.contact ? `\n联系方式：${doc.contact}` : '',
+    // 2026-09-27：不再收集联系方式（审核 3.4），消息里对应那行一并去掉；推送通道本身照旧
     doc.version ? `版本：${doc.version}` : '',
   ].filter(Boolean).join('\n')
   return postJSON('https://api.dingtalk.com/v1.0/oauth2/accessToken', { appKey: key, appSecret: secret }, null)

@@ -866,7 +866,10 @@ const PUBLIC_Q_PAGE = 200
 // 缓存有效期：即使题数没变，超过这个时间也重拉一次（兜住「题数不变但内容被改」的情形）
 const PUBLIC_Q_CACHE_TTL = 24 * 3600 * 1000
 // 字段口径版本：新增随题下发的字段（如 face_revised）时 +1，强制客户端失效一次旧缓存
-const PUBLIC_Q_CACHE_SCHEMA = 2
+// 2026-09-27：由 2 抬到 3，与小程序端（yuntu-mp/src/lib/cloud.ts 的 PUB_CACHE_SCHEMA）**对齐**。
+// 两端字段口径本来就一致（都含 face_revised），版本号却各走各的（2 vs 3）⇒ 以后加字段时容易只改一端。
+// 抬到同值后，两端「字段口径版本」语义一致；本地缓存介质不同、互不影响，仅作对齐与可读性。
+const PUBLIC_Q_CACHE_SCHEMA = 3
 
 function mapPublicQuestion(q: any): ExamQuestion {
   // 2026-09-15 加固(评审 Important #1，根因侧)：补 `?? q._id` 兜底。
