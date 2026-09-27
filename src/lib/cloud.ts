@@ -1150,9 +1150,20 @@ async function listAllSettings(): Promise<any[]> {
   // 跨设备自动同步」，但这个推送清单里从来没有它 ⇒ 模板其实没上云，换电脑/清缓存就丢。
   const keys = ['ai_model', 'daily_records', 'last_practice', 'practice_progress', 'compose_templates']
   const out: any[] = []
+  // 2026-09-27：单键体积上限。起因：写 settings 时服务端返回 500 Internal Server Error，
+  // 而云端已存在一条 187KB 的文档（小程序旧格式，内含 __progress 逐题进度）⇒ 判断为**请求体过大**
+  // 导致网关侧 500（不是权限错误：403 已排除）。这里对超限的键**跳过上传**并打印体积，
+  // 既能立刻绕开 500，也能从控制台看清究竟是哪个键超标（定位用）。
+  const MAX_SETTING_BYTES = 64 * 1024
   for (const k of keys) {
     const v = await idb.getSetting(k)
-    if (v != null) out.push({ _id: 'lsettings_' + uidPrefix() + '_' + k, key: k, value: v })
+    if (v == null) continue
+    const size = typeof v === 'string' ? v.length : JSON.stringify(v).length
+    if (size > MAX_SETTING_BYTES) {
+      console.warn(`[cloud] 设置项 ${k} 体积 ${(size / 1024).toFixed(1)}KB 超过上限 ${MAX_SETTING_BYTES / 1024}KB，已跳过上传（避免服务端 500）`)
+      continue
+    }
+    out.push({ _id: 'lsettings_' + uidPrefix() + '_' + k, key: k, value: v })
   }
   return out
 }
