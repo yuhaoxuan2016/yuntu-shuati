@@ -151,7 +151,11 @@
             <span v-if="b.archived === true" class="archived-pill">📦 已归档 · 不再更新</span>
           </div>
           <div class="actions">
-            <button class="primary-btn" @click="$router.push(b.mode === 'recite' ? `/recite/${b._id}?name=${encodeURIComponent(b.name)}` : `/public-practice/${b._id}/${encodeURIComponent(b.name)}`)">{{ b.mode === 'recite' ? '开始背题' : '开始刷题' }}</button>
+            <!-- 2026-09-27 订阅模式：公共库的刷题入口从「简化版在线练习」(public-practice) 改为
+                 **完整的练习界面** (practice)，bankRef 作为字符串 id 传入 ⇒ api 层自动读云端、不落本地。
+                 这也让"订阅"的库拥有与本地库完全一致的功能（错题本/收藏/进度/统计），
+                 不再受限于简化版缺功能。 -->
+            <button class="primary-btn" @click="$router.push(b.mode === 'recite' ? `/recite/${b._id}?name=${encodeURIComponent(b.name)}` : `/practice/${b._id}?name=${encodeURIComponent(b.name)}`)">{{ b.mode === 'recite' ? '开始背题' : '开始刷题' }}</button>
             <div v-if="isImported(b.name)" class="imported-tag">✓ 已添加到我的题库</div>
             <!-- 背题模式的库（计算题）不提供本地副本：整库内容只走在线读取 -->
             <div v-else-if="b.mode === 'recite'" class="imported-tag">仅在线背题 · 不下载到本地</div>

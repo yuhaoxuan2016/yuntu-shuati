@@ -197,14 +197,19 @@ interface SavedProgress {
 
 const route = useRoute()
 const bankStore = useBankStore()
-const bankId = Number(route.params.bankId)
+// 2026-09-27 订阅模式：路由参数既可能是本地题库的数字 id，也可能是**公共题库的 bankRef**（云端 _id，
+// 形如 `lquiz_banks_7` / 32 位十六进制串）。**不能再无条件 Number()** —— 那会把 bankRef 变成 NaN。
+// 判据：纯数字 ⇒ 本地库（number）；否则 ⇒ 订阅库（string bankRef），题目由 api 层直接读云端、不落本地。
+const _rawBankId = String(route.params.bankId ?? '')
+const bankId: number | string = /^\d+$/.test(_rawBankId) ? Number(_rawBankId) : _rawBankId
 // 2026-08-22：智能学习计划模式——队列来自 StudyPlanView 写入的 localStorage（study_plan_questions）
 // 修复前：计划跳转路由错误 404，且 mode=plan / study_plan_questions 无消费方，计划功能完全断裂
 const isPlanMode = route.query.mode === 'plan'
 const planItems = ref<{ id: number; bankId: number }[]>([])
 const planId = ref<string | null>(null)
 const planQueueReady = ref(false)
-const bankName = computed(() => bankStore.banks.find(b => b.id === bankId)?.name || '')
+// 2026-09-27：订阅库不在 bankStore（那是本地库列表）⇒ 名字优先取路由 query 里的 name（公共库入口会带上）。
+const bankName = computed(() => String(route.query.name || '') || bankStore.banks.find(b => b.id === bankId)?.name || '')
 const questions = ref<Question[]>([])
 const order = ref<number[]>([])
 const current = ref(0)
