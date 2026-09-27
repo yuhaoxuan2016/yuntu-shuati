@@ -441,14 +441,22 @@ async function restoreProgress() {
   }
 
   // 构建 题目id → 当前索引 的映射（题目列表可能已变化）
+  // 2026-09-28：同时建「来源题号(q.src_local_id) → 索引」索引 —— 未完成换算的跨设备进度
+  // （内容里还是源设备题号）也能直接恢复；两种题号都命中不了才算这份进度无效。
   const idToIndex = new Map(questions.value.map((q, i) => [q.id, i]))
+  const srcToIndex = new Map<number, number>()
+  questions.value.forEach((q: any, i) => {
+    const s = Number(q && q.src_local_id)
+    if (Number.isFinite(s) && s > 0) srcToIndex.set(s, i)
+  })
+  const idxOf = (id: number): number | undefined => idToIndex.get(id) ?? srcToIndex.get(id)
 
   // 恢复题目顺序
   if (progress.order_ids && progress.order_ids.length === questions.value.length) {
     const restoredOrder: number[] = []
     let valid = true
     for (const id of progress.order_ids) {
-      const idx = idToIndex.get(id)
+      const idx = idxOf(id)
       if (idx === undefined) { valid = false; break }
       restoredOrder.push(idx)
     }
@@ -463,7 +471,11 @@ async function restoreProgress() {
   }
 
   // 恢复当前题号（按题目 id 定位，避免题目列表变化导致错位）
-  const currentOrderIdx = order.value.findIndex(i => questions.value[i]?.id === progress.current_id)
+  const currentOrderIdx = order.value.findIndex(i => {
+    const q: any = questions.value[i]
+    if (!q) return false
+    return q.id === progress.current_id || Number(q.src_local_id) === progress.current_id
+  })
   current.value = currentOrderIdx >= 0 ? currentOrderIdx : 0
 
   // 恢复各题答题状态
@@ -471,8 +483,11 @@ async function restoreProgress() {
     const map = new Map<number, QuestionState>()
     for (const [idStr, state] of Object.entries(progress.answer_states)) {
       const id = Number(idStr)
-      if (idToIndex.has(id)) {
-        map.set(id, state)
+      const idx = idxOf(id)
+      if (idx !== undefined) {
+        // 统一按「本机题号」落 map（消费方按 currentQuestion.id 读）
+        const localId = Number((questions.value[idx] as any)?.id)
+        if (Number.isFinite(localId)) map.set(localId, state as QuestionState)
       }
     }
     answerStates.value = map

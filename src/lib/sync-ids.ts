@@ -45,6 +45,16 @@ export function mapSrcToLocal(index: Map<number, number>, srcId: unknown): numbe
   return hit == null ? null : hit
 }
 
+/** 进度内容与「本机已知题号」（题 id ∪ 源题号）的命中率（0~1）。
+ *  无 order_ids 时返回 1（无据可判，不作无效处理）。用于「本机进度与题库对不上」的保护判定。 */
+export function orderHitRate (prog: any, knownIds: Set<number>): number {
+  const ids = prog && Array.isArray(prog.order_ids) ? prog.order_ids : []
+  if (!ids.length) return 1
+  let hit = 0
+  for (const id of ids) { const n = Number(id); if (Number.isFinite(n) && knownIds.has(n)) hit++ }
+  return hit / ids.length
+}
+
 export interface ProgressMergeResult { write: boolean; value: any }
 
 const progTs = (x: any): number => { const t = Date.parse(String((x && x.saved_at) || '')); return isNaN(t) ? 0 : t }

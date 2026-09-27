@@ -16,7 +16,7 @@ import {
   type LedgerIndex,
   type LedgerKV,
 } from './sync-ledger'
-import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal } from './sync-ids'
+import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal, orderHitRate } from './sync-ids'
 import type { SyncDetail } from './sync-format'
 
 // P2-7（T10a，2026-09-15）引入的时间戳归一化 helper 原本定义在本文件；
@@ -1018,6 +1018,8 @@ let qCloudIdx: { bankId: number; cloudMap: Map<string, any>; stemMap: Map<string
 //   srcIdxCache：来源题号 → 本机题号（进度内容重映射用）
 let qCloudIdCache: { bankId: number; map: Map<string, number> } | null = null
 let srcIdxCache: { bankId: number; map: Map<number, number> } | null = null
+// 2026-09-28：本机已知题号（题 id ∪ 源题号）——「进度与题库对不上」保护的判定集
+let knownIdsCache: { bankId: number; ids: Set<number> } | null = null
 
 // 2026-08-23 本地题库映射缓存（mapCloudBankToLocal 内部会 listBanks；一次同步内固化，避免每道题都全量扫题库）
 let bankMapCache: { banks: any[] } | null = null
@@ -1026,6 +1028,7 @@ function resetSyncCaches(): void {
   bankMapCache = null
   qCloudIdCache = null
   srcIdxCache = null
+  knownIdsCache = null
 }
 
 // 设备指纹（localStorage 持久、与登录身份无关；用途=判断同步内容是否「本机写的」）
@@ -1238,7 +1241,19 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
             let res
             if (bankId != null) {
               const index = await srcLocalIndexOf(bankId)
-              res = mergeProgressForLocal(map[bid], localAll[lk] ?? null, myDev, index)
+              // 2026-09-28（保护）：本机进度与题库完全对不上（命中率 <30%，如跨库错挂 / 坏值）
+              // ⇒ 即使「本地更新」也丢弃本地、以云端为准（防「一次异常练习永久顶掉正确进度」）。
+              let localRaw: string | null = localAll[lk] ?? null
+              if (localRaw) {
+                try {
+                  const hit = orderHitRate(JSON.parse(localRaw), await knownIdsOf(bankId))
+                  if (hit < 0.3) {
+                    console.warn(`[cloud] 本机进度与题库不匹配（${lk}，命中率 ${(hit * 100).toFixed(0)}%），改用云端版本`)
+                    localRaw = null
+                  }
+                } catch { localRaw = null }   // 坏 JSON 同样视为无效
+              }
+              res = mergeProgressForLocal(map[bid], localRaw, myDev, index)
             } else if (legacyKey) {
               continue // 旧数字键 + 本地无此库：无意义
             } else {
@@ -1299,6 +1314,21 @@ async function srcLocalIndexOf(bankId: number): Promise<Map<number, number>> {
     srcIdxCache = { bankId, map: buildSrcLocalIndex(await idb.listQuestions(bankId)) }
   }
   return srcIdxCache.map
+}
+
+// 2026-09-28：本机该库的「已知题号」集合（题 id ∪ 源题号）——「进度与题库对不上」的保护判定集，按库缓存。
+async function knownIdsOf(bankId: number): Promise<Set<number>> {
+  if (!knownIdsCache || knownIdsCache.bankId !== bankId) {
+    const all = await idb.listQuestions(bankId)
+    const ids = new Set<number>()
+    for (const x of all) {
+      if (x && typeof x.id === 'number') ids.add(x.id)
+      const s = Number(x && x.src_local_id)
+      if (Number.isFinite(s) && s > 0) ids.add(s)
+    }
+    knownIdsCache = { bankId, ids }
+  }
+  return knownIdsCache.ids
 }
 
 // 以下辅助函数补齐 idb 缺的方法（在 db.ts 里没暴露的）

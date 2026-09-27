@@ -102,6 +102,13 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.60</span>
+          <ul>
+            <li>换设备后进度更稳：练习页能直接识别「来源设备题号」，历史遗留的未换算进度也能恢复到练到的位置</li>
+            <li>新增进度保护：本机进度与题库对不上（异常数据）时不再顶掉云端，改以云端为准；设置页新增「🛟 以云端为准恢复进度」按钮可随时手动恢复</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.59</span>
           <ul>
             <li>新增「新手引导」：首次使用分步带你上手（设置页可随时重看）</li>
@@ -561,6 +568,8 @@
                  （rabbit 实测：点了一下午「上传」始终"推送 0 条"）。此入口先清本地同步标记、再全量推。 -->
             <button class="data-btn" :disabled="!cloudSaved || cloudSyncing" @click="doForceResync">🔄 强制重新上传</button>
             <button class="data-btn" :disabled="!cloudSaved || cloudSyncing" @click="doDownload">{{ syncAction === 'down' ? '⬇️ 下载中...' : '⬇️ 下载（云端 → 本地）' }}</button>
+            <!-- 2026-09-28：本机进度出问题时的兜底（清本机进度键 → 以云端为准重算换算） -->
+            <button class="data-btn" :disabled="!cloudSaved || cloudSyncing" @click="doRestoreFromCloud">🛟 以云端为准恢复进度</button>
             <button class="data-btn" :disabled="!cloudSaved || cloudSyncing" @click="doSync">{{ syncAction === 'both' ? '🔁 同步中...' : '🔁 双向同步' }}</button>
           </div>
           <p class="hint cloud-tip">① 昵称默认随机生成，可改成好记的；换设备填<b>同一昵称</b>即可拉回私人进度。② <b>上传</b>＝把本机改动推到云端（题库、错题、收藏、进度）；<b>下载</b>＝把云端的拉回本机（按修改时间合并，不覆盖本机较新的数据）；拿不准就点<b>双向同步</b>。③ 本机<b>删掉</b>的题库/题目，上传时云端也会删掉；之后下载不会再把它拉回来（云端那份若属于旧身份、客户端无权删，就只在本机拦住，不再下载）。④ ⚠️ 这个昵称<b>等同于你的跨设备身份</b>（云端按它区分数据归属）：<b>请勿使用真实姓名、手机号等个人信息</b>；也不要用太短或太好猜的昵称——别人用了同名昵称就会与你的云端数据互相覆盖。</p>
@@ -1149,6 +1158,35 @@ async function doDownload() {
     cloudError.value = true
     cloudStatusText.value = '下载失败：' + (e instanceof Error ? e.message : String(e))
     toastError('下载失败')
+  } finally {
+    cloudSyncing.value = false
+    syncAction.value = ''
+  }
+}
+
+// 2026-09-28（rabbit 批准）：以云端为准恢复进度 —— 清掉本机所有题库进度键，再拉一次云端
+// （下载侧会自动做「来源题号 → 本机题号」换算）。用于本机进度被异常状态顶掉时的兜底。
+async function doRestoreFromCloud() {
+  if (!cloudSaved.value) { toastError('请先保存配置'); return }
+  if (syncAction.value) return
+  syncAction.value = 'down'
+  cloudSyncing.value = true
+  try {
+    const { idb } = await import('../lib/db')
+    const all = await idb.getAllSettings()
+    let n = 0
+    for (const k of Object.keys(all)) {
+      if (k.startsWith('practice_progress')) { await idb.setSetting(k, ''); n++ }   // idb 无删除 API：置空即失效
+    }
+    toast('info', n ? `已重置 ${n} 个本机进度，正在按云端恢复…` : '本机没有进度记录，直接拉取云端…')
+    const mod = await import('../lib/cloud')
+    const res = await mod.syncFromCloud()
+    const st = mod.getCloudStatus()
+    reportSyncResult('down', { pushed: 0, failed: 0, skipped: 0, ...res, pullDetail: res.detail }, st, '已按云端版本恢复进度')
+  } catch (e) {
+    cloudError.value = true
+    cloudStatusText.value = '恢复失败：' + (e instanceof Error ? e.message : String(e))
+    toastError('恢复失败')
   } finally {
     cloudSyncing.value = false
     syncAction.value = ''
