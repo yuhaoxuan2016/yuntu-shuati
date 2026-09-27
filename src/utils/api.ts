@@ -74,6 +74,9 @@ async function withCount(bank: any): Promise<QuizBank> {
   return { ...bank, question_count: qs.length }
 }
 
+// 订阅记录在 settings 里的键名（2026-09-27 订阅模式）
+const SUBS_KEY = 'subscriptions'
+
 export const api = {
   // === 题库 ===
   async listBanks(): Promise<QuizBank[]> {
@@ -300,6 +303,31 @@ export const api = {
   // === 设置 ===
   async getSetting(key: string): Promise<string | null> { return idb.getSetting(key) },
   async setSetting(key: string, value: string): Promise<void> { await idb.setSetting(key, value); scheduleCloudPush() },
+  // === 订阅（2026-09-27）===
+  // 订阅 = 「把某个公共题库纳入我的题库」——**只记一条引用，不复制题目**。
+  // 存 settings（与 progress / last_practice 同机制）⇒ 天然走云同步、跨端一致。
+  // 两个作用：① 出现在「我的题库」；② 练习时**记错题/统计**。
+  // ⚠️ 未订阅的公共库也能用完整界面练，但**只练不留痕**（不写错题/收藏/统计、进度不进云），
+  //    以防"点进别的库随手做错几题、错题却删不掉"的污染。
+  async listSubscriptions(): Promise<string[]> {
+    const raw = await idb.getSetting(SUBS_KEY)
+    if (!raw) return []
+    try {
+      const a = JSON.parse(raw)
+      return Array.isArray(a) ? a.filter((x: any) => typeof x === 'string' && x) : []
+    } catch { return [] }
+  },
+  async toggleSubscription(bankRef: string): Promise<boolean> {
+    if (!bankRef) return false
+    const raw = await idb.getSetting(SUBS_KEY)
+    let cur: string[] = []
+    try { const a = raw ? JSON.parse(raw) : []; cur = Array.isArray(a) ? a.filter((x: any) => typeof x === 'string') : [] } catch { cur = [] }
+    const has = cur.indexOf(bankRef) >= 0
+    const next = has ? cur.filter(x => x !== bankRef) : cur.concat([bankRef])
+    await idb.setSetting(SUBS_KEY, JSON.stringify(next))
+    scheduleCloudPush()
+    return !has
+  },
   // === 收藏 ===
   async toggleFavorite(bankId: number | string, questionId: number): Promise<boolean> {
     const r = await idb.toggleFavorite(bankId, questionId)

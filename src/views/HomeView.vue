@@ -156,17 +156,13 @@
                  这也让"订阅"的库拥有与本地库完全一致的功能（错题本/收藏/进度/统计），
                  不再受限于简化版缺功能。 -->
             <button class="primary-btn" @click="$router.push(b.mode === 'recite' ? `/recite/${b._id}?name=${encodeURIComponent(b.name)}` : `/practice/${b._id}?name=${encodeURIComponent(b.name)}`)">{{ b.mode === 'recite' ? '开始背题' : '开始刷题' }}</button>
-            <!-- 2026-09-27 订阅模式：订阅库与本地库应当**功能一致**，错题本/收藏/统计都要能进。
-                 这里传的是 b._id（= 云端 bankRef），各视图用 resolveBankId 统一解析 ⇒ 走 api 的云端分支。 -->
-            <button class="import-btn" @click.stop="$router.push(`/wrong/${b._id}`)">📕 错题本</button>
-            <button class="import-btn" @click.stop="$router.push(`/favorites/${b._id}`)">⭐ 收藏</button>
             <div v-if="isImported(b.name)" class="imported-tag">✓ 已添加到我的题库</div>
             <!-- 背题模式的库（计算题）不提供本地副本：整库内容只走在线读取 -->
             <div v-else-if="b.mode === 'recite'" class="imported-tag">仅在线背题 · 不下载到本地</div>
-            <button v-else class="import-btn" :disabled="importingId === b._id" @click="importPublicBank(b)">
-              <span v-if="importingId === b._id">导入中… {{ importProgress?.done }}/{{ importProgress?.total }}</span>
-              <span v-else>＋ 添加到我的题库</span>
-            </button>
+            <!-- 2026-09-27 订阅模式：「＋ 添加到我的题库」（复制一份副本）改为「☆ 订阅」（只记引用、不复制）。
+                 订阅后：① 出现在我的题库 ② 练习时记错题/统计。未订阅也可用完整界面练，但只练不留痕。 -->
+            <button v-if="subs.includes(String(b._id))" class="import-btn" @click.stop="onToggleSub(b)">✓ 已订阅 · 点此取消</button>
+            <button v-else class="import-btn" @click.stop="onToggleSub(b)">☆ 订阅到我的题库</button>
             <div v-if="importingId === b._id && importProgress && importProgress.total" class="import-progress">
               <div class="import-bar"><div class="import-fill" :style="{ width: (importProgress.done / importProgress.total * 100) + '%' }"></div></div>
             </div>
@@ -370,6 +366,26 @@ const sortedBanks = computed(() => {
 const publicExams = ref<Exam[]>([])
 const importingId = ref<string | null>(null)
 const importProgress = ref<{ done: number; total: number } | null>(null)
+
+// 2026-09-27 订阅模式：订阅列表（存 settings，跨端一致）。订阅 = 引用公共题库，**不复制题目**。
+// 订阅后：① 出现在「我的题库」② 练习时记错题/统计。未订阅也可用完整界面练，但只练不留痕。
+const subs = ref<string[]>([])
+async function loadSubs () {
+  try { subs.value = await api.listSubscriptions() } catch { subs.value = [] }
+}
+loadSubs()
+async function onToggleSub (b: any) {
+  const bankRef = String((b && b._id) || '')
+  if (!bankRef) return
+  try {
+    const nowOn = await api.toggleSubscription(bankRef)
+    await loadSubs()
+    if (nowOn) toastSuccess(`已订阅「${b.name}」：练习会记录错题与统计`)
+    else toastSuccess(`已取消订阅「${b.name}」：练习将不再留痕`)
+  } catch (e: any) {
+    toastError('订阅操作失败：' + (e?.message || String(e)))
+  }
+}
 // 「从公共题库更新」的进度（2026-09-24）
 const updatingId = ref<number | null>(null)
 const updateProgress = ref<{ done: number; total: number } | null>(null)

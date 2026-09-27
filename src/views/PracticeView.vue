@@ -207,6 +207,17 @@ const isPlanMode = route.query.mode === 'plan'
 const planItems = ref<{ id: number; bankId: number }[]>([])
 const planId = ref<string | null>(null)
 const planQueueReady = ref(false)
+// 2026-09-27 订阅模式：`canTrack` = 本次练习是否「留痕」（写错题/收藏/统计、进度上云）。
+//   · 数字 bankId（本地库） ⇒ 恒 true
+//   · 字符串 bankId（公共题库） ⇒ **仅当已订阅** 才 true
+// 未订阅的公共库仍可用完整界面练，但**只练不留痕** —— 防止"随手点进别的库、做错几题却删不掉"的污染。
+// 订阅记录存 settings（`api.listSubscriptions`），与进度同机制，跨端一致。
+const subscribedRef = ref(false)
+const canTrack = computed(() => typeof bankId === 'number' || subscribedRef.value)
+if (typeof bankId === 'string') {
+  api.listSubscriptions().then(list => { subscribedRef.value = list.indexOf(bankId) >= 0 }).catch(() => { /* 读失败按未订阅处理 */ })
+}
+
 // 2026-09-27：订阅库不在 bankStore（那是本地库列表）⇒ 名字优先取路由 query 里的 name（公共库入口会带上）。
 const bankName = computed(() => String(route.query.name || '') || bankStore.banks.find(b => b.id === bankId)?.name || '')
 const questions = ref<Question[]>([])
@@ -496,16 +507,21 @@ async function saveProgress() {
     saved_at: new Date().toISOString(),
   }
   try {
-    await api.setSetting(progressKey, JSON.stringify(progress))
-    // 同步更新全局最近练习记录（首页"继续刷题"卡片使用）
-    const lastPractice = {
-      bank_id: bankId,
-      bank_name: bankName.value,
-      position: current.value + 1,
-      total: questions.value.length,
-      saved_at: progress.saved_at,
+    if (canTrack.value) {
+      await api.setSetting(progressKey, JSON.stringify(progress))
+      // 同步更新全局最近练习记录（首页"继续刷题"卡片使用）
+      const lastPractice = {
+        bank_id: bankId,
+        bank_name: bankName.value,
+        position: current.value + 1,
+        total: questions.value.length,
+        saved_at: progress.saved_at,
+      }
+      await api.setSetting(LAST_PRACTICE_KEY, JSON.stringify(lastPractice))
+    } else {
+      // 未订阅的公共库：进度**只写本机**（直写 idb，不触发云推送），也不改首页"继续刷题"指向
+      await idb.setSetting(progressKey, JSON.stringify(progress))
     }
-    await api.setSetting(LAST_PRACTICE_KEY, JSON.stringify(lastPractice))
   } catch (e) {
     console.error('保存进度失败：', e)
   }
@@ -515,6 +531,8 @@ async function saveProgress() {
 async function onToggleFavorite() {
   const q = currentQuestion.value
   if (!q) return
+  // 未订阅的公共库：不记收藏（只练不留痕，防污染）
+  if (!canTrack.value) { toastInfo('未订阅的题库不记录收藏与错题'); return }
   try {
     const nowFav = await api.toggleFavorite(bankId, q.id)
     const next = new Set(favoriteIds.value)
@@ -568,6 +586,8 @@ onBeforeUnmount(() => {
 
 async function onAnswered(payload: { correct: boolean; answer: string; duration_ms: number | null }) {
   const q = currentQuestion.value
+  // 未订阅的公共库：不记练习记录/错题/已掌握/每日统计（只练不留痕，防污染）
+  if (!canTrack.value) return
   try {
     const res = await api.recordPractice({ bank_id: bankId, question_id: q.id, user_answer: payload.answer, is_correct: payload.correct, duration_ms: payload.duration_ms })
     // 2026-08-19：连续答对达到阈值 → 自动移入「已掌握」
