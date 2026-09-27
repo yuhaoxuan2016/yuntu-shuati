@@ -1176,7 +1176,9 @@ async function listAllSettings(): Promise<any[]> {
   // 反复触发服务端 500（Internal Server Error），并让「推送 N 条」永远消不掉（rabbit 实测「永远 2 条」）。
   // 且它们本就**不需要跨端**：逐题进度是设备相关的，组卷模板是网页端特有的。
   // 若将来确需跨端，应改走云函数分片存储，而不是塞进 settings 单文档。
-  const keys = ['ai_model', 'daily_records', 'last_practice']
+  // 2026-09-27：补 `subscriptions`（订阅记录）—— 订阅制要求它**跨端一致**：
+  // 在同一身份下订阅过的库，换设备登录后也应出现在「我的题库」。它只是 bankRef 数组，体积极小。
+  const keys = ['ai_model', 'daily_records', 'last_practice', 'subscriptions']
   const out: any[] = []
   // 2026-09-27（补「续练位置」跨端）：`PracticeView.vue:293` 用 `practice_progress_<bankId>` 存
   // 「本库练到第几题 + 模式」，**每个题库一个键**。此前同步清单里写的是**无后缀的** `practice_progress`，
