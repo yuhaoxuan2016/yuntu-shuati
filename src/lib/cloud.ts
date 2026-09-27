@@ -1230,16 +1230,18 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
             const legacyKey = /^\d+$/.test(bid)
             const cloudIsMine = !!(map[bid] && map[bid]._src && map[bid]._src.dev === myDev)
             if (legacyKey && !cloudIsMine) continue
+            // 2026-09-28（修）：**按「本地有没有这个库」分流**，而不是按键形态 ——
+            //   · 本地有该库（本地私库；key 是它的 cloud_id）→ 进度里的题号是**源设备的**，必须按 src_local_id 重映射
+            //   · 本地没有（订阅库/公共库；订阅不落本地库行）→ 进度里是**云端稳定题号**，直通（不映射）
+            //   （早先按「非数字键=订阅库」一刀切直通 ⇒ 本地库的 cloud_id 键被漏映射 ⇒ 换设备后进度回不到原位）
+            const bankId = legacyKey ? await mapCloudBankToLocal(Number(bid)) : await mapCloudBankToLocal(bid)
             let res
-            if (legacyKey) {
-              const bankId = await mapCloudBankToLocal(Number(bid))
-              if (bankId == null) continue // 本地库不在本机：等题库同步下来再拉
+            if (bankId != null) {
               const index = await srcLocalIndexOf(bankId)
               res = mergeProgressForLocal(map[bid], localAll[lk] ?? null, myDev, index)
+            } else if (legacyKey) {
+              continue // 旧数字键 + 本地无此库：无意义
             } else {
-              // 非数字键 = 订阅库/公共库 bankRef：其题号是**云端稳定 id**（两端一致），
-              // 跨端不需要、也不能按本机题表映射 ⇒ passthrough 原样采用（2026-09-28 补：
-              // 此前会被"库不在本机/无本地题"的判断挡住 ⇒ 订阅库进度跨端静默失效）。
               res = mergeProgressForLocal(map[bid], localAll[lk] ?? null, myDev, new Map(), true)
             }
             if (res.write) puts.push({ key: lk, value: JSON.stringify(res.value), synced_at: now() })

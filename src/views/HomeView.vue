@@ -149,6 +149,15 @@
             <span v-if="b.creator_name" class="creator-pill">👤 {{ b.creator_name }}</span>
             <span class="count-pill">📝 {{ b.question_count || 0 }} 题</span>
           </div>
+          <!-- 2026-09-28：订阅库的练习进度条（与本地库卡片同款式） -->
+          <div v-if="subsProgress[String(b._id)]" class="progress-row">
+            <div class="progress-bar">
+              <div class="progress-fill" :style="{ width: subsPct(b) + '%' }"></div>
+            </div>
+            <div class="progress-text">
+              已答 {{ subsProgress[String(b._id)].answered }} / {{ b.question_count || '?' }}<template v-if="subsProgress[String(b._id)].finished"> · 已完成</template>
+            </div>
+          </div>
           <div class="actions">
             <button class="primary-btn" @click="$router.push(b.mode === 'recite' ? `/recite/${b._id}?name=${encodeURIComponent(b.name)}` : `/practice/${b._id}?name=${encodeURIComponent(b.name)}`)">{{ b.mode === 'recite' ? '开始背题' : '开始刷题' }}</button>
             <div class="pub-actions-row">
@@ -319,7 +328,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useBankStore } from '../stores/bank'
 import { api, toLocalDateStr, addDays } from '../utils/api'
@@ -410,6 +419,32 @@ const subscribedBanks = computed(() => {
   const set = new Set(subs.value.map(String))
   return publicBanks.value.filter((b: any) => set.has(String(b && b._id)))
 })
+
+// 2026-09-28（rabbit）：订阅库卡片也显示练习进度 —— 读 `practice_progress_<bankRef>`
+// （订阅库的进度以 bankRef 为键；已答题数 = answer_states 的条目数）。
+const subsProgress = ref<Record<string, { answered: number; total: number; finished: boolean }>>({})
+async function loadSubsProgress () {
+  const out: Record<string, { answered: number; total: number; finished: boolean }> = {}
+  for (const b of subscribedBanks.value) {
+    const ref_ = String(b && b._id)
+    if (!ref_) continue
+    try {
+      const raw = await api.getSetting('practice_progress_' + ref_)
+      if (!raw) continue
+      const p = JSON.parse(raw)
+      const answered = p && p.answer_states ? Object.keys(p.answer_states).length : 0
+      if (!answered && !p?.finished) continue
+      out[ref_] = { answered: answered || (Number(p?.order_ids?.length) || 0), total: Number(b.question_count) || 0, finished: !!p?.finished }
+    } catch { /* 单库失败跳过 */ }
+  }
+  subsProgress.value = out
+}
+watch(subscribedBanks, () => { loadSubsProgress() }, { immediate: true })
+function subsPct (b: any): number {
+  const x = subsProgress.value[String(b && b._id)]
+  if (!x || !x.total) return 0
+  return Math.min(100, Math.round((x.answered / x.total) * 100))
+}
 
 const sortedBanks = computed(() => {
   const arr = [...publicBanks.value].sort((a: any, b: any) => {

@@ -9,6 +9,11 @@
 
 export const SYNC_DEVICE_KEY = 'cloud_device_id'
 
+/** 进度内容的 schema 版本（写入时标在 `_src.v`）。v3 起「本机最终形态」才可信：
+ *  v2（2026-09-28 早）的直通/映射判据有过一次错误泛化（按键形态分流而非按库归属），
+ *  ⇒ v2 的本地内容一律视为「待重算」，同刻(saved_at 相同)也会被重映射修正。 */
+export const PROG_SCHEMA_V = 3
+
 export interface KVLike { getItem(key: string): string | null; setItem(key: string, value: string): void }
 
 /** 设备指纹：首次调用生成并持久化；用途 = 判断一份同步内容是不是「本机写的」（换身份不影响）。 */
@@ -57,7 +62,7 @@ export function mergeProgressForLocal(
   passthrough = false,
 ): ProgressMergeResult {
   const localProg = (() => { try { return localRaw ? JSON.parse(localRaw) : null } catch { return null } })()
-  const localIsMine = !!(localProg && localProg._src && localProg._src.dev === myDev)
+  const localIsMine = !!(localProg && localProg._src && localProg._src.dev === myDev && localProg._src.v === PROG_SCHEMA_V)
   const cloudIsMine = !!(cloudProg && cloudProg._src && cloudProg._src.dev === myDev)
   const ct = progTs(cloudProg)
   const lt = localProg ? progTs(localProg) : -1
@@ -68,7 +73,7 @@ export function mergeProgressForLocal(
   // 时跳过，等题库同步下来再拉。
   if (!passthrough && (!index || index.size === 0)) return { write: false, value: null }
   const mapped = (cloudIsMine || passthrough) ? { ...cloudProg } : remapProgress(cloudProg, index)
-  mapped._src = { dev: myDev, v: 2 }
+  mapped._src = { dev: myDev, v: PROG_SCHEMA_V }
   return { write: true, value: mapped }
 }
 
