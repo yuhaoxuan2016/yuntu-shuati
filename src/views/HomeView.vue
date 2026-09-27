@@ -153,11 +153,23 @@
           <div class="actions">
             <!-- 2026-09-27 订阅模式：公共库用**完整练习界面**（bankRef 作字符串 id ⇒ api 层读云端、不落本地）。
                  未订阅只练不留痕；订阅后才记录错题/统计。
-                 ⚠️ 这里**不再显示「✓ 已添加到我的题库」**：那是旧「导入副本」的标记，与「订阅」语义重复，
-                 两者并存会让卡片堆成三层、还互相打架（rabbit 指出）。订阅状态由下方订阅按钮自身表达。 -->
+                 下方两个次要操作**并排一行**（订阅 / 添加到本地）—— 二者是不同需求，都要保留：
+                   · 订阅     = 引用云端，省空间，在线读（离线用不了）
+                   · 添加到本地 = 复制一份到本机，离线可用
+                 ⚠️ 不再显示「✓ 已添加到我的题库」这类独立标记（会与订阅状态堆叠、语义打架）；
+                    已导入状态改为由按钮自身文案表达。 -->
             <button class="primary-btn" @click="$router.push(b.mode === 'recite' ? `/recite/${b._id}?name=${encodeURIComponent(b.name)}` : `/practice/${b._id}?name=${encodeURIComponent(b.name)}`)">{{ b.mode === 'recite' ? '开始背题' : '开始刷题' }}</button>
-            <button v-if="subs.includes(String(b._id))" class="import-btn" @click.stop="onToggleSub(b)">✓ 已订阅 · 点此取消</button>
-            <button v-else class="import-btn" @click.stop="onToggleSub(b)">☆ 订阅（记错题与统计）</button>
+            <!-- 2026-09-27：**背题库（计算题）不显示订阅与添加到本地** —— 计算题没有「对错」概念，
+                 既不存在错题也没什么可订阅；整库内容只走在线读取（与下方提示一致）。 -->
+            <div v-if="b.mode !== 'recite'" class="pub-actions-row">
+              <button v-if="subs.includes(String(b._id))" class="import-btn" @click.stop="onToggleSub(b)">✓ 已订阅</button>
+              <button v-else class="import-btn" @click.stop="onToggleSub(b)">☆ 订阅</button>
+              <button class="import-btn" :disabled="importingId === b._id" @click.stop="importPublicBank(b)">
+                <span v-if="importingId === b._id">导入中… {{ importProgress?.done }}/{{ importProgress?.total }}</span>
+                <span v-else-if="isImported(b.name)">✓ 已添加到本地</span>
+                <span v-else>＋ 添加到本地</span>
+              </button>
+            </div>
             <div v-if="b.mode === 'recite'" class="imported-tag">仅在线背题 · 不下载到本地</div>
             <div v-if="importingId === b._id && importProgress && importProgress.total" class="import-progress">
               <div class="import-bar"><div class="import-fill" :style="{ width: (importProgress.done / importProgress.total * 100) + '%' }"></div></div>
@@ -1098,6 +1110,11 @@ onBeforeUnmount(() => { document.removeEventListener('click', onDocClick); docum
 .import-btn { width: 100%; margin-top: 8px; padding: 8px 12px; border: 1px dashed var(--color-primary); border-radius: var(--radius-md); background: var(--color-primary-light); color: var(--color-primary); cursor: pointer; font-size: 13px; font-weight: 500; transition: background 0.15s, transform 0.1s; }
 .import-btn:hover:not(:disabled) { background: var(--color-primary); color: #fff; transform: translateY(-1px); }
 .import-btn:disabled { cursor: default; opacity: 0.7; }
+/* 2026-09-27 订阅模式：卡片上的两个次要操作**并排一行**（订阅 / 添加到本地），
+   避免竖排堆叠把卡片撑高（rabbit 指出过"堆成三层"）。
+   ⚠️ 必须覆盖 .import-btn 的 width:100%，否则 flex 布局下会被撑满整行。 */
+.pub-actions-row { display: flex; gap: 8px; margin-top: 8px; }
+.pub-actions-row .import-btn { flex: 1 1 0; min-width: 0; width: auto; margin-top: 0; }
 .imported-tag { margin-top: 8px; font-size: 12px; color: var(--color-success-deep); background: var(--color-success-bg); padding: 4px 10px; border-radius: 12px; text-align: center; }
 /* 「本库来自公共题库 · 点此更新」（2026-09-25）：可点的胶囊提示，沿用 imported-tag 的观感 */
 .pub-sync-hint { margin-top: 8px; padding: 6px 10px; border-radius: 12px; text-align: center; font-size: 12px; cursor: pointer; color: var(--color-info-strong); background: rgba(37, 99, 235, 0.08); transition: background 0.15s; }
