@@ -28,13 +28,13 @@ export function addDays(dateStr: string, days: number): string {
 //   精确定位，不再只认「本设备当初分配的本地 id」（换过身份/设备的文档只认 cloud_id，否则删不掉、下次又拉回来）。
 function markCloudDeleted(
   coll: 'favorites' | 'wrong_questions' | 'mastered_questions' | 'questions' | 'quiz_banks',
-  bankId: number, questionId: number | string | null, cloudId: string | null = null,
+  bankId: number | string, questionId: number | string | null, cloudId: string | null = null,
 ) {
   import('../lib/cloud').then(m => m.markCloudDeleted(coll, bankId, questionId, cloudId)).catch(() => {})
 }
 
 /** 取题库的云端 `_id`（没推上去过 / 取不到 → null） */
-async function bankCloudId(bankId: number): Promise<string | null> {
+async function bankCloudId(bankId: number | string): Promise<string | null> {
   try {
     const b: any = await idb.getBank?.(bankId)
     return b?.cloud_id ?? null
@@ -102,10 +102,30 @@ export const api = {
     scheduleCloudPush()
   },
   // === 题目 ===
-  async listQuestions(bankId: number): Promise<Question[]> {
+  // 2026-09-27 订阅模式：`bankId` 传**字符串**时表示"公共题库/订阅库"（bank_ref = 云端题库文档 _id），
+  // **题目直接读云端、不落本地** —— 这正是"订阅 = 引用而非复制"的含义（本地 questions 表的 keyPath 是
+  // 自增 id，公共题本来也不该进去）。题目身份键仍用数字：`ExamQuestion.id` 实测取 `_local_id`，
+  // 而公共库 `visibility='public'` 在写规则上不可改 ⇒ `_local_id` 永久稳定，跨端一致。
+  async listQuestions(bankId: number | string | string): Promise<Question[]> {
+    if (typeof bankId === 'string') {
+      const { listPublicBankQuestions } = await import('../lib/exam')
+      const rows: any[] = await listPublicBankQuestions(bankId)
+      return rows.map((q: any) => ({
+        id: typeof q.id === 'number' ? q.id : (Number(q.id) || 0),   // 实测为数字 _local_id；兜底不抛
+        bank_id: bankId as any,        // 订阅库的身份 = bankRef（本地表 bank_id 是 index，可存字符串）
+        type: String(q.type || 'single'),
+        stem: String(q.stem || ''),
+        options: q.options ?? null,
+        answer: q.answer ?? null,
+        analysis: q.analysis ?? null,
+        source_index: q.source_index ?? null,
+        confidence: 0,
+        images: q.images ?? null,
+      }))
+    }
     return idb.listQuestions(bankId)
   },
-  async clearBankQuestions(bankId: number): Promise<void> {
+  async clearBankQuestions(bankId: number | string): Promise<void> {
     // A-15：同上——清空题目也要在云端删，否则下次同步整库题目原样回来
     markCloudDeleted('questions', bankId, null, await bankCloudId(bankId))
     await idb.clearBankQuestions(bankId)
@@ -115,14 +135,14 @@ export const api = {
   // 2026-09-18（A-15）：本函数原先的注释写着「题目没有云端删除标记 ⇒ 不会去删云端文档」，
   //   那是当时的实况；现在题目集合已纳入标记机制，这里逐题打标记（该路径的 id 数量就是本次导入
   //   重新选择的那几十上百条，逐条可接受）。
-  async deleteQuestions(bankId: number, ids: number[]): Promise<void> {
+  async deleteQuestions(bankId: number | string, ids: number[]): Promise<void> {
     const cid = await bankCloudId(bankId)   // 2026-09-24：同 deleteBank，按题库云端 _id 锚定
     for (const qid of ids) markCloudDeleted('questions', bankId, qid, cid)
     await idb.deleteQuestions(bankId, ids)
     scheduleCloudPush()
   },
   // 批量写入题目（导入公共题库到本地、合并题目等场景）
-  async addQuestions(bankId: number, qs: any[]): Promise<number> {
+  async addQuestions(bankId: number | string, qs: any[]): Promise<number> {
     const n = await idb.addQuestions(bankId, qs)
     scheduleCloudPush()
     return n
@@ -133,12 +153,12 @@ export const api = {
     await idb.updateQuestion(rest)
     scheduleCloudPush()
   },
-  async searchQuestions(bankId: number, query: string, limit?: number): Promise<Question[]> {
+  async searchQuestions(bankId: number | string, query: string, limit?: number): Promise<Question[]> {
     return idb.searchQuestions(bankId, query, limit)
   },
   // === 导入 ===
   // 浏览器端：直接解析后入库（规则引擎）
-  async importFromHtml(bankId: number, html: string): Promise<number> {
+  async importFromHtml(bankId: number | string, html: string): Promise<number> {
     const { parseHtml } = await import('../lib/parser')
     const qs = parseHtml(html, bankId)
     await idb.clearBankQuestions(bankId)
@@ -151,7 +171,7 @@ export const api = {
   //   · A-21：把 `aiStructurize` 新回报的 `failedChunks` 一路带到调用方（原来只写 console）。
   //   · A-23：`expected` 原来直接写成 `count`（自己跟自己比）⇒ 导入页那条「识别题数明显少于预期」
   //     的安全网**永远不可能触发**。现在改用**独立于 AI 的文档题号预估**（ai.ts 的 estimateQuestionCount）。
-  async importWithAi(bankId: number, text: string, onProgress?: (done: number, total: number) => void): Promise<{ count: number; expected: number; failedChunks: number; totalChunks: number }> {
+  async importWithAi(bankId: number | string, text: string, onProgress?: (done: number, total: number) => void): Promise<{ count: number; expected: number; failedChunks: number; totalChunks: number }> {
     const { aiStructurize, estimateQuestionCount } = await import('../lib/ai')
     const res = await aiStructurize(text, bankId, onProgress)
     await idb.clearBankQuestions(bankId)
@@ -159,7 +179,7 @@ export const api = {
     scheduleCloudPush()
     return { count, expected: estimateQuestionCount(text), failedChunks: res.failedChunks, totalChunks: res.totalChunks }
   },
-  async importFromPdf(bankId: number, path: string): Promise<number> {
+  async importFromPdf(bankId: number | string, path: string): Promise<number> {
     throw new Error('PDF 导入在网页版暂不支持，请使用 TXT/MD/docx 格式')
   },
   async testAiConnection(): Promise<void> {
@@ -214,12 +234,12 @@ export const api = {
     const n = parseInt(v, 10)
     return Number.isFinite(n) && n >= 0 ? n : 3
   },
-  async listWrong(bankId: number): Promise<number[]> { return idb.listWrong(bankId) },
+  async listWrong(bankId: number | string | string): Promise<number[]> { return idb.listWrong(bankId) },
   // 错题本完整记录（含 correct_streak，供「连对 n 次」展示）
-  async listWrongRecords(bankId: number): Promise<any[]> { return idb.listWrongRecords(bankId) },
-  async listMastered(bankId: number): Promise<number[]> { return idb.listMastered(bankId) },
-  async listMasteredRecords(bankId: number): Promise<any[]> { return idb.listMasteredRecords(bankId) },
-  async markWrong(bankId: number, questionId: number | string): Promise<number> {
+  async listWrongRecords(bankId: number | string): Promise<any[]> { return idb.listWrongRecords(bankId) },
+  async listMastered(bankId: number | string): Promise<number[]> { return idb.listMastered(bankId) },
+  async listMasteredRecords(bankId: number | string): Promise<any[]> { return idb.listMasteredRecords(bankId) },
+  async markWrong(bankId: number | string, questionId: number | string): Promise<number> {
     // T8b（2026-09-16）：形参 `questionId` 随 `ExamQuestion.id` 一起放宽为 `number | string`。
     // 这里是**传参**类消费方（`ExamTakeView.vue` 的 `api.markWrong(q.bank_id, q.id)`）。
     // 为什么不按另外两种写法：`String(id)` 归一会让**数字** id 也变成字符串写进 `question_id`，
@@ -242,48 +262,48 @@ export const api = {
     scheduleCloudPush()
     return n
   },
-  async markWrongMastered(bankId: number, questionId: number): Promise<void> {
+  async markWrongMastered(bankId: number | string, questionId: number): Promise<void> {
     // 从错题表移除 → 记录云端删除标记（P1.2）
     markCloudDeleted('wrong_questions', bankId, questionId)
     await idb.markWrongMastered(bankId, questionId)
     scheduleCloudPush()
   },
-  async restoreWrongToPending(bankId: number, questionId: number): Promise<void> {
+  async restoreWrongToPending(bankId: number | string, questionId: number): Promise<void> {
     // 从已掌握表移除 → 记录云端删除标记（P1.2）
     markCloudDeleted('mastered_questions', bankId, questionId)
     await idb.restoreWrongToPending(bankId, questionId)
     scheduleCloudPush()
   },
   // 2026-08-16：从错题本直接删除记录（不做标记掌握）
-  async removeWrongRecord(bankId: number, questionId: number): Promise<void> {
+  async removeWrongRecord(bankId: number | string, questionId: number): Promise<void> {
     markCloudDeleted('wrong_questions', bankId, questionId)
     await idb.removeWrong(bankId, questionId)
     scheduleCloudPush()
   },
   // 2026-08-16：从已掌握表直接删除记录
-  async removeMasteredRecord(bankId: number, questionId: number): Promise<void> {
+  async removeMasteredRecord(bankId: number | string, questionId: number): Promise<void> {
     markCloudDeleted('mastered_questions', bankId, questionId)
     await idb.removeMastered(bankId, questionId)
     scheduleCloudPush()
   },
-  async bankStats(bankId: number): Promise<{ total: number; practiced: number; correct: number; mastered: number }> { return idb.bankStats(bankId) },
+  async bankStats(bankId: number | string): Promise<{ total: number; practiced: number; correct: number; mastered: number }> { return idb.bankStats(bankId) },
   // === 设置 ===
   async getSetting(key: string): Promise<string | null> { return idb.getSetting(key) },
   async setSetting(key: string, value: string): Promise<void> { await idb.setSetting(key, value); scheduleCloudPush() },
   // === 收藏 ===
-  async toggleFavorite(bankId: number, questionId: number): Promise<boolean> {
+  async toggleFavorite(bankId: number | string, questionId: number): Promise<boolean> {
     const r = await idb.toggleFavorite(bankId, questionId)
     // 取消收藏 → 记录云端删除标记（P1.2）
     if (!r) markCloudDeleted('favorites', bankId, questionId)
     scheduleCloudPush()
     return r
   },
-  async listFavorites(bankId: number): Promise<number[]> { return idb.listFavorites(bankId) },
-  async isFavorite(bankId: number, questionId: number): Promise<boolean> {
+  async listFavorites(bankId: number | string): Promise<number[]> { return idb.listFavorites(bankId) },
+  async isFavorite(bankId: number | string, questionId: number): Promise<boolean> {
     const favs = await idb.listFavorites(bankId)
     return favs.includes(questionId)
   },
-  async clearFavorites(bankId: number): Promise<void> {
+  async clearFavorites(bankId: number | string): Promise<void> {
     // 清空收藏 → 全量记录云端删除标记（P1.2）
     const favs = await idb.listFavorites(bankId)
     for (const qid of favs) markCloudDeleted('favorites', bankId, qid)
@@ -305,7 +325,7 @@ export const api = {
   async restoreBackup(data: any, onProgress?: (msg: string) => void): Promise<void> {
     return restoreBackup(data, onProgress)
   },
-  async exportBank(bankId: number): Promise<string> {
+  async exportBank(bankId: number | string): Promise<string> {
     const banks = await idb.listBanks()
     const bank = banks.find(x => x.id === bankId)
     const qs = await idb.listQuestions(bankId)

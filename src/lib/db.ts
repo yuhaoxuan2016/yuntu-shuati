@@ -172,7 +172,7 @@ export const idb = {
   async updateBank(data: any): Promise<void> {
     await tx('quiz_banks', 'readwrite', s => s.put(data))
   },
-  async listRecords(bankId: number): Promise<any[]> {
+  async listRecords(bankId: number | string): Promise<any[]> {
     const db = await openDB()
     return new Promise((resolve, reject) => {
       const t = db.transaction('practice_records', 'readonly')
@@ -183,18 +183,18 @@ export const idb = {
     })
   },
   // 2026-08-16：云同步写前去重——判断同一次练习（同题库+同题+同时间）是否已存在，避免同步重复 add 导致正确率翻倍
-  async findPracticeRecord(bankId: number, questionId: number, practicedAt: string | null | undefined): Promise<boolean> {
+  async findPracticeRecord(bankId: number | string, questionId: number, practicedAt: string | null | undefined): Promise<boolean> {
     const rows = await this.listRecords(bankId)
     return rows.some(r =>
       r.question_id === questionId && r.bank_id === bankId &&
       (practicedAt ? String(r.practiced_at) === String(practicedAt) : true)
     )
   },
-  async toggleFavoriteSafe(bankId: number, questionId: number): Promise<boolean> {
+  async toggleFavoriteSafe(bankId: number | string, questionId: number): Promise<boolean> {
     return this.toggleFavorite(bankId, questionId)
   },
   // === questions ===
-  async listQuestions(bankId: number): Promise<any[]> {
+  async listQuestions(bankId: number | string): Promise<any[]> {
     const db = await openDB()
     return new Promise((resolve, reject) => {
       const t = db.transaction('questions', 'readonly')
@@ -204,7 +204,7 @@ export const idb = {
       req.onerror = () => reject(req.error)
     })
   },
-  async addQuestions(bankId: number, qs: any[]): Promise<number> {
+  async addQuestions(bankId: number | string, qs: any[]): Promise<number> {
     const db = await openDB()
     return new Promise((resolve, reject) => {
       const t = db.transaction('questions', 'readwrite')
@@ -214,7 +214,7 @@ export const idb = {
       for (const q of qs) store.add({ ...q, bank_id: bankId })
     })
   },
-  async clearBankQuestions(bankId: number): Promise<void> {
+  async clearBankQuestions(bankId: number | string): Promise<void> {
     const db = await openDB()
     await new Promise<void>((resolve, reject) => {
       const t = db.transaction('questions', 'readwrite')
@@ -234,7 +234,7 @@ export const idb = {
   // 而旧版在调用它之前没有任何确认，一次误点即丢掉整卷（这才是 P0-6 的真实缺陷）。
   // 注意别把原因写成「否则会删掉用户原有题」：导入本身（api.ts:108/117）就是先清空再写入，
   // 走到「重新选择」时题库里本就只剩本次导入的题。精确删除是把「删多少」算准，属未来防护。
-  async deleteQuestions(bankId: number, ids: number[]): Promise<void> {
+  async deleteQuestions(bankId: number | string, ids: number[]): Promise<void> {
     if (!ids.length) return
     const db = await openDB()
     await new Promise<void>((resolve, reject) => {
@@ -261,7 +261,7 @@ export const idb = {
     const v = await tx('questions', 'readonly', s => s.get(id))
     return v ?? null
   },
-  async searchQuestions(bankId: number, query: string, limit = 50): Promise<any[]> {
+  async searchQuestions(bankId: number | string, query: string, limit = 50): Promise<any[]> {
     const all = await this.listQuestions(bankId)
     const q = query.trim().toLowerCase()
     if (!q) return []
@@ -274,7 +274,7 @@ export const idb = {
     return tx('practice_records', 'readwrite', s => s.add(record)) as unknown as number
   },
   // === wrong_questions ===
-  async listWrong(bankId: number): Promise<number[]> {
+  async listWrong(bankId: number | string): Promise<number[]> {
     const db = await openDB()
     return new Promise((resolve, reject) => {
       const t = db.transaction('wrong_questions', 'readonly')
@@ -288,7 +288,7 @@ export const idb = {
   // 会把考试快照的 id 透传进来）。本函数只用 `x.question_id === questionId` 做等值比较、并把该值原样
   // 存进记录的 `question_id` 字段（`wrong_questions` 的主键是 autoIncrement 的 `id`，不是它），
   // 既不做算术也不作 IDB 键 → 纯类型放宽，数字 id 常态下运行时行为逐字节不变。
-  async markWrong(bankId: number, questionId: number | string, streak?: number, totalWrongOverride?: number): Promise<number> {
+  async markWrong(bankId: number | string, questionId: number | string, streak?: number, totalWrongOverride?: number): Promise<number> {
     const db = await openDB()
     const exists = await new Promise<boolean>((resolve, reject) => {
       const t = db.transaction('wrong_questions', 'readonly')
@@ -322,7 +322,7 @@ export const idb = {
   },
   // 查询已掌握中某条记录（含 total_wrong 历史累计）；不在已掌握返回 null
   // T8b：`questionId` 放宽为 `number | string`（被已放宽的 `markWrong` 透传调用；体内只有等值比较）
-  async getMasteredRecord(bankId: number, questionId: number | string): Promise<any | null> {
+  async getMasteredRecord(bankId: number | string, questionId: number | string): Promise<any | null> {
     const db = await openDB()
     return new Promise((resolve, reject) => {
       const t = db.transaction('mastered_questions', 'readonly')
@@ -334,7 +334,7 @@ export const idb = {
   },
   // 通用更新错题记录字段（含 total_wrong / correct_streak）
   // T8b：`questionId` 放宽为 `number | string`（被已放宽的 `markWrong` 透传调用；游标里只做等值比较）
-  async setWrongRecord(bankId: number, questionId: number | string, patch: { total_wrong?: number; correct_streak?: number }): Promise<void> {
+  async setWrongRecord(bankId: number | string, questionId: number | string, patch: { total_wrong?: number; correct_streak?: number }): Promise<void> {
     const db = await openDB()
     await new Promise<void>((resolve, reject) => {
       const t = db.transaction('wrong_questions', 'readwrite')
@@ -354,7 +354,7 @@ export const idb = {
   },
   // 查询错题本中某条记录（含 correct_streak 连续答对计数）；不在错题本返回 null
   // T8b：`questionId` 放宽为 `number | string`（`markWrong` 透传；体内 `find` 只做等值比较）
-  async getWrongRecord(bankId: number, questionId: number | string): Promise<any | null> {
+  async getWrongRecord(bankId: number | string, questionId: number | string): Promise<any | null> {
     const db = await openDB()
     return new Promise((resolve, reject) => {
       const t = db.transaction('wrong_questions', 'readonly')
@@ -365,7 +365,7 @@ export const idb = {
     })
   },
   // 更新错题记录的连续答对计数
-  async setWrongStreak(bankId: number, questionId: number, streak: number): Promise<void> {
+  async setWrongStreak(bankId: number | string, questionId: number, streak: number): Promise<void> {
     const db = await openDB()
     await new Promise<void>((resolve, reject) => {
       const t = db.transaction('wrong_questions', 'readwrite')
@@ -385,7 +385,7 @@ export const idb = {
     })
   },
   // 错题本完整记录（含 correct_streak，供列表展示「连对 n 次」）
-  async listWrongRecords(bankId: number): Promise<any[]> {
+  async listWrongRecords(bankId: number | string): Promise<any[]> {
     const db = await openDB()
     return new Promise((resolve, reject) => {
       const t = db.transaction('wrong_questions', 'readonly')
@@ -396,7 +396,7 @@ export const idb = {
     })
   },
   // 从错题本直接删除记录（不做标记掌握，彻底移除）
-  async removeWrong(bankId: number, questionId: number): Promise<void> {
+  async removeWrong(bankId: number | string, questionId: number): Promise<void> {
     const db = await openDB()
     await new Promise<void>((resolve, reject) => {
       const t = db.transaction('wrong_questions', 'readwrite')
@@ -414,7 +414,7 @@ export const idb = {
   },
   // 从已掌握表直接删除记录
   // T8b：`questionId` 放宽为 `number | string`（`markWrong` 透传；游标只做等值比较，删的是记录的 `id` 主键）
-  async removeMastered(bankId: number, questionId: number | string): Promise<void> {
+  async removeMastered(bankId: number | string, questionId: number | string): Promise<void> {
     const db = await openDB()
     await new Promise<void>((resolve, reject) => {
       const t = db.transaction('mastered_questions', 'readwrite')
@@ -430,7 +430,7 @@ export const idb = {
       }
     })
   },
-  async markWrongMastered(bankId: number, questionId: number): Promise<void> {
+  async markWrongMastered(bankId: number | string, questionId: number): Promise<void> {
     // 语义：从错题表移除 + 加入已掌握表（2026-08-15 修复：此前只删错题，已掌握无存储）
     // total_wrong：转已掌握时保留错题记录的累计做错次数，供顽固错题统计
     const wrongRec = await this.getWrongRecord(bankId, questionId)
@@ -465,7 +465,7 @@ export const idb = {
       }
     })
   },
-  async restoreWrongToPending(bankId: number, questionId: number): Promise<void> {
+  async restoreWrongToPending(bankId: number | string, questionId: number): Promise<void> {
     // 语义：从已掌握表移除 + 加回错题表（2026-08-15 修复：此前只是重新 markWrong）
     // total_wrong：已掌握移回错题时保留历史累计做错次数
     const masteredRec = await this.getMasteredRecord(bankId, questionId)
@@ -496,7 +496,7 @@ export const idb = {
     })
   },
   // === mastered_questions ===
-  async listMastered(bankId: number): Promise<number[]> {
+  async listMastered(bankId: number | string): Promise<number[]> {
     const db = await openDB()
     return new Promise((resolve, reject) => {
       const t = db.transaction('mastered_questions', 'readonly')
@@ -507,7 +507,7 @@ export const idb = {
     })
   },
   // 已掌握完整记录（含 total_wrong，供「曾错 n 次」展示）
-  async listMasteredRecords(bankId: number): Promise<any[]> {
+  async listMasteredRecords(bankId: number | string): Promise<any[]> {
     const db = await openDB()
     return new Promise((resolve, reject) => {
       const t = db.transaction('mastered_questions', 'readonly')
@@ -518,7 +518,7 @@ export const idb = {
     })
   },
   // === favorites ===
-  async toggleFavorite(bankId: number, questionId: number): Promise<boolean> {
+  async toggleFavorite(bankId: number | string, questionId: number): Promise<boolean> {
     const db = await openDB()
     const exists = await new Promise<boolean>((resolve, reject) => {
       const t = db.transaction('favorites', 'readonly')
@@ -547,7 +547,7 @@ export const idb = {
       return true
     }
   },
-  async listFavorites(bankId: number): Promise<number[]> {
+  async listFavorites(bankId: number | string): Promise<number[]> {
     const db = await openDB()
     return new Promise((resolve, reject) => {
       const t = db.transaction('favorites', 'readonly')
@@ -557,7 +557,7 @@ export const idb = {
       req.onerror = () => reject(req.error)
     })
   },
-  async clearFavorites(bankId: number): Promise<void> {
+  async clearFavorites(bankId: number | string): Promise<void> {
     const db = await openDB()
     await new Promise<void>((resolve, reject) => {
       const t = db.transaction('favorites', 'readwrite')
@@ -626,7 +626,7 @@ export const idb = {
     await tx('compose_records', 'readwrite', s => s.delete(id))
   },
   // === 统计 ===
-  async bankStats(bankId: number): Promise<{ total: number; practiced: number; correct: number; mastered: number }> {
+  async bankStats(bankId: number | string): Promise<{ total: number; practiced: number; correct: number; mastered: number }> {
     const qs = await this.listQuestions(bankId)
     const records = await new Promise<any[]>((resolve, reject) => {
       openDB().then(db => {
