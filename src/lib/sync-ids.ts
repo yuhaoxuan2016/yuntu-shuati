@@ -45,6 +45,18 @@ export function mapSrcToLocal(index: Map<number, number>, srcId: unknown): numbe
   return hit == null ? null : hit
 }
 
+/** 进度里「已提交」的答题数（守卫判定用：区分「近乎空的自动生成态」与「实质进度」）。 */
+export function submittedCount (prog: any): number {
+  const m = prog && prog.answer_states
+  if (!m || typeof m !== 'object') return 0
+  let n = 0
+  for (const v of Object.values(m)) { if (v && (v as any).submitted === true) n++ }
+  return n
+}
+
+/** 「云端有实质进度」的判定下限（已提交答题数）。 */
+export const SUBSTANTIAL_MIN = 5
+
 /** 进度内容与「本机已知题号」（题 id ∪ 源题号）的命中率（0~1）。
  *  无 order_ids 时返回 1（无据可判，不作无效处理）。用于「本机进度与题库对不上」的保护判定。 */
 export function orderHitRate (prog: any, knownIds: Set<number>): number {
@@ -63,6 +75,8 @@ const progTs = (x: any): number => { const t = Date.parse(String((x && x.saved_a
  * 续练进度的合并决策（纯函数）：
  *  - 云端更新 → 采用云端；同刻时：本地若已是「本机最终形态」（带本机 `_src` 标记）则保持本地，
  *    否则采用云端并**重映射**（历史错位数据的自愈路径）。
+ *  - 守卫：本地近乎空（≤1 已提交）+ 云端实质（≥5 已提交）→ 无论时间戳都采用云端；
+ *    本地点过「重新开始」（`_reset` 标记）时不触发，避免重置被顶回来。
  *  - 云端内容来自本机（`_src.dev == myDev`）→ 原样采用（内容已是本机编号）。
  *  - 库不在本机（index 为空）→ 不落地，等题库先同步下来。
  * 落盘值统一带本机 `_src` 标记，保证「本机最终形态」可被下次合并识别。
@@ -76,7 +90,13 @@ export function mergeProgressForLocal(
   const cloudIsMine = !!(cloudProg && cloudProg._src && cloudProg._src.dev === myDev)
   const ct = progTs(cloudProg)
   const lt = localProg ? progTs(localProg) : -1
-  const take = ct > lt || (ct === lt && !localIsMine)
+  // 2026-09-28（守卫）：本机进度「近乎空」（≤1 题已提交）而云端有实质进度（≥5 题）时，
+  // **即使本机 saved_at 更新也以云端为准** —— 防「打开练习页自动生成的新进度」（时间戳新、
+  // 内容空）按「取新」规则永久顶掉云端真实进度。
+  // 例外：本机带 `_reset` 标记（用户在练习页点过「重新开始」）⇒ 空是**故意的**，交常规取新规则。
+  const substantial = submittedCount(cloudProg) >= SUBSTANTIAL_MIN && submittedCount(localProg) <= 1
+    && !(localProg && localProg._reset)
+  const take = substantial || ct > lt || (ct === lt && !localIsMine)
   if (!take) return { write: false, value: null }
   // passthrough = 订阅库/公共库：进度里的题号是**云端稳定 id**（两端一致），跨端无需映射、也不能
   // 按本机题表映射 ⇒ 原样采用。仅本地库（数字键）才需要 src_local_id 重映射；本地题未就位（index 空）

@@ -203,6 +203,9 @@ interface SavedProgress {
   answer_states: Record<string, QuestionState>
   finished: boolean
   saved_at: string
+  /** 2026-09-28：本机点过「重新开始」的标记——同步守卫据此区分「故意的空」与
+   *  「打开页面自动生成的新进度」，避免重置被云端旧进度顶回来（见 sync-ids 的守卫）。 */
+  _reset?: string
 }
 
 const route = useRoute()
@@ -277,6 +280,8 @@ const loaded = ref(false)
 const restoring = ref(false)
 const restoredBanner = ref(false)
 const reloadKey = ref(0)
+// 「重新开始」标记（随进度落盘，同步守卫读它；云端版本一旦覆盖本机，标记自然消失）
+const resetMarked = ref<string | null>(null)
 
 // 搜索相关
 const searchQuery = ref('')
@@ -433,6 +438,9 @@ async function restoreProgress() {
   if (!progress || typeof progress.current_id !== 'number') return
   if (!questions.value.length) return
 
+  // 沿用落盘的「重新开始」标记（云端版本覆盖本机后此处自然读不到）
+  resetMarked.value = progress._reset ? String(progress._reset) : null
+
   restoring.value = true
 
   // 恢复练习模式
@@ -565,6 +573,8 @@ async function saveProgress() {
     finished: false,
     saved_at: new Date().toISOString(),
   }
+  // 保留「重新开始」标记：本机是故意的空，同步守卫不得用云端旧进度把它顶回来
+  if (resetMarked.value) progress._reset = resetMarked.value
   try {
     if (canTrack.value) {
       await api.setSetting(progressKey.value, JSON.stringify(progress))
@@ -955,6 +965,8 @@ const unansweredCount = computed(() => {
 // 重新开始：清除进度并重置（练习中点击弹确认；练习完成页点击直接重练）
 async function restart() {
   if (!finished.value && !confirm('确定要重新开始吗？当前进度将被清除。')) return
+  // 打标：这是**故意的**重置，同步时不把它当成「异常空进度」用云端旧值顶回来
+  resetMarked.value = new Date().toISOString()
   restoring.value = true
   current.value = 0
   mode.value = 'order'

@@ -102,6 +102,12 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.61</span>
+          <ul>
+            <li>新增进度守卫：本机进度近乎空（≤1 题已答）而云端有实质进度（≥5 题）时，以云端为准——打开练习页自动生成的新进度不会再顶掉真实进度；「重新开始」不受影响</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.60</span>
           <ul>
             <li>换设备后进度更稳：练习页能直接识别「来源设备题号」，历史遗留的未换算进度也能恢复到练到的位置</li>
