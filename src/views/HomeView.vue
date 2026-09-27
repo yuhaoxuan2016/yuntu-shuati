@@ -128,6 +128,39 @@
       <div class="pe-arrow">›</div>
     </div>
 
+    <!-- 2026-09-27 订阅模式：**订阅的公共题库** —— 与本地库并列（同属"我的题库"的实现），
+         但它是**引用云端**（不复制题目、不占本机空间），点进去用同一套完整界面。
+         操作集刻意与本地库一致（刷题/错题本/收藏/统计），但**不给**「导入题目/提交/删除」：
+         订阅的是公共库，内容不可改；要退出就「取消订阅」。 -->
+    <div v-if="subscribedBanks.length" class="subscribed-section">
+      <div class="section-header">
+        <h3>🌍 订阅的公共题库（{{ subscribedBanks.length }}）</h3>
+        <span class="section-sub">在线引用 · 练习会记录错题与统计 · 不占用本机空间</span>
+      </div>
+      <div class="grid public-grid">
+        <div v-for="b in subscribedBanks" :key="b._id" class="card public-card">
+          <div class="card-header">
+            <h3>{{ b.name }} <span class="vis-badge public">🌍</span></h3>
+          </div>
+          <div class="card-meta">
+            <span v-if="b.creator_name" class="creator-pill">👤 {{ b.creator_name }}</span>
+            <span class="count-pill">📝 {{ b.question_count || 0 }} 题</span>
+          </div>
+          <div class="actions">
+            <button class="primary-btn" @click="$router.push(b.mode === 'recite' ? `/recite/${b._id}?name=${encodeURIComponent(b.name)}` : `/practice/${b._id}?name=${encodeURIComponent(b.name)}`)">{{ b.mode === 'recite' ? '开始背题' : '开始刷题' }}</button>
+            <div class="pub-actions-row">
+              <button class="import-btn" @click.stop="$router.push(`/wrong/${b._id}`)">📕 错题本</button>
+              <button class="import-btn" @click.stop="$router.push(`/favorites/${b._id}`)">⭐ 收藏</button>
+            </div>
+            <div class="pub-actions-row">
+              <button class="import-btn" @click.stop="$router.push(`/stats/${b._id}`)">📊 统计</button>
+              <button class="import-btn" @click.stop="onToggleSub(b)">✕ 取消订阅</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 公共题库区块（云端直读，无需同步/导入） -->
     <div v-if="publicBanks.length" class="public-section">
       <!-- 2026-09-23：旧题库沉底并默认折叠 -->
@@ -182,7 +215,8 @@
     <div v-if="bankStore.loading" class="skeleton-grid">
       <div v-for="i in 3" :key="i" class="skeleton-card"></div>
     </div>
-    <div v-else-if="bankStore.banks.length === 0" class="empty">
+    <!-- 空状态：**本地库与订阅都为空**才算空 —— 否则订阅了库却显示"还没有题库"（2026-09-27） -->
+    <div v-else-if="bankStore.banks.length === 0 && !subscribedBanks.length" class="empty">
       <img class="empty-icon" src="/icons/study.gif" alt="📚" />
       <p class="empty-title">还没有题库</p>
       <p class="empty-tip">点击右上角"新建题库"开始你的刷题之旅</p>
@@ -362,6 +396,15 @@ const showOldBanks = ref(false)
 // ⇒ 以后归档/取消归档只改云，零代码。
 const isOldBank = (b: any) => b?.archived === true
 const oldBankCount = computed(() => publicBanks.value.filter(isOldBank).length)
+// 2026-09-27 订阅模式：「我的题库」= 本地库（实体）+ 订阅的公共库（引用）。
+// 订阅只存 bankRef（settings.subscriptions），元数据（名称/题数）从已加载的公共库列表里取，
+// **不复制题目**。点进去走 /practice/<bankRef>，与本地库用同一套完整界面。
+const subscribedBanks = computed(() => {
+  if (!subs.value.length) return []
+  const set = new Set(subs.value.map(String))
+  return publicBanks.value.filter((b: any) => set.has(String(b && b._id)))
+})
+
 const sortedBanks = computed(() => {
   const arr = [...publicBanks.value].sort((a: any, b: any) => {
     const ao = isOldBank(a) ? 1 : 0
