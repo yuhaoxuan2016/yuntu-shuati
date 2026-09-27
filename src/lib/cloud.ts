@@ -1082,6 +1082,28 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
       // P1-11：ai_base_url / ai_base_url_ack 同理 —— 端点与「自定义端点确认」都只能由本机决定；
       // 旧版本可能已在云端留下 ai_base_url 文档，这里一律不落地，避免静默改写端点。
       if (doc.key === 'ai_api_key' || doc.key === 'ai_base_url' || doc.key === 'ai_base_url_ack') return 'skipped'
+      // 2026-09-27：续练位置是「打包成一个 map」上来的，落地时要**逐库拆回** `practice_progress_<bankId>`。
+      // 合并口径：同一题库两边都有 ⇒ 比 `saved_at`，**取较新的一份**（避免把本机更新的进度用云端旧值覆盖）；
+      // 不同题库互不影响。云端 / 本机的坏值都跳过，不影响其余库。
+      if (doc.key === 'practice_progress') {
+        try {
+          const map = JSON.parse(doc.value || '{}') as Record<string, any>
+          const localAll = await idb.getAllSettings()
+          const ts = (x: any): number => { const t = Date.parse(String(x?.saved_at || '')); return isNaN(t) ? 0 : t }
+          const puts: any[] = []
+          for (const bid of Object.keys(map)) {
+            const lk = 'practice_progress_' + bid
+            const cur = localAll[lk]
+            let take = true
+            if (cur) { try { take = ts(map[bid]) >= ts(JSON.parse(cur)) } catch { take = true } }
+            if (take) puts.push({ key: lk, value: JSON.stringify(map[bid]), synced_at: now() })
+          }
+          if (puts.length) await idb.bulkPut('settings', puts)
+        } catch (e) {
+          console.warn('[cloud] 续练位置合并失败（不阻断）', e)
+        }
+        return 'skipped'
+      }
       // 2026-08-21：bulkPut 带 synced_at（拉取视为已同步；settings 推送为全推，此标记仅避免重复写）
       await idb.bulkPut('settings', [{ key: doc.key, value: doc.value, synced_at: now() }])
       return 'skipped'
@@ -1155,6 +1177,26 @@ async function listAllSettings(): Promise<any[]> {
   // 若将来确需跨端，应改走云函数分片存储，而不是塞进 settings 单文档。
   const keys = ['ai_model', 'daily_records', 'last_practice']
   const out: any[] = []
+  // 2026-09-27（补「续练位置」跨端）：`PracticeView.vue:293` 用 `practice_progress_<bankId>` 存
+  // 「本库练到第几题 + 模式」，**每个题库一个键**。此前同步清单里写的是**无后缀的** `practice_progress`，
+  // 永远读不到值 ⇒ 这个"进度同步"从写下的那天起就没工作过（rabbit 实测：换设备后进度归零）。
+  // 现在改为：**把所有 `practice_progress_*` 打包成一个 map 上传**（一个键，一次同步全部题库）。
+  // 体积可控：每个题库约几百字节，几十个题库也只有十几 KB，远低于下面的 64KB 上限。
+  try {
+    const allSet = await idb.getAllSettings()
+    const prog: Record<string, any> = {}
+    for (const k of Object.keys(allSet)) {
+      if (!k.startsWith('practice_progress_')) continue
+      const bid = k.slice('practice_progress_'.length)
+      if (!bid) continue
+      try { prog[bid] = JSON.parse(allSet[k] || '{}') } catch { /* 坏值跳过，不影响其它库 */ }
+    }
+    if (Object.keys(prog).length) {
+      out.push({ _id: 'lsettings_' + uidPrefix() + '_practice_progress', key: 'practice_progress', value: JSON.stringify(prog) })
+    }
+  } catch (e) {
+    console.warn('[cloud] 收集续练位置失败（不阻断）', e)
+  }
   // 2026-09-27：单键体积上限。起因：写 settings 时服务端返回 500 Internal Server Error，
   // 而云端已存在一条 187KB 的文档（小程序旧格式，内含 __progress 逐题进度）⇒ 判断为**请求体过大**
   // 导致网关侧 500（不是权限错误：403 已排除）。这里对超限的键**跳过上传**并打印体积，
