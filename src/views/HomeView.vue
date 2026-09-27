@@ -134,7 +134,7 @@
       <div v-if="oldBankCount" class="old-toggle" @click="showOldBanks = !showOldBanks">{{ showOldBanks ? '收起已归档' : `展开已归档 (${oldBankCount})` }}</div>
       <div class="section-header">
         <h3>🌍 公共题库</h3>
-        <span class="section-sub">云端官方题库 · 练习不写错题本与统计（进度只记在本机浏览器），点「添加到我的题库」导入本地后享收藏/错题/掌握度</span>
+        <span class="section-sub">云端官方题库 · 可直接练习（未订阅时不写错题与统计）；订阅后享错题本 / 收藏 / 掌握度 / 统计</span>
       </div>
       <div class="grid public-grid">
         <div v-for="b in sortedBanks" :key="b._id" class="card public-card">
@@ -151,18 +151,14 @@
             <span v-if="b.archived === true" class="archived-pill">📦 已归档 · 不再更新</span>
           </div>
           <div class="actions">
-            <!-- 2026-09-27 订阅模式：公共库的刷题入口从「简化版在线练习」(public-practice) 改为
-                 **完整的练习界面** (practice)，bankRef 作为字符串 id 传入 ⇒ api 层自动读云端、不落本地。
-                 这也让"订阅"的库拥有与本地库完全一致的功能（错题本/收藏/进度/统计），
-                 不再受限于简化版缺功能。 -->
+            <!-- 2026-09-27 订阅模式：公共库用**完整练习界面**（bankRef 作字符串 id ⇒ api 层读云端、不落本地）。
+                 未订阅只练不留痕；订阅后才记录错题/统计。
+                 ⚠️ 这里**不再显示「✓ 已添加到我的题库」**：那是旧「导入副本」的标记，与「订阅」语义重复，
+                 两者并存会让卡片堆成三层、还互相打架（rabbit 指出）。订阅状态由下方订阅按钮自身表达。 -->
             <button class="primary-btn" @click="$router.push(b.mode === 'recite' ? `/recite/${b._id}?name=${encodeURIComponent(b.name)}` : `/practice/${b._id}?name=${encodeURIComponent(b.name)}`)">{{ b.mode === 'recite' ? '开始背题' : '开始刷题' }}</button>
-            <div v-if="isImported(b.name)" class="imported-tag">✓ 已添加到我的题库</div>
-            <!-- 背题模式的库（计算题）不提供本地副本：整库内容只走在线读取 -->
-            <div v-else-if="b.mode === 'recite'" class="imported-tag">仅在线背题 · 不下载到本地</div>
-            <!-- 2026-09-27 订阅模式：「＋ 添加到我的题库」（复制一份副本）改为「☆ 订阅」（只记引用、不复制）。
-                 订阅后：① 出现在我的题库 ② 练习时记错题/统计。未订阅也可用完整界面练，但只练不留痕。 -->
             <button v-if="subs.includes(String(b._id))" class="import-btn" @click.stop="onToggleSub(b)">✓ 已订阅 · 点此取消</button>
-            <button v-else class="import-btn" @click.stop="onToggleSub(b)">☆ 订阅到我的题库</button>
+            <button v-else class="import-btn" @click.stop="onToggleSub(b)">☆ 订阅（记错题与统计）</button>
+            <div v-if="b.mode === 'recite'" class="imported-tag">仅在线背题 · 不下载到本地</div>
             <div v-if="importingId === b._id && importProgress && importProgress.total" class="import-progress">
               <div class="import-bar"><div class="import-fill" :style="{ width: (importProgress.done / importProgress.total * 100) + '%' }"></div></div>
             </div>
