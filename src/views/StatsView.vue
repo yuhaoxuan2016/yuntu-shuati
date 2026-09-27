@@ -156,11 +156,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
-import { api, toLocalDateStr, addDays } from '../utils/api'
+import { api, toLocalDateStr, addDays, resolveBankId } from '../utils/api'
 import { toastError } from '../utils/toast'
 
 const route = useRoute()
-const bankId = Number(route.params.bankId)
+// 2026-09-27 订阅模式：同 WrongView —— 数字=本地库，否则=公共题库 bankRef。
+const bankId = resolveBankId(route.params.bankId)
 const stats = ref({ total: 0, practiced: 0, correct: 0 })
 const loaded = ref(false)
 const wrongChartRef = ref<HTMLCanvasElement | null>(null)

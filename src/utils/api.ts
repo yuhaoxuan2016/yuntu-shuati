@@ -6,9 +6,19 @@ function scheduleCloudPush() {
   import('../lib/cloud').then(m => m.scheduleAutoPush()).catch(() => {})
 }
 
+// 订阅模式（2026-09-27）：题库标识有两种形态，**判据只在这里做一次**：
+//   · 纯数字 ⇒ 本地题库的 IndexedDB id
+//   · 其它   ⇒ 公共题库的 bankRef（云端 quiz_banks 文档 _id）
+// ⚠️ 为什么必须集中：判据一旦散落到各视图自己 `Number()`，就会出现"某页转化了、某页没转化"的
+// 半通状态 —— 那正是订阅制要消灭的不一致。**所有视图一律调用本函数，不得自行解析。**
+export type BankKey = number | string
+export function resolveBankId(raw: unknown): BankKey {
+  const s = String(raw ?? '')
+  return /^\d+$/.test(s) ? Number(s) : s
+}
+
 // 日期工具函数：避免夏令时问题
-export function toLocalDateStr(d: Date): string {
-  const year = d.getFullYear()
+export function toLocalDateStr(d: Date): string {  const year = d.getFullYear()
   const month = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`

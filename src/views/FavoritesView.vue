@@ -39,13 +39,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, Question } from '../utils/api'
+import { api, Question, resolveBankId } from '../utils/api'
 import { toastError } from '../utils/toast'
 import { classifyQuestionType } from '../lib/exam'
 import QuestionCard from '../components/QuestionCard.vue'
 
 const route = useRoute()
-const bankId = Number(route.params.bankId)
+// 2026-09-27 订阅模式：同 WrongView —— 数字=本地库，否则=公共题库 bankRef。
+const bankId = resolveBankId(route.params.bankId)
 const allQuestions = ref<Question[]>([])
 const favoriteIds = ref<number[]>([])
 const practicing = ref(false)

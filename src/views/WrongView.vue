@@ -120,13 +120,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, Question } from '../utils/api'
+import { api, Question, resolveBankId } from '../utils/api'
 import { toastError, toastSuccess, toastInfo } from '../utils/toast'
 import QuestionCard from '../components/QuestionCard.vue'
 import { classifyQuestionType } from '../lib/exam'
 
 const route = useRoute()
-const bankId = Number(route.params.bankId)
+// 2026-09-27 订阅模式：路由参数可能是本地库数字 id，也可能是公共题库 bankRef（字符串 _id）。
+const bankId = resolveBankId(route.params.bankId)
 const allQuestions = ref<Question[]>([])
 const wrongIds = ref<number[]>([])
 const masteredIds = ref<number[]>([])

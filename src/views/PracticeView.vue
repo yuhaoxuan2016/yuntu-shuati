@@ -178,7 +178,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, Question } from '../utils/api'
+import { api, Question, resolveBankId } from '../utils/api'
 import { toastError, toastSuccess, toastInfo } from '../utils/toast'
 import { useBankStore } from '../stores/bank'
 import { idb } from '../lib/db'
@@ -200,8 +200,7 @@ const bankStore = useBankStore()
 // 2026-09-27 订阅模式：路由参数既可能是本地题库的数字 id，也可能是**公共题库的 bankRef**（云端 _id，
 // 形如 `lquiz_banks_7` / 32 位十六进制串）。**不能再无条件 Number()** —— 那会把 bankRef 变成 NaN。
 // 判据：纯数字 ⇒ 本地库（number）；否则 ⇒ 订阅库（string bankRef），题目由 api 层直接读云端、不落本地。
-const _rawBankId = String(route.params.bankId ?? '')
-const bankId: number | string = /^\d+$/.test(_rawBankId) ? Number(_rawBankId) : _rawBankId
+const bankId = resolveBankId(route.params.bankId)
 // 2026-08-22：智能学习计划模式——队列来自 StudyPlanView 写入的 localStorage（study_plan_questions）
 // 修复前：计划跳转路由错误 404，且 mode=plan / study_plan_questions 无消费方，计划功能完全断裂
 const isPlanMode = route.query.mode === 'plan'

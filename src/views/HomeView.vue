@@ -156,6 +156,10 @@
                  这也让"订阅"的库拥有与本地库完全一致的功能（错题本/收藏/进度/统计），
                  不再受限于简化版缺功能。 -->
             <button class="primary-btn" @click="$router.push(b.mode === 'recite' ? `/recite/${b._id}?name=${encodeURIComponent(b.name)}` : `/practice/${b._id}?name=${encodeURIComponent(b.name)}`)">{{ b.mode === 'recite' ? '开始背题' : '开始刷题' }}</button>
+            <!-- 2026-09-27 订阅模式：订阅库与本地库应当**功能一致**，错题本/收藏/统计都要能进。
+                 这里传的是 b._id（= 云端 bankRef），各视图用 resolveBankId 统一解析 ⇒ 走 api 的云端分支。 -->
+            <button class="import-btn" @click.stop="$router.push(`/wrong/${b._id}`)">📕 错题本</button>
+            <button class="import-btn" @click.stop="$router.push(`/favorites/${b._id}`)">⭐ 收藏</button>
             <div v-if="isImported(b.name)" class="imported-tag">✓ 已添加到我的题库</div>
             <!-- 背题模式的库（计算题）不提供本地副本：整库内容只走在线读取 -->
             <div v-else-if="b.mode === 'recite'" class="imported-tag">仅在线背题 · 不下载到本地</div>
