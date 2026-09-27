@@ -305,7 +305,18 @@ const displayQuestions = computed(() => {
 
 // 2026-08-16：单题库「模拟考试」已取消（功能与「创建考试」重叠，且存在切模式计时器泄漏等缺陷）
 
-const progressKey = `practice_progress_${bankId}`
+// 2026-09-27 统一「进度标尺」——此前是本轮同步不通的根因：
+//   · 订阅库：bankId 已是 bankRef（云端 quiz_banks._id）⇒ 直接用 ✓
+//   · 本地库：原用**本机自增 id**（`practice_progress_1`）⇒ 换设备/换浏览器后这个 id 毫无意义，
+//     而另一台设备对同一个题库用的是**云端 id**（`practice_progress_lquiz_banks_14`）⇒ **两端标尺不同 ⇒ 进度永远对不上**。
+//   现在：本地库**优先用它已上云的 `cloud_id`（= 云端 _id，与其它设备一致）**；
+//   仅当该库从未上云（无 cloud_id）时才退回本地 id（此时本就无法跨端，属合理降级）。
+const progressKey = computed(() => {
+  if (typeof bankId === 'string') return `practice_progress_${bankId}`
+  const bank: any = bankStore.banks.find((b: any) => b.id === bankId)
+  const ref = bank && bank.cloud_id ? String(bank.cloud_id) : String(bankId)
+  return `practice_progress_${ref}`
+})
 // 全局最近练习记录（供首页"继续刷题"使用）
 const LAST_PRACTICE_KEY = 'last_practice'
 
@@ -378,7 +389,7 @@ onMounted(async () => {
 
 // 从后端恢复上次进度
 async function restoreProgress() {
-  const saved = await api.getSetting(progressKey)
+  const saved = await api.getSetting(progressKey.value)
   if (!saved) return
   let progress: SavedProgress
   try {
@@ -488,7 +499,7 @@ async function saveProgress() {
   // 完成练习后清除进度，下次从头开始
   if (finished.value) {
     try {
-      await api.setSetting(progressKey, '')
+      await api.setSetting(progressKey.value, '')
     } catch (e) {
       console.error('清除进度失败：', e)
     }
@@ -508,7 +519,7 @@ async function saveProgress() {
   }
   try {
     if (canTrack.value) {
-      await api.setSetting(progressKey, JSON.stringify(progress))
+      await api.setSetting(progressKey.value, JSON.stringify(progress))
       // 同步更新全局最近练习记录（首页"继续刷题"卡片使用）
       const lastPractice = {
         bank_id: bankId,
@@ -520,7 +531,7 @@ async function saveProgress() {
       await api.setSetting(LAST_PRACTICE_KEY, JSON.stringify(lastPractice))
     } else {
       // 未订阅的公共库：进度**只写本机**（直写 idb，不触发云推送），也不改首页"继续刷题"指向
-      await idb.setSetting(progressKey, JSON.stringify(progress))
+      await idb.setSetting(progressKey.value, JSON.stringify(progress))
     }
   } catch (e) {
     console.error('保存进度失败：', e)
