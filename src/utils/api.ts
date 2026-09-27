@@ -303,12 +303,33 @@ export const api = {
   // === 设置 ===
   async getSetting(key: string): Promise<string | null> { return idb.getSetting(key) },
   async setSetting(key: string, value: string): Promise<void> { await idb.setSetting(key, value); scheduleCloudPush() },
-  // === 订阅（2026-09-27）===
-  // 订阅 = 「把某个公共题库纳入我的题库」——**只记一条引用，不复制题目**。
+  // === 订阅（2026-09-27）===  // 订阅 = 「把某个公共题库纳入我的题库」——**只记一条引用，不复制题目**。
   // 存 settings（与 progress / last_practice 同机制）⇒ 天然走云同步、跨端一致。
   // 两个作用：① 出现在「我的题库」；② 练习时**记错题/统计**。
   // ⚠️ 未订阅的公共库也能用完整界面练，但**只练不留痕**（不写错题/收藏/统计、进度不进云），
   //    以防"点进别的库随手做错几题、错题却删不掉"的污染。
+  // 2026-09-27：**强制重新上传** —— 清掉本地所有同步标记（`synced_at`），让全部数据重新进入"待推送"队列。
+  // 为什么需要：旧版 `pushDoc` **无条件 return true** ⇒ 推送失败（如被权限规则拦）也把本地行标成"已同步"
+  // ⇒ 那些行**永远不会再被推送**（rabbit 实测：点了一下午「上传」始终"推送 0 条"）。
+  // 修复了 pushDoc 之后，仍需一个显式入口把**已经种下的错误标记**捞回来，否则旧数据永远卡住。
+  async forceResync(): Promise<number> {
+    const stores = ['quiz_banks', 'questions', 'wrong_questions', 'favorites', 'mastered_questions', 'practice_records']
+    let n = 0
+    for (const store of stores) {
+      try {
+        const rows: any[] = await (idb as any).listAll(store)
+        if (!rows || !rows.length) continue
+        const cleared = rows.map((r: any) => {
+          const { synced_at, ...rest } = r
+          return rest
+        })
+        await (idb as any).bulkPut(store, cleared)
+        n += cleared.length
+      } catch (e) { console.warn('[api] 清除同步标记失败', store, e) }
+    }
+    scheduleCloudPush()
+    return n
+  },
   async listSubscriptions(): Promise<string[]> {
     const raw = await idb.getSetting(SUBS_KEY)
     if (!raw) return []

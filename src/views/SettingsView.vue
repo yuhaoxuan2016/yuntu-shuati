@@ -547,6 +547,9 @@
                  上传＝只推（本地 → 云端）；下载＝只拉（云端 → 本地，按 updated_at 合并，不覆盖本地）；
                  双向＝先推后拉（老行为）。各自结果单独报，别让用户猜刚才发生了什么。 -->
             <button class="data-btn" :disabled="!cloudSaved || cloudSyncing" @click="doUpload">{{ syncAction === 'up' ? '⬆️ 上传中...' : '⬆️ 上传（本地 → 云端）' }}</button>
+            <!-- 2026-09-27：强制重新上传。旧版 pushDoc 会把"推送失败"也标成已同步 ⇒ 那些行永远不再推
+                 （rabbit 实测：点了一下午「上传」始终"推送 0 条"）。此入口先清本地同步标记、再全量推。 -->
+            <button class="data-btn" :disabled="!cloudSaved || cloudSyncing" @click="doForceResync">🔄 强制重新上传</button>
             <button class="data-btn" :disabled="!cloudSaved || cloudSyncing" @click="doDownload">{{ syncAction === 'down' ? '⬇️ 下载中...' : '⬇️ 下载（云端 → 本地）' }}</button>
             <button class="data-btn" :disabled="!cloudSaved || cloudSyncing" @click="doSync">{{ syncAction === 'both' ? '🔁 同步中...' : '🔁 双向同步' }}</button>
           </div>
@@ -761,7 +764,7 @@ import FeedbackDialog from '../components/FeedbackDialog.vue'
 import { isTrustedAiHost } from '../lib/ai'
 import { ref, onMounted } from 'vue'
 import { api } from '../utils/api'
-import { toastSuccess, toastError } from '../utils/toast'
+import { toastSuccess, toastError, toast } from '../utils/toast'
 import { updateAppearanceCache } from '../lib/theme'
 
 // 真实版本：构建时由 vite 的 define 注入（读 package.json，见 vite.config.ts）。
@@ -1064,6 +1067,32 @@ function reportSyncResult (
 }
 
 // 上传：只推（本地 → 云端）
+// 2026-09-27：**强制重新上传** —— 先清掉本地所有同步标记（`synced_at`），再走一次上传。
+// 为什么需要：旧版 `pushDoc` 无条件 return true ⇒ 推送失败也把行标成"已同步" ⇒ 那些行**永远不再推**
+// （rabbit 实测：点了一下午「上传」始终"推送 0 条"）。修了 pushDoc 之后，仍需显式入口捞回旧标记。
+async function doForceResync() {
+  if (!cloudSaved.value) { toastError('请先保存配置'); return }
+  if (syncAction.value) return
+  syncAction.value = 'up'
+  cloudSyncing.value = true
+  try {
+    const mod = await import('../lib/cloud')
+    const { api } = await import('../utils/api')
+    const n = await api.forceResync()
+    toast('info', `已清 ${n} 条本地同步标记，正在重新上传…`)
+    const res = await mod.pushToCloud()
+    const st = mod.getCloudStatus()
+    reportSyncResult('up', { ...res, pulled: 0, truncated: false, suppressed: 0 }, st, '强制重新上传完成')
+  } catch (e) {
+    cloudError.value = true
+    cloudStatusText.value = '强制上传失败：' + (e instanceof Error ? e.message : String(e))
+    toastError('强制上传失败')
+  } finally {
+    cloudSyncing.value = false
+    syncAction.value = ''
+  }
+}
+
 async function doUpload() {
   if (!cloudSaved.value) { toastError('请先保存配置'); return }
   if (syncAction.value) return
