@@ -328,7 +328,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useBankStore } from '../stores/bank'
 import { api, toLocalDateStr, addDays } from '../utils/api'
@@ -439,10 +439,9 @@ async function loadSubsProgress () {
   }
   subsProgress.value = out
 }
-// ⚠️ 不要 immediate（2026-09-28 白屏事故）：`subs` 的声明在本块**之后**（约 464 行），
-// immediate 会在 setup 期立刻求值 subscribedBanks → 访问未初始化的 `subs` → TDZ 报错 → 首页白屏。
-// 首次数据由 `subs` 加载完成（loadSubs → subscribedBanks 变化）驱动，行为等价。
-watch(subscribedBanks, () => { loadSubsProgress() })
+// ⚠️ 2026-09-28 白屏事故（发生两次）的定论：**Vue 的 `watch(source, cb)` 即使不 immediate，
+// 注册时也会对 source 求值一次**（取初值用于比对）⇒ watch 的**注册位置**同样受 TDZ 约束。
+// 本文件 `subs` 的声明在本块之后，故这里**不能**用 watch —— 进度刷新改由 `loadSubs()` 完成时显式调用。
 function subsPct (b: any): number {
   const x = subsProgress.value[String(b && b._id)]
   if (!x || !x.total) return 0
@@ -467,6 +466,9 @@ const importProgress = ref<{ done: number; total: number } | null>(null)
 const subs = ref<string[]>([])
 async function loadSubs () {
   try { subs.value = await api.listSubscriptions() } catch { subs.value = [] }
+  // 2026-09-28：订阅列表就绪 → 刷新订阅卡进度（原先靠 watch，因 TDZ 白屏事故改为显式调用；
+  // 此处已过 await，模块顶层同步代码必然全部执行完，`subs` 早已初始化，无 TDZ 风险）
+  loadSubsProgress()
 }
 loadSubs()
 async function onToggleSub (b: any) {
