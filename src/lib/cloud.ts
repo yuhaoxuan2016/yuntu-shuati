@@ -1148,7 +1148,12 @@ async function listAllSettings(): Promise<any[]> {
   // settings 集合无限膨胀。现在带稳定 _id（uid 前缀 + key），pushDoc 双写变成 upsert 语义。
   // 2026-09-27：补上 compose_templates —— compose-template.ts 头部注释一直写着「走现有云同步链路，
   // 跨设备自动同步」，但这个推送清单里从来没有它 ⇒ 模板其实没上云，换电脑/清缓存就丢。
-  const keys = ['ai_model', 'daily_records', 'last_practice', 'practice_progress', 'compose_templates']
+  // 2026-09-27：从同步清单中**移除两个体积不可控的键** —— `practice_progress`（逐题进度，可达数百 KB）
+  // 与 `compose_templates`（组卷模板）。二者体积随使用量增长，每次同步都会把请求体撑大 ⇒
+  // 反复触发服务端 500（Internal Server Error），并让「推送 N 条」永远消不掉（rabbit 实测「永远 2 条」）。
+  // 且它们本就**不需要跨端**：逐题进度是设备相关的，组卷模板是网页端特有的。
+  // 若将来确需跨端，应改走云函数分片存储，而不是塞进 settings 单文档。
+  const keys = ['ai_model', 'daily_records', 'last_practice']
   const out: any[] = []
   // 2026-09-27：单键体积上限。起因：写 settings 时服务端返回 500 Internal Server Error，
   // 而云端已存在一条 187KB 的文档（小程序旧格式，内含 __progress 逐题进度）⇒ 判断为**请求体过大**
