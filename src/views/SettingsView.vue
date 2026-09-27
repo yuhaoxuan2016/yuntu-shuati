@@ -97,9 +97,19 @@
           🔄 刷新页面
         </button>
         <button class="data-btn" @click="showUpdateLog = !showUpdateLog">📜 更新日志</button>
+        <button class="data-btn" @click="replayTour">👋 重看新手引导</button>
       </div>
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
+        <div class="log-entry">
+          <span class="log-version">v1.2.59</span>
+          <ul>
+            <li>新增「新手引导」：首次使用分步带你上手（设置页可随时重看）</li>
+            <li>同步明细：上传/下载后如实显示「题库 / 题目 / 记录 / 订阅 / 设置」各同步了什么</li>
+            <li>修复跨设备数据错位：换设备后错题只剩编号、进度回不到原位——含历史数据自动修复</li>
+            <li>订阅的公共题库：练习页新增「⇅ 同步」按钮；未订阅的库保持只练不留痕</li>
+          </ul>
+        </div>
         <div class="log-entry">
           <span class="log-version">v1.2.58</span>
           <ul>
@@ -750,6 +760,9 @@
 
     <!-- 2026-09-15（用户裁定）：意见反馈弹窗。可见性由「关于本项目」卡片里的入口控制 -->
     <FeedbackDialog :visible="showFeedback" @close="showFeedback = false" />
+
+    <!-- 重看新手引导（2026-09-28）：key 递增强制重挂，保证连点也能重新显示 -->
+    <OnboardingTour v-if="showTourAgain" :key="tourSeq" />
   </div>
 </template>
 
@@ -761,6 +774,7 @@ import { redeemBindCode, unbindMiniProgram, isBoundToMiniProgram } from '../lib/
 // （全仓 grep 零引用），用户永远打不开它；P2-19 已把它的「附加最近 100 行运行日志」修成真的。
 // 现在从设置页「关于本项目」卡片挂一个入口进来。日志缓冲由该组件首次打开时自行安装（复审 MF-1）。
 import FeedbackDialog from '../components/FeedbackDialog.vue'
+import OnboardingTour from '../components/OnboardingTour.vue'
 import { isTrustedAiHost } from '../lib/ai'
 import { ref, onMounted } from 'vue'
 import { api } from '../utils/api'
@@ -776,6 +790,10 @@ const checkingUpdate = ref(false)
 const showUpdateLog = ref(false)
 // 意见反馈弹窗的开关（2026-09-15 用户裁定新增入口）
 const showFeedback = ref(false)
+// 重看新手引导（2026-09-28）：key 递增让连点也能重新弹出
+const showTourAgain = ref(false)
+const tourSeq = ref(0)
+function replayTour () { showTourAgain.value = true; tourSeq.value += 1 }
 
 const apiKey = ref('')
 const baseUrl = ref('https://api.deepseek.com/v1')

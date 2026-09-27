@@ -17,6 +17,9 @@
       </div>
     </div>
 
+    <!-- 新手指引（2026-09-28）：新用户首开弹一次；判定在 onMounted 的 bankStore.load 回调里 -->
+    <OnboardingTour v-if="showTour" />
+
     <!-- 云朵彩蛋欢迎条（触发过彩蛋后显示） -->
     <div v-if="cloudEgg" class="cloud-welcome-bar">☁️ 小兔错题本 已经准备就绪，旅行者请开始今天的练习 ⭐</div>
 
@@ -326,6 +329,7 @@ import { recordVisit, getVisitStats } from '../lib/visit'
 import { poemOfTheDay, todayLabel, type Poem } from '../lib/poems'
 import { idb, normalizeTs } from '../lib/db'
 import { formatDate } from '../lib/spaced-repetition'
+import OnboardingTour from '../components/OnboardingTour.vue'
 
 interface LastPractice {
   bank_id: number
@@ -340,6 +344,8 @@ interface DailyRecord { date: string; total: number; correct: number }
 
 const router = useRouter()
 const bankStore = useBankStore()
+// 新手指引的显示开关（判定逻辑在 onMounted 的 bankStore.load 回调里）
+const showTour = ref(false)
 const showNew = ref(false)
 
 // 备案标识：与 App.vue 侧栏那份同源（都只读 .env 注入值），改口径时两处一起改
@@ -603,6 +609,10 @@ onMounted(async () => {
     loadStudyPlan(),
     loadMemoryReviewStats(),
     bankStore.load().then(async () => {
+      // 2026-09-28：新手指引——新用户（无标记 + 没题库 + 没配云同步）首开弹一次
+      if (!localStorage.getItem('shuati-tour-done-v1') && bankStore.banks.length === 0 && !cloudConfigured()) {
+        setTimeout(() => { showTour.value = true }, 600)
+      }
       // 加载每个题库统计
       // 2026-09-15 修复(P2-13)：新增 statsOk 集合——只有统计**确实成功**的库才可能被判空壳
       const statsOk = new Set<number>()
