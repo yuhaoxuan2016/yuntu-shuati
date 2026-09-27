@@ -164,20 +164,20 @@ onMounted(load)
 .recite { max-width: 860px; margin: 0 auto; padding: 16px 14px 60px; }
 .head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
 .back, .refresh {
-  border: 1px solid var(--border-color, #d0d5dd); background: var(--bg-card, #fff);
+  border: 1px solid var(--border-color, var(--color-border)); background: var(--bg-card, #fff);
   border-radius: 8px; padding: 6px 10px; cursor: pointer; color: inherit;
 }
 .title { flex: 1; }
 .title h2 { margin: 0; font-size: 1.2rem; }
-.sub { margin: 4px 0 0; font-size: 0.82rem; color: var(--text-secondary, #8a94a6); }
+.sub { margin: 4px 0 0; font-size: 0.82rem; color: var(--text-secondary, var(--color-text-tertiary)); }
 .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; }
 .chip {
-  border: 1px solid var(--border-color, #d0d5dd); background: transparent;
+  border: 1px solid var(--border-color, var(--color-border)); background: transparent;
   border-radius: 999px; padding: 4px 12px; cursor: pointer; color: inherit; font-size: 0.86rem;
 }
-.chip.active { background: #2f5597; border-color: #2f5597; color: #fff; }
-.toggle { margin-left: auto; font-size: 0.84rem; color: var(--text-secondary, #8a94a6); display: flex; align-items: center; gap: 4px; }
-.hint { color: var(--text-secondary, #8a94a6); font-size: 0.86rem; }
+.chip.active { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
+.toggle { margin-left: auto; font-size: 0.84rem; color: var(--text-secondary, var(--color-text-tertiary)); display: flex; align-items: center; gap: 4px; }
+.hint { color: var(--text-secondary, var(--color-text-tertiary)); font-size: 0.86rem; }
 .hint.err { color: #c00; }
 .cards { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-direction: column; gap: 12px; }
 .card {
@@ -185,10 +185,10 @@ onMounted(load)
   padding: 14px; background: var(--bg-card, #fff);
 }
 .meta { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.idx { font-size: 0.78rem; color: var(--text-secondary, #8a94a6); }
+.idx { font-size: 0.78rem; color: var(--text-secondary, var(--color-text-tertiary)); }
 .tag {
   font-size: 0.74rem; padding: 1px 8px; border-radius: 999px;
-  background: #eef2ff; color: #2f5597;
+  background: var(--color-primary-light); color: var(--color-primary);
 }
 .stem { line-height: 1.75; font-size: 1rem; }
 .ans {
@@ -204,7 +204,7 @@ onMounted(load)
 }
 .derived-tag {
   display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 4px;
-  background: #dde3f5; color: #2f5597; font-size: 0.74rem; font-weight: 700;
+  background: var(--color-primary-light); color: var(--color-primary); font-size: 0.74rem; font-weight: 700;
 }
 .warn {
   font-size: 0.74rem; padding: 1px 8px; border-radius: 999px;
@@ -216,7 +216,7 @@ onMounted(load)
   background: #fff6e5; border-left: 3px solid #e0a800; color: #7a5200; font-size: 0.84rem;
 }
 .fold { margin-top: 8px; }
-.fold summary { cursor: pointer; color: #2f5597; font-size: 0.88rem; }
+.fold summary { cursor: pointer; color: var(--color-primary); font-size: 0.88rem; }
 .diff {
   font-size: 0.74rem; padding: 1px 9px; border-radius: 999px; font-weight: 700;
   border: 1px solid transparent;
@@ -226,11 +226,11 @@ onMounted(load)
 .d-hard { background: #fdecec; color: #b42318; border-color: #f3bdbc; }
 .kno {
   margin: 6px 0 0; padding: 10px 12px; border-radius: 8px; font-size: 0.86rem;
-  background: #f7f9fc; border-left: 3px solid #2f5597; color: #33384a;
+  background: var(--color-surface); border-left: 3px solid var(--color-primary); color: var(--color-text);
   white-space: pre-wrap; line-height: 1.8;
 }
 .ai-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; font-size: 0.75em;
   font-weight: 600; color: var(--color-text-muted, #6b7280); background: var(--color-bg-soft, #f3f4f6);
-  border: 1px solid var(--border-color, #d0d5dd); border-radius: 10px; }
+  border: 1px solid var(--border-color, var(--color-border)); border-radius: 10px; }
 .ai-foot { margin: 8px 0 4px; font-size: 0.786em; color: var(--color-text-muted, #6b7280); }
 </style>

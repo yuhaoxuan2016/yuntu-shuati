@@ -1327,8 +1327,10 @@ export async function submitFeedback(payload: {
  */
 export async function redeemBindCode(code: string): Promise<{ ok: boolean; msg?: string; uid?: string }> {
   const clean = String(code || '').trim().toUpperCase()
-  if (!/^[A-Z2-9]{6}$/.test(clean)) {
-    return { ok: false, msg: '绑定码应为 6 位字母数字' }
+  // 2026-09-27：同时接受 6 位临时码与 16 位长期身份码。
+  // 长期码是为「网页端无登录态、换设备就得重绑」设计的：生成一次、长期可重复兑换。
+  if (!/^([A-Z2-9]{6}|[A-Z2-9]{16})$/.test(clean)) {
+    return { ok: false, msg: '绑定码应为 6 位临时码或 16 位长期码' }
   }
   if (!(await ensureApp())) {
     return { ok: false, msg: '云环境未连接，请先在设置中开启云同步' }

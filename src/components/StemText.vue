@@ -75,9 +75,9 @@ const parts = computed<Part[]>(() => {
   display: inline-block;
   margin: 4px 0;
   padding: 2px 8px;
-  border: 1px dashed var(--border-color, #d0d5dd);
+  border: 1px dashed var(--color-border);
   border-radius: 6px;
-  color: var(--text-secondary, #8a94a6);
+  color: var(--color-text-secondary);
   font-size: 0.88em;
 }
 </style>

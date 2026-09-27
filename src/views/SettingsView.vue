@@ -101,6 +101,13 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.58</span>
+          <ul>
+            <li>与小程序打通：新增「16 位长期身份码」—— 生成一次、长期可用；换设备或换浏览器时输入它即可回到同一身份（原先的 6 位码 10 分钟即过期，每次都得回小程序重新生成）</li>
+            <li>修复主题色：补齐变量表里 3 个从未定义的变量（链接色 / 次要文字 / 浅色底），此前这些位置换主题不跟随；背诵页整页写死的蓝色也改为跟随主题</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.57</span>
           <ul>
             <li>考试归档：已归档的考试默认收起在列表末尾，可展开查看、可随时取消归档（自己建的考试可自助归档；管理员可归档任意考试）</li>
@@ -551,11 +558,12 @@
           <div class="bind-box">
             <div class="bind-title">🔗 与小程序打通{{ bound ? '（已绑定）' : '' }}</div>
             <p class="hint">
-              网页版默认匿名身份，换浏览器或清缓存会丢数据。在小程序「我的 → 与网页版打通」生成 6 位绑定码填在这里，
+              网页版默认匿名身份，换浏览器或清缓存会丢数据。在小程序「我的 → 与网页版打通」生成
+              <b>6 位临时码</b>（10 分钟内有效）或 <b>16 位长期身份码</b>（长期可重复使用，适合以后换设备）填在这里，
               两端即共用同一账号，错题与进度自动互通。
             </p>
             <div v-if="!bound" class="bind-row">
-              <input v-model="bindCodeInput" class="bind-input" placeholder="6 位绑定码" maxlength="6" @input="bindCodeInput = bindCodeInput.toUpperCase()" />
+              <input v-model="bindCodeInput" class="bind-input" placeholder="6 位临时码 / 16 位长期码" maxlength="16" @input="bindCodeInput = bindCodeInput.toUpperCase()" />
               <button class="data-btn" :disabled="binding || bindCodeInput.trim().length !== 6" @click="doBind">
                 {{ binding ? '绑定中...' : '绑定' }}
               </button>

@@ -159,6 +159,15 @@ body {
   --color-text-secondary: #666;
   --color-text-tertiary: #999;
 
+  /* 2026-09-27 补齐三个**从未定义过**的变量。
+     此前调用处只能吃各自写的 fallback 硬编码色（链接色的 fallback 正是 #2f5597 深蓝）
+     ⇒ 换主题时这些位置纹丝不动，表现为「部分按钮/链接不跟主题色」。
+     这里统一指向主题变量，皮肤一改即自动跟随；深色模式无需重复声明
+     —— 被引用的 primary/text-tertiary/border-light 在 dark 块里都已重新定义。 */
+  --color-link: var(--color-primary);
+  --color-text-muted: var(--color-text-tertiary);
+  --color-bg-soft: var(--color-border-light);
+
   /* 圆角 */
   --radius-sm: 4px;
   --radius-md: 6px;

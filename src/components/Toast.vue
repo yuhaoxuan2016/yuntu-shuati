@@ -169,7 +169,7 @@ onBeforeUnmount(() => {
 }
 .toast-progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--color-info-strong), #8b5cf6);
+  background: linear-gradient(90deg, var(--color-info-strong), var(--color-primary));
   border-radius: 2px;
   transition: width 0.3s ease;
 }
