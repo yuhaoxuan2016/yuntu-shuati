@@ -642,7 +642,14 @@ async function pullCollection(collection: CloudCollection, localIds: Set<string>
 
   const mineQueries: any[] = []
   try {
-    const byUid = await pullAll(coll, coll.where({ _openid: authedUid }).orderBy('updated_at', 'desc'), collection + ':_openid')
+    // 2026-09-27：`quiz_banks`/`questions` 的读规则是 `visibility=="public" || _openid==auth.openid`，
+    // 而本文件 366 行早已写明这条纪律：**规则的每一半都要体现在查询里，否则整条被拒**。
+    // 写路径（pushDoc / 删除 / 更新）一直带着 `visibility: _.neq('public')`，**唯独拉取这条漏了** ⇒
+    // 「新设备下载拉不到题库」。此集合私有行必然 visibility='private'，带上它不会漏数据
+    // （公共题库走 listPublicBanks 单独读，不经过这里）。
+    const needsVis = collection === 'quiz_banks' || collection === 'questions'
+    const where = needsVis ? { _openid: authedUid, visibility: visibilityGuard() } : { _openid: authedUid }
+    const byUid = await pullAll(coll, coll.where(where).orderBy('updated_at', 'desc'), collection + ':_openid')
     if (byUid.truncated) truncated = true
     if (byUid.rows.length) mineQueries.push(byUid.rows)
   } catch (e: any) { console.warn(`拉取 ${collection} 本人数据失败：`, e?.message || e) }
