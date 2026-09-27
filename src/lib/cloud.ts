@@ -627,19 +627,20 @@ async function pullCollection(collection: CloudCollection, localIds: Set<string>
   // 2026-08-16 对齐「只同步私人数据」约定：不再拉取公共题库/公共题（visibility public）。
   // 此前拉公共数据会把公共题 _local_id 当本地 id put 覆盖「添加到我的题库」的 private 副本，导致副本题目丢失。
   // 公共题库刷题走云端直读（listPublicBanks / listPublicBankQuestions），无需本地缓存。
+  // 拉取本人数据：**只按 `_openid`（当前登录身份）**。
+  //
+  // 2026-09-27 退役「按 sync_key 昵称拉取」这条通路，原因有三，都成立：
+  //   ① **身份已经统一**：16 位长期身份码上线后，换设备只需输一次码，登录 uid 就是 `wx_+openid`
+  //      ⇒ 自己在任何设备写的数据都能按 `_openid` 拉到，**不再需要拿昵称兜**。
+  //   ② **昵称本不该当身份**：`sync_key` 是用户自选、可随时改的昵称（本文件 P1-12 自己也写着这是隐患）。
+  //   ③ **它要放宽权限才能用**：`where({ sync_key })` 需要读规则允许"只按 sync_key 查"，
+  //      而 CloudBase 要求查询条件是规则子集 ⇒ 只能把整表读权限放开（2026-09-27 晚的 403 即由此而来）。
+  //      退役它之后，读规则可以收回为「属主 / 公开」两态，权限面收窄。
+  // ⚠️ 写入时仍然写 `sync_key` 字段（见 pushDoc）——它作为**元信息**保留，**不再承担查询/身份职责**。
   const seen = new Set<string>()
-  const syncKey = getSyncKey()
   let truncated = false
 
-  // 拉取本人数据（优先按 sync_key 昵称，失败/空则按 _openid；ACL 放开前昵称查询返回空）
   const mineQueries: any[] = []
-  if (syncKey) {
-    try {
-      const byKey = await pullAll(coll, coll.where({ sync_key: syncKey }).orderBy('updated_at', 'desc'), collection + ':sync_key')
-      if (byKey.truncated) truncated = true
-      if (byKey.rows.length) mineQueries.push(byKey.rows)
-    } catch (e: any) { console.warn(`拉取 ${collection} sync_key 数据失败：`, e?.message || e) }
-  }
   try {
     const byUid = await pullAll(coll, coll.where({ _openid: authedUid }).orderBy('updated_at', 'desc'), collection + ':_openid')
     if (byUid.truncated) truncated = true
