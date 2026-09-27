@@ -844,7 +844,10 @@ async function doBind() {
       bound.value = true
       bindCodeInput.value = ''
       bindError.value = false
-      bindMsg.value = '绑定成功！现在可点「同步数据」拉取小程序端的错题与进度'
+      // 2026-09-27：绑定后必须提示「刷新页面」—— redeemBindCode 内部虽已把 authedUid 换成新身份，
+      // 但页面里其它已加载的模块（云同步状态、IndexedDB 命名空间等）仍挂在旧 uid 上 ⇒ 不刷新时
+      // 点「同步数据」会按旧身份查空（rabbit 实测：绑定成功但下载拉取 0 条、两端不互通）。
+      bindMsg.value = '绑定成功！请刷新一次页面让新身份生效，然后点「同步数据」拉取小程序端的错题与进度'
       toastSuccess('已与小程序共用账号')
     } else {
       bindError.value = true
