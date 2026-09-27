@@ -16,6 +16,8 @@ import {
   type LedgerIndex,
   type LedgerKV,
 } from './sync-ledger'
+import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal } from './sync-ids'
+import type { SyncDetail } from './sync-format'
 
 // P2-7（T10a，2026-09-15）引入的时间戳归一化 helper 原本定义在本文件；
 // T10b（2026-09-15）把它**搬到 `db.ts` 并在此重新导出**，原因：5 处 `last_review` 比较里有两处在
@@ -352,7 +354,8 @@ export function recordDeletedLedger(entry: LedgerEntry): void {
 //   旧文档 `_openid` != 当前 authedUid ⇒ 这些「自己的旧文档」删不掉，下次按 sync_key 拉取时会复活。
 //   这是「宁可删不掉，不可删他人」的方向，符合 P0-2 的优先级。
 // 删除标记 → 云端查询条件（**按集合分流**，2026-09-18 随 A-15 新增 quiz_banks/questions 两种形态）：
-//   · favorites / wrong_questions / mastered_questions：pushOne 写的是 `_local_bank_id` + `question_id`
+//   · favorites / wrong_questions / mastered_questions：**优先**「题目的云端 _id」（2026-09-28 起，云端记录字段
+//     `question_cloud_id`，跨设备唯一）；拿不到时回退 pushOne 写的 `_local_bank_id` + `question_id`
 //   · questions：写的是 `_local_bank_id` + `_local_id`（题目本地 id）；`question_id === null` ⇒ 整个题库的题
 //   · quiz_banks：只写 `_local_id`（本地题库 id），与 question_id 无关
 //
@@ -393,6 +396,10 @@ function deletedMarkWhere(coll: CloudCollection, m: DeletedMark): Record<string,
       ? { bank_ref: m.cloud_id, _local_id: m.question_id, _openid: authedUid, visibility: vis }
       : { _local_bank_id: m.bank_id, _local_id: m.question_id, _openid: authedUid, visibility: vis }
   }
+  // 2026-09-28（跨设备映射）：记录类删除优先按「题目的云端 _id」（m.cloud_id ⇒ 云端记录的
+  // question_cloud_id）定位 —— 跨设备时 question_id 没有全局意义，只有它认得同一道题；
+  // 存量记录由回填脚本补齐该字段，未回填到的（或本机自产未上云）自动回退旧键。
+  if (m.cloud_id) return { question_cloud_id: m.cloud_id, _openid: authedUid }
   return { _local_bank_id: m.bank_id, question_id: m.question_id, _openid: authedUid }
 }
 
@@ -677,20 +684,67 @@ async function pullCollection(collection: CloudCollection, localIds: Set<string>
 
 // ===== 同步 =====
 
+// 2026-09-28（跨设备映射自愈）：清掉「指向不存在题目」的本地记录 ——
+// 旧版把「推送设备的题号」原样落地在本机（见 writeLocal 记录分支注释），这些记录挂在空号或同号的另一道题上。
+// 守卫：只处理「本机有题」的库 —— 订阅库/公共库的题在云端、本地无题，天然跳过；本机自产记录的题号必在题表，不受影响。
+// 只删本机：网页端拉取不会删云端，最坏情况下次同步会把云端记录重新带回来。
+async function cleanupDanglingRecords(): Promise<number> {
+  let removed = 0
+  try {
+    const banks = await idb.listBanks()
+    for (const b of banks) {
+      if (typeof b.id !== 'number') continue
+      const qs = await idb.listQuestions(b.id).catch(() => [] as any[])
+      if (!qs.length) continue
+      const idSet = new Set<number>()
+      for (const x of qs) if (typeof x.id === 'number') idSet.add(x.id)
+      const dangling = (qid: any): boolean => {
+        const n = Number(qid)
+        return Number.isFinite(n) && !idSet.has(n)
+      }
+      try {
+        for (const r of await idb.listWrongRecords(b.id)) {
+          if (r && dangling(r.question_id)) { await idb.removeWrong(b.id, r.question_id); removed++ }
+        }
+      } catch { /* 单集合失败不阻断 */ }
+      try {
+        for (const r of await idb.listMasteredRecords(b.id)) {
+          if (r && dangling(r.question_id)) { await idb.removeMastered(b.id, r.question_id); removed++ }
+        }
+      } catch { /* 同上 */ }
+      try {
+        for (const qid of await idb.listFavorites(b.id)) {
+          if (dangling(qid)) { await idb.removeFavorite(b.id, Number(qid)); removed++ }
+        }
+      } catch { /* 同上 */ }
+      try {
+        for (const r of await idb.listRecords(b.id)) {
+          if (r && typeof r.id === 'number' && dangling(r.question_id)) { await idb.removePracticeRecord(r.id); removed++ }
+        }
+      } catch { /* 同上 */ }
+    }
+    if (removed) console.info(`[cloud] 已清理 ${removed} 条挂不到题的错位记录（跨设备映射自愈）`)
+  } catch (e) {
+    console.warn('[cloud] 悬空记录清理失败（不阻断）', e)
+  }
+  return removed
+}
+
 // 全量同步：云端 → 本地（合并，updated_at 新的赢）
 // P1-19：返回值加 truncated —— 拉取命中分页上限时为 true。截断**不是错误**（同步确实完成了一部分），
 // 所以不写 cloudState.error（那会让状态行显示成失败），只如实向上返回，由设置页附加提示。
 // 2026-09-24：返回值加 suppressed —— 命中**删除账本**（本机删过的云端文档）而主动跳过的条数。
 //   这与 truncated 一样属于「如实告知、不是失败」：用户删过的东西不再回来，是预期行为。
-export async function syncFromCloud(): Promise<{ pulled: number; truncated: boolean; suppressed: number }> {
-  if (!(await ensureApp())) return { pulled: 0, truncated: false, suppressed: 0 }
-  if (!isAuthed()) return { pulled: 0, truncated: false, suppressed: 0 }
+export async function syncFromCloud(): Promise<{ pulled: number; truncated: boolean; suppressed: number; cleaned: number; detail: SyncDetail }> {
+  if (!(await ensureApp())) return { pulled: 0, truncated: false, suppressed: 0, cleaned: 0, detail: {} }
+  if (!isAuthed()) return { pulled: 0, truncated: false, suppressed: 0, cleaned: 0, detail: {} }
   cloudState.syncing = true
   cloudState.error = null
   try {
     let pulled = 0
     let truncated = false
     let suppressed = 0
+    const pullDetail: SyncDetail = {}
     resetSyncCaches() // 2026-08-23：每次同步重建 cloud_id/stem/题库 索引（防缓存过期）
     const ledgerIndex = loadDeletedLedgerIndex() // 2026-09-24：删除账本（本机删过的不再下载）
     for (const coll of CLOUD_COLLECTIONS) {
@@ -729,16 +783,18 @@ export async function syncFromCloud(): Promise<{ pulled: number; truncated: bool
           // 云端较新（或本地没有）→ 写入本地；2026-08-23 计数修复：pulled 只统计真正新增的题目，
           // 避免"遍历的云端文档数"虚高（此前导入干净备份后显示拉取 15800，实际云端只 14088）
           const type = await writeLocal(coll, cd)
-          if (type === 'added') pulled++
+          if (type === 'added') { pulled++; classifyDetail(pullDetail, coll, cd) }
         }
       }
     }
+    // 2026-09-28（跨设备映射自愈）：清掉「挂不到题」的错位记录（旧版把源设备题号原样落地的残留）
+    const cleaned = await cleanupDanglingRecords()
     cloudState.lastSyncAt = now()
-    return { pulled, truncated, suppressed }
+    return { pulled, truncated, suppressed, cleaned, detail: pullDetail }
   } catch (e: any) {
     cloudState.error = '同步失败：' + (e?.message || String(e))
     console.warn('syncFromCloud 失败：', e)
-    return { pulled: 0, truncated: false, suppressed: 0 }
+    return { pulled: 0, truncated: false, suppressed: 0, cleaned: 0, detail: {} }
   } finally {
     cloudState.syncing = false
   }
@@ -754,9 +810,9 @@ export async function syncFromCloud(): Promise<{ pulled: number; truncated: bool
 // #36（T10b，2026-09-15）：返回值补 failed —— 推送侧的部分失败数要能被 syncAll 汇总。
 // 原先只有 `cloudState.error` 一条通道，而它会被紧随其后的 `syncFromCloud` 首句 `cloudState.error = null`
 // 抹掉（见 syncAll 内注释），导致「推送部分失败」回到设置页时变成「同步完成」。
-export async function pushToCloud(): Promise<{ pushed: number; failed: number; skipped: number }> {
-  if (!(await ensureApp())) return { pushed: 0, failed: 0, skipped: 0 }
-  if (!isAuthed()) return { pushed: 0, failed: 0, skipped: 0 }
+export async function pushToCloud(): Promise<{ pushed: number; failed: number; skipped: number; detail: SyncDetail }> {
+  if (!(await ensureApp())) return { pushed: 0, failed: 0, skipped: 0, detail: {} }
+  if (!isAuthed()) return { pushed: 0, failed: 0, skipped: 0, detail: {} }
   cloudState.syncing = true
   cloudState.error = null
   const syncKey = getSyncKey()
@@ -765,6 +821,7 @@ export async function pushToCloud(): Promise<{ pushed: number; failed: number; s
     let pushed = 0
     let failed = 0
     let skipped = 0   // A-03：客户端无权写的公共内容（不算成功、也不算失败，单独报给用户）
+    const detail: SyncDetail = {}
     // 先处理删除标记：取消收藏/标记掌握/放回等删除类操作同步到云端（P1.2 修复）
     await applyDeletedMarks()
     for (const coll of CLOUD_COLLECTIONS) {
@@ -788,8 +845,9 @@ export async function pushToCloud(): Promise<{ pushed: number; failed: number; s
       for (let i = 0; i < dirty.length; i += PUSH_CONCURRENCY) {
         const batch = dirty.slice(i, i + PUSH_CONCURRENCY)
         const results = await Promise.allSettled(batch.map(r => pushOne(coll, r, syncKey)))
-        for (const res of results) {
-          if (res.status === 'fulfilled' && res.value === 'pushed') pushed++
+        for (let j = 0; j < results.length; j++) {
+          const res = results[j]
+          if (res.status === 'fulfilled' && res.value === 'pushed') { pushed++; classifyDetail(detail, coll, batch[j]) }
           else if (res.status === 'fulfilled' && res.value === 'skipped') skipped++
           else if (res.status === 'rejected') {
             failed++
@@ -803,12 +861,12 @@ export async function pushToCloud(): Promise<{ pushed: number; failed: number; s
       cloudState.error = `推送完成，但有 ${failed} 条记录推送失败（网络或权限问题），请稍后重试`
     }
     // #36：把两侧结果一起返回（failed 见 pushToCloud；error 见下方汇总后的 cloudState.error）
-    return { pushed, failed, skipped }
+    return { pushed, failed, skipped, detail }
   } catch (e: any) {
     cloudState.error = '推送失败：' + (e?.message || String(e))
     console.warn('pushToCloud 失败：', e)
     // 整轮中断，具体失败条数未知（失败原因由 cloudState.error 承载）
-    return { pushed: 0, failed: 0, skipped: 0 }
+    return { pushed: 0, failed: 0, skipped: 0, detail: {} }
   } finally {
     cloudState.syncing = false
   }
@@ -835,7 +893,15 @@ async function pushOne(coll: CloudCollection, r: any, syncKey: string): Promise<
   if ((coll === 'practice_records' || coll === 'wrong_questions' || coll === 'mastered_questions' || coll === 'favorites') && typeof doc.bank_id === 'number') {
     doc._local_bank_id = doc.bank_id
     // 保留 bank_id 供云端统计；拉取时用 _local_bank_id 回映
+    // 2026-09-28（跨设备映射）：带上题目的云端 _id —— 换设备落地时靠它把记录精确挂回本机题号；
+    // 本机题没上过云（无 cloud_id）时不带，落地侧按「原样」处理。
+    try {
+      const q: any = await idb.getQuestion(doc.question_id)
+      if (q && q.cloud_id) doc.question_cloud_id = q.cloud_id
+    } catch { /* 查不到就不带，不阻断推送 */ }
   }
+  // 本机来源标记不上云（云端题已有 _local_id；src_local_id 只服务本机映射）
+  delete (doc as any).src_local_id
   const ok = await pushDoc(coll, doc)
   // 2026-09-18 修复（重审 A-03）：无论成功还是「跳过」都要回写 synced_at——被跳过的那条本地改动
   //   永远推不上去（公共内容客户端无权写），不标就会每轮同步都重试并刷日志。
@@ -886,7 +952,7 @@ async function stampSyncedByKey(coll: 'wrong_questions' | 'mastered_questions' |
 //   修法：进入拉取前先记下推送侧的 error，拉取结束后若拉取侧没有写出新的 error，就把它放回 cloudState；
 //   并把 failed / truncated / error 一并返回给调用方，让提示按两侧的真实结果分流。
 // 2026-09-24：把拉取侧的 suppressed（命中删除账本、主动跳过的条数）一并上抛，设置页如实告知。
-export async function syncAll(): Promise<{ pulled: number; pushed: number; failed: number; skipped: number; truncated: boolean; suppressed: number; error: string | null }> {
+export async function syncAll(): Promise<{ pulled: number; pushed: number; failed: number; skipped: number; truncated: boolean; suppressed: number; cleaned: number; pushDetail: SyncDetail; pullDetail: SyncDetail; error: string | null }> {
   const pushRes = await pushToCloud()
   const pushError = cloudState.error // 拉取会把 error 清空，先抓在手里
   const pullRes = await syncFromCloud()
@@ -898,6 +964,9 @@ export async function syncAll(): Promise<{ pulled: number; pushed: number; faile
     skipped: pushRes.skipped,   // A-03：透传给设置页，让「公共内容推不上去」这件事被说出来
     truncated: pullRes.truncated,
     suppressed: pullRes.suppressed,   // 2026-09-24：本机删过、这次跳过没下载的条数
+    cleaned: pullRes.cleaned,   // 2026-09-28：本次清理的错位记录数
+    pushDetail: pushRes.detail,   // 2026-09-28：同步明细（上传侧）
+    pullDetail: pullRes.detail,   // 2026-09-28：同步明细（下载侧）
     error: cloudState.error,
   }
 }
@@ -910,6 +979,23 @@ export function scheduleAutoPush(): void {
 }
 
 // ===== 本地辅助 =====
+
+// 2026-09-28：同步明细归类 —— 设置页用它把「推送 N 条」说成人话（题库名单/题目/记录/订阅/设置）。
+// 订阅只在推送侧可数（settings 的 subscriptions 键）；拉取侧 settings 不产生 added，自然不计。
+function classifyDetail (d: SyncDetail, coll: CloudCollection, row: any): void {
+  if (coll === 'quiz_banks') {
+    if (row && row.name) (d.banks = d.banks || []).push(String(row.name))
+  } else if (coll === 'questions') {
+    d.questions = (d.questions || 0) + 1
+  } else if (coll === 'practice_records' || coll === 'wrong_questions' || coll === 'mastered_questions' || coll === 'favorites') {
+    d.records = (d.records || 0) + 1
+  } else if (coll === 'settings') {
+    d.settings = (d.settings || 0) + 1
+    if (row && row.key === 'subscriptions') {
+      try { const arr = JSON.parse(String(row.value || '[]')); if (Array.isArray(arr)) d.subscriptions = arr.length } catch { /* 坏值不报 */ }
+    }
+  }
+}
 
 async function listLocalAll(coll: CloudCollection): Promise<any[]> {
   switch (coll) {
@@ -927,11 +1013,26 @@ async function listLocalAll(coll: CloudCollection): Promise<any[]> {
 // 2026-08-23 扩展：cloudMap（cloud_id→题目）+ stemMap（stem→题目），供精确匹配 + 内容级去重，均 O(1)
 let qCloudIdx: { bankId: number; cloudMap: Map<string, any>; stemMap: Map<string, any> } | null = null
 
+// 2026-09-28：跨设备题号映射的两个按库缓存（同一次同步内复用，reset 时清空）
+//   qCloudIdCache：云端题 _id → 本机题号（记录落地映射用）
+//   srcIdxCache：来源题号 → 本机题号（进度内容重映射用）
+let qCloudIdCache: { bankId: number; map: Map<string, number> } | null = null
+let srcIdxCache: { bankId: number; map: Map<number, number> } | null = null
+
 // 2026-08-23 本地题库映射缓存（mapCloudBankToLocal 内部会 listBanks；一次同步内固化，避免每道题都全量扫题库）
 let bankMapCache: { banks: any[] } | null = null
 function resetSyncCaches(): void {
   qCloudIdx = null
   bankMapCache = null
+  qCloudIdCache = null
+  srcIdxCache = null
+}
+
+// 设备指纹（localStorage 持久、与登录身份无关；用途=判断同步内容是否「本机写的」）
+let deviceIdCache: string | null = null
+function deviceId(): string {
+  if (!deviceIdCache) deviceIdCache = getOrCreateDeviceId(window.localStorage)
+  return deviceIdCache
 }
 
 // 写本地，返回本次变更类型：added=新增 / updated=更新 / skipped=未变
@@ -1039,21 +1140,25 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
         // 键须与索引构建处同构（含 type），否则命中不了、每题都新增
         localQ = qCloudIdx!.stemMap.get(`${stem}\u0000${String(q.type || '')}`) ?? null
       }
+      // 2026-09-28：把云端 `_local_id`（该题在「推送设备」上的题号）存为本地题的 `src_local_id` ——
+      // 跨设备映射（记录/进度落地）的唯一依据。本地主键仍是自增 id（绝不改用 `_local_id`：8-16 事故教训），
+      // `src_local_id` 只作来源标记，不参与任何主键/去重逻辑。
+      const srcLocal = typeof q._local_id === 'number' ? { src_local_id: q._local_id } : {}
       if (localQ) {
         // 已存在：保留本地 id 与本地 cloud_id，仅按最新内容更新
         const { _id, _local_id, ...rest } = q
         const wasNoCloud = cloudId && !localQ.cloud_id
-        await idb.updateQuestion({ ...localQ, ...rest, id: localQ.id, bank_id: bankId, cloud_id: cloudId ?? localQ.cloud_id, synced_at: now() })
+        await idb.updateQuestion({ ...localQ, ...rest, id: localQ.id, bank_id: bankId, cloud_id: cloudId ?? localQ.cloud_id, synced_at: now(), ...srcLocal })
         // 回写 cloud_id 后刷新索引（下次同库可直接 cloud_id 命中）
         if (wasNoCloud) {
-          await idb.updateQuestion({ ...localQ, cloud_id: cloudId })
+          await idb.updateQuestion({ ...localQ, cloud_id: cloudId, ...srcLocal })
           await ensureIdx()
         }
         return wasNoCloud ? 'updated' : 'skipped'
       } else {
         // 首次拉取：剥离云端 id/_local_id，add 让 IndexedDB 分配新 id（避免覆盖其他题库）
         const { _id, _local_id, id, ...rest } = q
-        await idb.addQuestions(bankId, [{ ...rest, cloud_id: cloudId, synced_at: now() }])
+        await idb.addQuestions(bankId, [{ ...rest, cloud_id: cloudId, synced_at: now(), ...srcLocal }])
         // 新增后刷新索引（同库后续题可直接命中）
         await ensureIdx()
         return 'added'
@@ -1067,6 +1172,14 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
       const bankId = await mapCloudBankToLocal(r._local_bank_id ?? r.bank_id)
       if (bankId != null) {
         r.bank_id = bankId
+        // 2026-09-28（跨设备映射）：记录的 question_id 是「推送设备」的题号，在本机没有对应。
+        // 带 question_cloud_id（云端题 _id）时按它精确定位本机题号；定位不到 = 题还没同步下来 → 跳过，
+        // 绝不把记录挂到同号的另一道题上。无该字段（本机自产/历史遗留）→ 保持原样（本就是本机号语义）。
+        if (r.question_cloud_id) {
+          const localQid = await mapCloudQuestionToLocal(bankId, String(r.question_cloud_id))
+          if (localQid == null) return 'skipped'
+          r.question_id = localQid
+        }
         if (coll === 'practice_records') {
           // 2026-08-16 修复：本地记录无 updated_at → 合并比较永远"云端较新" → 每次同步重复 add 同一条记录，
           // 导致 correct（按次数统计）翻倍、首页正确率爆表（如 200%）。写前按 (bank_id, question_id, practiced_at) 去重。
@@ -1103,17 +1216,33 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
       // 合并口径：同一题库两边都有 ⇒ 比 `saved_at`，**取较新的一份**（避免把本机更新的进度用云端旧值覆盖）；
       // 不同题库互不影响。云端 / 本机的坏值都跳过，不影响其余库。
       if (doc.key === 'practice_progress') {
+        // 2026-09-28（跨设备映射）：进度里的题号引用（order_ids/current_id/answer_states）没有全局意义，
+        // 采用云端版本时必须按「来源题号 → 本机题号」重映射；「本机最终形态」（带本机 `_src` 标记）原样保留。
+        // 合并/重映射决策在 sync-ids.ts（纯函数、可脚本直测）。
         try {
           const map = JSON.parse(doc.value || '{}') as Record<string, any>
           const localAll = await idb.getAllSettings()
-          const ts = (x: any): number => { const t = Date.parse(String(x?.saved_at || '')); return isNaN(t) ? 0 : t }
+          const myDev = deviceId()
           const puts: any[] = []
           for (const bid of Object.keys(map)) {
             const lk = 'practice_progress_' + bid
-            const cur = localAll[lk]
-            let take = true
-            if (cur) { try { take = ts(map[bid]) >= ts(JSON.parse(cur)) } catch { take = true } }
-            if (take) puts.push({ key: lk, value: JSON.stringify(map[bid]), synced_at: now() })
+            // 纯数字键 = 「源设备本地库号」语义（旧格式）：跨设备不可靠 ⇒ 只有内容确为本机所写时才处理
+            const legacyKey = /^\d+$/.test(bid)
+            const cloudIsMine = !!(map[bid] && map[bid]._src && map[bid]._src.dev === myDev)
+            if (legacyKey && !cloudIsMine) continue
+            let res
+            if (legacyKey) {
+              const bankId = await mapCloudBankToLocal(Number(bid))
+              if (bankId == null) continue // 本地库不在本机：等题库同步下来再拉
+              const index = await srcLocalIndexOf(bankId)
+              res = mergeProgressForLocal(map[bid], localAll[lk] ?? null, myDev, index)
+            } else {
+              // 非数字键 = 订阅库/公共库 bankRef：其题号是**云端稳定 id**（两端一致），
+              // 跨端不需要、也不能按本机题表映射 ⇒ passthrough 原样采用（2026-09-28 补：
+              // 此前会被"库不在本机/无本地题"的判断挡住 ⇒ 订阅库进度跨端静默失效）。
+              res = mergeProgressForLocal(map[bid], localAll[lk] ?? null, myDev, new Map(), true)
+            }
+            if (res.write) puts.push({ key: lk, value: JSON.stringify(res.value), synced_at: now() })
           }
           if (puts.length) await idb.bulkPut('settings', puts)
         } catch (e) {
@@ -1147,6 +1276,27 @@ async function mapCloudBankToLocal(cloudBankId: number | string | null | undefin
     if (cloudIdMatch) return cloudIdMatch.id
   }
   return null
+}
+
+// 2026-09-28（跨设备映射）：云端题 `_id` → 本机题号（限定在该库内查；一次同步内按库缓存）。
+// 找不到返回 null —— 调用方按「跳过」处理，绝不回退到「同号即同一题」的猜测。
+async function mapCloudQuestionToLocal(bankId: number, cloudQId: string): Promise<number | null> {
+  if (!qCloudIdCache || qCloudIdCache.bankId !== bankId) {
+    const all = await idb.listQuestions(bankId)
+    const map = new Map<string, number>()
+    for (const x of all) if (x && x.cloud_id && typeof x.id === 'number') map.set(String(x.cloud_id), x.id)
+    qCloudIdCache = { bankId, map }
+  }
+  const hit = qCloudIdCache.map.get(cloudQId)
+  return hit == null ? null : hit
+}
+
+// 2026-09-28：本机题表 → 「来源题号 → 本机题号」索引（续练进度内容重映射用；按库缓存）。
+async function srcLocalIndexOf(bankId: number): Promise<Map<number, number>> {
+  if (!srcIdxCache || srcIdxCache.bankId !== bankId) {
+    srcIdxCache = { bankId, map: buildSrcLocalIndex(await idb.listQuestions(bankId)) }
+  }
+  return srcIdxCache.map
 }
 
 // 以下辅助函数补齐 idb 缺的方法（在 db.ts 里没暴露的）
@@ -1211,6 +1361,12 @@ async function listAllSettings(): Promise<any[]> {
       try { prog[bid] = JSON.parse(allSet[k] || '{}') } catch { /* 坏值跳过，不影响其它库 */ }
     }
     if (Object.keys(prog).length) {
+      // 2026-09-28：给每个库的进度打上本机设备标记（_src.dev）—— 落地侧靠它区分
+      // 「本机写的（题号已是本机号，不必重映射）」与「他机写的（必须重映射）」。
+      const myDev = deviceId()
+      for (const k of Object.keys(prog)) {
+        if (prog[k] && typeof prog[k] === 'object') prog[k] = { ...prog[k], _src: { dev: myDev, v: 2 } }
+      }
       out.push({ _id: 'lsettings_' + uidPrefix() + '_practice_progress', key: 'practice_progress', value: JSON.stringify(prog) })
     }
   } catch (e) {

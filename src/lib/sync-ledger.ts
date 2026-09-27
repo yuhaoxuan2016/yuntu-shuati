@@ -17,6 +17,8 @@
 //   · 强键：云端 `_id` 相同（就是那一份文档）→ 直接抑制，不看时间
 //   · 弱键：本地 id 相同（+ 同步昵称一致、记录类还要题号一致）**且**云端文档时间 ≤ 删除时刻 → 抑制
 //     时间闸门用来放过「本地 id 被复用后新推上来的那份」：它的 updated_at 必然晚于删除时刻。
+//   · 记录类补充键（2026-09-28）：条目的 `cloud_id`（删除时题目的云端 _id）与云端记录的
+//     `question_cloud_id` 相等即同一道题 —— 跨设备时 question_id 没有全局意义，只有它认得。
 //
 // 本模块不 import 任何云端 SDK / 浏览器 API：storage 走参数注入，测试才能跑真实现（见
 // scripts/lib/sync-ledger.test.cjs）。
@@ -158,6 +160,10 @@ export function isSuppressed (index: LedgerIndex, coll: LedgerColl, doc: any): b
         if (doc._local_id != null && String(doc._local_id) === String(e.question_id)) return true
       }
     } else {
+      // 2026-09-28（跨设备映射）：题目的云端 _id 优先 —— 跨设备时 question_id 没有全局意义；
+      // 账本条目带 cloud_id（删除时题目的云端 _id）且云端记录带 question_cloud_id 时，按它判「同一道题」。
+      if (e.cloud_id && doc?.question_cloud_id != null &&
+          String(doc.question_cloud_id) === String(e.cloud_id)) return true
       if (e.local_id != null && e.question_id != null &&
           doc?._local_bank_id != null && doc?.question_id != null &&
           String(doc._local_bank_id) === String(e.local_id) &&

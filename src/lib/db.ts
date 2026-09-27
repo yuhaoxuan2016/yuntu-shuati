@@ -273,6 +273,10 @@ export const idb = {
   async recordPractice(record: any): Promise<number> {
     return tx('practice_records', 'readwrite', s => s.add(record)) as unknown as number
   },
+  // 2026-09-28（跨设备映射自愈）：按主键删单条练习记录（清理「挂不到题」的错位记录用）
+  async removePracticeRecord(id: number): Promise<void> {
+    await tx('practice_records', 'readwrite', s => s.delete(id))
+  },
   // === wrong_questions ===
   async listWrong(bankId: number | string): Promise<number[]> {
     const db = await openDB()
@@ -555,6 +559,22 @@ export const idb = {
       const req = idx.getAll(IDBKeyRange.only(bankId))
       req.onsuccess = () => resolve(req.result.map(x => x.question_id))
       req.onerror = () => reject(req.error)
+    })
+  },
+  // 2026-09-28（跨设备映射自愈）：单条取消收藏（只删不加，区别于 toggleFavorite；清理错位记录用）
+  async removeFavorite(bankId: number | string, questionId: number): Promise<void> {
+    const db = await openDB()
+    await new Promise<void>((resolve, reject) => {
+      const t = db.transaction('favorites', 'readwrite')
+      t.oncomplete = () => resolve()
+      t.onerror = () => reject(t.error)
+      const store = t.objectStore('favorites')
+      const idx = store.index('bank_id')
+      const req = idx.openCursor(IDBKeyRange.only(bankId))
+      req.onsuccess = () => {
+        const c = req.result
+        if (c) { if (c.value.question_id === questionId) store.delete(c.value.id); c.continue() }
+      }
     })
   },
   async clearFavorites(bankId: number | string): Promise<void> {

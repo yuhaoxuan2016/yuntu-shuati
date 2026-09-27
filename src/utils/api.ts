@@ -40,7 +40,17 @@ function markCloudDeleted(
   coll: 'favorites' | 'wrong_questions' | 'mastered_questions' | 'questions' | 'quiz_banks',
   bankId: number | string, questionId: number | string | null, cloudId: string | null = null,
 ) {
-  import('../lib/cloud').then(m => m.markCloudDeleted(coll, bankId, questionId, cloudId)).catch(() => {})
+  // 2026-09-28（跨设备映射）：记录类删的是「一道题在本机的记录」——云端那份记录里的 question_id 是
+  // 「推送设备的题号」，跨设备对不上；只有题目的云端 _id（⇒ 云端字段 question_cloud_id）认得同一道题。
+  // 未显式传 cloudId 时，用本机题现场补上（拿不到则回退旧键路径，行为同以前）。
+  const fire = (cid: string | null) =>
+    import('../lib/cloud').then(m => m.markCloudDeleted(coll, bankId, questionId, cid)).catch(() => {})
+  const REC = coll === 'favorites' || coll === 'wrong_questions' || coll === 'mastered_questions'
+  if (REC && !cloudId && questionId != null) {
+    idb.getQuestion(Number(questionId)).then((q: any) => fire(q?.cloud_id ?? null)).catch(() => fire(null))
+    return
+  }
+  fire(cloudId)
 }
 
 /** 取题库的云端 `_id`（没推上去过 / 取不到 → null） */

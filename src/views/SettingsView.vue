@@ -766,6 +766,7 @@ import { ref, onMounted } from 'vue'
 import { api } from '../utils/api'
 import { toastSuccess, toastError, toast } from '../utils/toast'
 import { updateAppearanceCache } from '../lib/theme'
+import { formatSyncDetail, type SyncDetail } from '../lib/sync-format'
 
 // 真实版本：构建时由 vite 的 define 注入（读 package.json，见 vite.config.ts）。
 // 此前这里是写死的 '1.2.48-web'（桌面版时代的遗留），线上跑 1.2.53 也照样显示 1.2.48 ——
@@ -1049,20 +1050,22 @@ function skipTipOf (skipped: number): string {
 // 每次动作结束都按「两侧真实结果」更新状态行与提示（未授权 / 推送部分失败 / 拉取截断 / 删除账本跳过）
 function reportSyncResult (
   action: 'up' | 'down' | 'both',
-  res: { pushed: number; pulled: number; failed: number; skipped: number; truncated: boolean; suppressed: number },
+  res: { pushed: number; pulled: number; failed: number; skipped: number; truncated: boolean; suppressed: number; cleaned?: number; pushDetail?: SyncDetail; pullDetail?: SyncDetail },
   st: { authed: boolean; error: string | null },
   okToast: string,
 ) {
   cloudError.value = !!st.error
-  const tips = truncTipOf(res.truncated, action) + skipTipOf(res.skipped) + suppressedTip(res.suppressed)
+  // 2026-09-28：加上「清理 N 条错位记录」（跨设备映射自愈的产出）与分类明细
+  const cleanedTip = res.cleaned ? ` · 已清理 ${res.cleaned} 条错位记录` : ''
+  const tips = truncTipOf(res.truncated, action) + skipTipOf(res.skipped) + suppressedTip(res.suppressed) + cleanedTip
   if (!st.authed || st.error) {
     cloudStatusText.value = st.error || '云端未授权'
     toastError('同步未完成：' + (st.error || '云端未授权'))
     return
   }
-  if (action === 'up') cloudStatusText.value = `✓ 已上传 · 推送 ${res.pushed} 条${tips}`
-  else if (action === 'down') cloudStatusText.value = `✓ 已下载 · 拉取 ${res.pulled} 条${tips}`
-  else cloudStatusText.value = `✓ 同步完成 · 推送 ${res.pushed} 条 · 拉取 ${res.pulled} 条${tips}`
+  if (action === 'up') cloudStatusText.value = `✓ 已上传 · ${formatSyncDetail(res.pushDetail)}${tips}`
+  else if (action === 'down') cloudStatusText.value = `✓ 已下载 · ${formatSyncDetail(res.pullDetail)}${tips}`
+  else cloudStatusText.value = `✓ 同步完成 · ⬆ ${formatSyncDetail(res.pushDetail)} · ⬇ ${formatSyncDetail(res.pullDetail)}${tips}`
   toastSuccess(okToast)
 }
 
@@ -1082,7 +1085,7 @@ async function doForceResync() {
     toast('info', `已清 ${n} 条本地同步标记，正在重新上传…`)
     const res = await mod.pushToCloud()
     const st = mod.getCloudStatus()
-    reportSyncResult('up', { ...res, pulled: 0, truncated: false, suppressed: 0 }, st, '强制重新上传完成')
+    reportSyncResult('up', { ...res, pulled: 0, truncated: false, suppressed: 0, pushDetail: res.detail }, st, '强制重新上传完成')
   } catch (e) {
     cloudError.value = true
     cloudStatusText.value = '强制上传失败：' + (e instanceof Error ? e.message : String(e))
@@ -1102,7 +1105,7 @@ async function doUpload() {
     const mod = await import('../lib/cloud')
     const res = await mod.pushToCloud()
     const st = mod.getCloudStatus()
-    reportSyncResult('up', { ...res, pulled: 0, truncated: false, suppressed: 0 }, st, '上传完成')
+    reportSyncResult('up', { ...res, pulled: 0, truncated: false, suppressed: 0, pushDetail: res.detail }, st, '上传完成')
   } catch (e) {
     cloudError.value = true
     cloudStatusText.value = '上传失败：' + (e instanceof Error ? e.message : String(e))
@@ -1123,7 +1126,7 @@ async function doDownload() {
     const mod = await import('../lib/cloud')
     const res = await mod.syncFromCloud()
     const st = mod.getCloudStatus()
-    reportSyncResult('down', { pushed: 0, failed: 0, skipped: 0, ...res }, st, '下载完成')
+    reportSyncResult('down', { pushed: 0, failed: 0, skipped: 0, ...res, pullDetail: res.detail }, st, '下载完成')
   } catch (e) {
     cloudError.value = true
     cloudStatusText.value = '下载失败：' + (e instanceof Error ? e.message : String(e))

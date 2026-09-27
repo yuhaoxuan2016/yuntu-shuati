@@ -17,6 +17,10 @@
           <option value="random">随机练习</option>
           <option value="wrong">错题重练</option>
         </select>
+        <!-- 2026-09-28：订阅库练习页的「同步」——多端切换时不必回设置页（双向：先推后拉） -->
+        <button v-if="canSyncHere" class="sync-btn" :disabled="syncingCloud" title="同步（上传本机改动 + 拉取云端最新）" @click="doPageSync">
+          {{ syncingCloud ? '☁️ 同步中…' : '⇅ 同步' }}
+        </button>
         <button class="help-btn" title="快捷键帮助 (?)" @click="showHelp = true">?</button>
       </div>
     </div>
@@ -94,6 +98,11 @@
     <div v-if="restoredBanner" class="restored-banner">
       已从上次进度恢复，当前第 {{ current + 1 }} 题
       <button class="close-btn" @click="restoredBanner = false">×</button>
+    </div>
+
+    <div v-if="syncBanner" class="restored-banner">
+      {{ syncBanner }}
+      <button class="close-btn" @click="syncBanner = ''">×</button>
     </div>
 
     <div v-if="!loaded" class="loading">加载中...</div>
@@ -185,6 +194,7 @@ import { idb } from '../lib/db'
 import QuestionCard, { type QuestionState } from '../components/QuestionCard.vue'
 import { classifyQuestionType } from '../lib/exam'
 import { calculateAutoQuality, calculateNextReview, qualityLabel, labelToQuality, formatDate, computeNextReviewTs, toReviewTs, type QualityLabel } from '../lib/spaced-repetition'
+import { formatSyncDetail } from '../lib/sync-format'
 
 interface SavedProgress {
   mode: string
@@ -216,6 +226,29 @@ const subscribedRef = ref(false)
 const canTrack = computed(() => typeof bankId === 'number' || subscribedRef.value)
 if (typeof bankId === 'string') {
   api.listSubscriptions().then(list => { subscribedRef.value = list.indexOf(bankId) >= 0 }).catch(() => { /* 读失败按未订阅处理 */ })
+}
+
+// 2026-09-28：订阅库练习页的「同步」按钮（多端切换用）——只对「已订阅的公共库」显示。
+// 跑双向（syncAll：先推后拉），完成后用顶部横幅显示明细（复用 restored-banner 样式）。
+const syncingCloud = ref(false)
+const syncBanner = ref('')
+const canSyncHere = computed(() => typeof bankId === 'string' && subscribedRef.value)
+async function doPageSync () {
+  if (syncingCloud.value) return
+  syncingCloud.value = true
+  try {
+    const mod = await import('../lib/cloud')
+    const res = await mod.syncAll()
+    const st = mod.getCloudStatus()
+    if (!st.authed) { syncBanner.value = '尚未配置云同步（请到设置页配置后重试）'; return }
+    if (st.error) { toastError('同步未完成：' + st.error); return }
+    syncBanner.value = `✓ 同步完成 · ⬆ ${formatSyncDetail(res.pushDetail)} · ⬇ ${formatSyncDetail(res.pullDetail)}`
+    setTimeout(() => { if (syncBanner.value) syncBanner.value = '' }, 8000)
+  } catch (e) {
+    toastError('同步失败：' + (e instanceof Error ? e.message : String(e)))
+  } finally {
+    syncingCloud.value = false
+  }
 }
 
 // 2026-09-27：订阅库不在 bankStore（那是本地库列表）⇒ 名字优先取路由 query 里的 name（公共库入口会带上）。
@@ -943,6 +976,9 @@ async function restart() {
 
 .mode-select { padding: 5px 10px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-card); color: var(--color-text); font-size: 13px; cursor: pointer; }
 .help-btn { width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--color-border); background: var(--color-card); cursor: pointer; font-size: 14px; font-weight: 700; color: var(--color-text-secondary); }
+.sync-btn { height: 28px; padding: 0 10px; border-radius: 14px; border: 1px solid var(--color-border); background: var(--color-card); cursor: pointer; font-size: 12px; font-weight: 600; color: var(--color-text-secondary); white-space: nowrap; }
+.sync-btn:hover:not(:disabled) { background: var(--color-primary-light); color: var(--color-primary); border-color: var(--color-primary); }
+.sync-btn:disabled { opacity: 0.6; cursor: default; }
 .help-btn:hover { background: var(--color-primary-light); color: var(--color-primary); border-color: var(--color-primary); }
 
 .type-filter { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
