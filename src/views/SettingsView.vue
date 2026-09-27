@@ -564,7 +564,7 @@
             </p>
             <div v-if="!bound" class="bind-row">
               <input v-model="bindCodeInput" class="bind-input" placeholder="6 位临时码 / 16 位长期码" maxlength="16" @input="bindCodeInput = bindCodeInput.toUpperCase()" />
-              <button class="data-btn" :disabled="binding || bindCodeInput.trim().length !== 6" @click="doBind">
+              <button class="data-btn" :disabled="binding || (bindCodeInput.trim().length !== 6 && bindCodeInput.trim().length !== 16)" @click="doBind">
                 {{ binding ? '绑定中...' : '绑定' }}
               </button>
             </div>
@@ -827,7 +827,14 @@ const bindError = ref(false)
 
 async function doBind() {
   const code = bindCodeInput.value.trim().toUpperCase()
-  if (code.length !== 6) return
+  // 2026-09-27：放开为 6（临时码）或 16（长期码）。原先只认 6 ⇒ 16 位长期码既让按钮变灰、
+  // 又在这里被静默丢弃，表现为「点绑定完全没反应、也不给任何提示」（rabbit 实测报障）。
+  // 现在长度不符时给出明确文案，不再静默 return。
+  if (code.length !== 6 && code.length !== 16) {
+    bindError.value = true
+    bindMsg.value = '绑定码应为 6 位临时码或 16 位长期身份码'
+    return
+  }
   binding.value = true
   bindMsg.value = ''
   bindError.value = false
