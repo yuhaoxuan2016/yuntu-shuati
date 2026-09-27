@@ -562,21 +562,30 @@ async function pushDoc(collection: CloudCollection, doc: any): Promise<boolean> 
   }
   try {
     if (id) {
-      await withTimeout(coll.add({ ...body, _id: id, updated_at: now() }).catch((e: any) => { if (!isIgnorableSyncError(e)) throw e }), 20000, '推送')
+      // 2026-09-27（rabbit 实测「手机报推送 3 条、云端毫无变化」后修）：原先无论 `add` 还是 `update`
+      // 都**无条件 return true**，而 `where(...).update()` **影响 0 行也不抛错**（属主不匹配/行不存在时
+      // 就静默 0 行）⇒ 界面报"推送成功"、云端没有任何变化，是彻头彻尾的假成功。
+      // 现在：① `add` 成功即真成功；② 重复键（已存在）才落到 `update`；③ `update` 必须读 `stats.updated`
+      // 判成败，为 0 一律按失败返回并打印原因。
+      let added = false
+      try {
+        await withTimeout(coll.add({ ...body, _id: id, updated_at: now() }), 20000, '推送')
+        added = true
+      } catch (e: any) {
+        if (!isIgnorableSyncError(e)) throw e
+        // 已存在（重复键）等可忽略错误 ⇒ 交给下面的 update 分支
+      }
+      if (added) return true
       // T18-2a（2026-09-16）：`doc(id).update()` 改 `where({_id, _openid: authedUid}).update()`
       // T18-2f：这两个集合还要带上 `visibility != 'public'`，否则整条被拒（见上）
       const where: any = { _id: id, _openid: authedUid }
-      // 2026-09-18 修复（重审 A-01 / V-5）：原写作 `db().command`，**这是从小程序端同名文件照抄过来的**——
-      //   yuntu-mp/src/lib/cloud.ts:26 的 `db` 是函数（`function db() {…}`），那边 `db().command` 是对的；
-      //   而本文件 `db` 是实例（`:39 let db: any = null` → `:91 db = app.database()`），调用形态必抛
-      //   `TypeError: db is not a function`。后果：`quiz_banks`/`questions` 的**每一次内容更新推送**都在这里炸，
-      //   自 09-16（`0150a5d`）起已有题库/题目一条都更新不上去，用户只看到笼统的「推送失败」。
-      //   本文件其余用法（`:296` / `:317` / `:379` / `:463`）全是属性形态 `db.collection(…)`，只有这一处是调用形态。
-      //   编译器抓不到：`db` 声明为 `any`（这正是类型基线里 cloud.ts 占 9 条错误却漏掉本缺陷的原因）。
-      //   ⇒ 两仓 `cloud.ts` 是**有意分叉**的两个文件（`parser.ts`/`spaced-repetition.ts` 才要求逐字节相同），
-      //     跨端照抄表达式前必须先确认宿主标识符的形态一致。
       if (NEED_VIS) where.visibility = db.command.neq('public')
-      await withTimeout(coll.where(where).update({ ...body, updated_at: now() }).catch((e: any) => { if (!isIgnorableSyncError(e)) throw e }), 20000, '更新')
+      const updRes: any = await withTimeout(coll.where(where).update({ ...body, updated_at: now() }), 20000, '更新')
+      const updated = Number((updRes && updRes.stats && (updRes.stats.updated ?? updRes.stats.modified)) ?? 0)
+      if (!updated) {
+        console.warn(`[cloud] 更新 ${collection} 影响 0 行（_id=${id}）—— 行不存在或属主不匹配（authedUid=${String(authedUid).slice(0, 16)}）`)
+        return false
+      }
       return true
     } else {
       await withTimeout(coll.add({ ...body, updated_at: now() }), 20000, '新增')
