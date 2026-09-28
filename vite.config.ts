@@ -157,6 +157,24 @@ export default defineConfig(({ mode }) => {
               },
               workbox: {
                 globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
+                // 🔴 index.html **不进 precache**，导航改走网络优先。
+                // 2026-09-28 实测：原先 precache 里就有一份 index.html + navigateFallback 绑到它，
+                // 于是「部署完成后」浏览器每次导航拿到的都是**旧文档**（里面写的是旧 hash 的入口 chunk），
+                // 新包虽然已经装好，页面仍在跑旧代码 —— 当晚就是这台机器上传时用了旧的「整条覆盖」推送
+                // 把云端进度 map 写小了（origin 上那个 chunk 名甚至已经 404，只有缓存里还有）。
+                // 只有用户手点「有新版本·点此刷新」才会换过去；不点，就一直拿旧包。
+                // 现在：文档走 NetworkFirst（3s 超时，超时/断网仍回落缓存 ⇒ 离线二次打开照旧可用），
+                // 带 hash 的 js/css 仍然 precache（它们不可变，命不中网络反而更慢）。
+                // 本项目是 hash 路由，导航请求只有 `/` 与 `/index.html`，所以下面这条正则就够覆盖。
+                globIgnores: ["**/index.html"],
+                navigateFallback: null,
+                runtimeCaching: [
+                  {
+                    urlPattern: /^https?:\/\/[^/]+\/(index\.html)?$/,
+                    handler: "NetworkFirst",
+                    options: { cacheName: "pages", networkTimeoutSeconds: 3 },
+                  },
+                ],
                 maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
                 // 免拦截同源上不属于本项目的路径前缀（P1-36）：/__auth/、/cloud-admin/、/.env、/calc/。
                 // 列表来自顶部 PROTECTED_PREFIXES，与 scripts/deploy-hosting.mjs 对齐。

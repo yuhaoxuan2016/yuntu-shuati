@@ -495,9 +495,24 @@ async function applyDeletedMarks(): Promise<void> {
   if (changed) saveDeletedMarks(marks)
 }
 
-// 当前用户 _id 前缀（同设备稳定；配合 cloud_id 保持跨设备同昵称下身份一致）
-function uidPrefix(): string {
-  return (authedUid || 'anon').slice(0, 8)
+// doc id 里的身份标记：**完整 uid，不许截断**。
+// 2026-09-28 实测：本小程序不同微信号的 openid 前 6 位都一样（`ocRhF5…`），而旧拼法只取 uid 前 8 位
+// ⇒ `lsettings_wx_ocRhF_<key>` 这类「一格」被**三个不同绑定身份共用**，谁后写谁把前一人的行连属主一起改掉
+//（当晚就看到订阅行的属主易主一次）。记录行的 `l<coll>_<uid8>_<本机 id>` 同理：本机 id 是自增小整数，
+//   任何两个用户都会撞在同一格上。
+// 旧形状的行**不回填**（读侧一律按 `_openid` + key/字段查，不靠 `_id`），只在写成功后把
+// **自己名下**那条旧形状行清掉 ⇒ 不会出现同一 key 两行，也绝不会碰到别人的同名行。
+function uidToken(): string {
+  return String(authedUid || 'anon').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)
+}
+function legacyUidToken(): string {
+  return String(authedUid || 'anon').slice(0, 8)
+}
+function settingsDocId(key: string): string {
+  return 'lsettings_' + uidToken() + '_' + key
+}
+function legacySettingsDocId(key: string): string {
+  return 'lsettings_' + legacyUidToken() + '_' + key
 }
 
 // 超时保护：CloudBase 请求异常挂起时避免页面永远卡在"同步中"（2026-08-16 手机端反馈：
@@ -530,6 +545,20 @@ function isIgnorableSyncError(e: any): boolean {
 //   失败仍走 throw（由 pushOne 的调用方计入 failed）。
 //   为什么必须把「跳过」与「成功」分开：原来跳过返回 null、而 pushOne **丢掉了返回值**，
 //   照样 `markSynced` + 计 `pushed++` ⇒ 对公共题库/公共题的本地改动被永久丢弃且无人知情。
+// 删掉「旧形状 uid 截断」那一格（只在写成功后调用，条件带 `_openid: authedUid` ⇒ 只可能删到自己名下的行）。
+// 失败不升级为同步失败：新行已经写进去了，旧格最多留下一条读侧会用不到的重复行（读按 _openid+key 取）。
+async function dropLegacyDocId(collection: CloudCollection, legacyId: string): Promise<void> {
+  if (!isAuthed()) return
+  try {
+    const where: any = { _id: legacyId, _openid: authedUid }
+    if (collection === 'quiz_banks' || collection === 'questions') where.visibility = db.command.neq('public')
+    const res: any = await withTimeout(db.collection(collection).where(where).remove(), 20000, '清理旧形状行')
+    if (Number((res && res.stats && res.stats.removed) || 0) > 0) console.info(`[cloud] 已清旧形状行 ${legacyId}`)
+  } catch (e: any) {
+    console.warn(`[cloud] 清理旧形状行失败（不影响本次同步）${legacyId}：`, e?.message || e)
+  }
+}
+
 async function pushDoc(collection: CloudCollection, doc: any): Promise<boolean> {
   if (!isAuthed()) return false
   const coll = db.collection(collection)
@@ -678,6 +707,19 @@ async function pullCollection(collection: CloudCollection, localIds: Set<string>
       const key = String(d._id ?? d.id)
       if (!seen.has(key)) { seen.add(key); all.push(d) }
     }
+  }
+  // settings 按 key 收敛成一份：doc id 的拼法从「uid 前 8 位」换成「完整 uid」后，
+  // 老版客户端（用户浏览器里缓存的包）还会往截断格写同一个 key ⇒ 迁移窗口内同一 key 天然两行。
+  // 不收敛的话谁覆盖谁取决于文档顺序。取 updated_at 较新的那条（两种时间格式都归一后再比）。
+  if (collection === 'settings') {
+    const byKey = new Map<string, any>()
+    for (const d of all) {
+      const k = String((d as any).key ?? '')
+      if (!k) continue
+      const prev = byKey.get(k)
+      if (!prev || normalizeTs((d as any).updated_at) >= normalizeTs(prev.updated_at)) byKey.set(k, d)
+    }
+    return { docs: [...byKey.values()], truncated }
   }
   return { docs: all, truncated }
 }
@@ -886,12 +928,16 @@ export async function pushToCloud(): Promise<{ pushed: number; failed: number; s
 // 推送单条本地记录（原 pushToCloud 循环体拆出）→ 'pushed' 已写入 / 'skipped' 客户端无权写（public）
 async function pushOne(coll: CloudCollection, r: any, syncKey: string): Promise<'pushed' | 'skipped'> {
   const doc = { ...r, sync_key: syncKey }
+  // 旧形状（uid 截断）那一格，写成功后要清掉，避免同一记录在云端有两行
+  let legacyId: string | null = null
   if (typeof doc.id === 'number') {
-    // 有 cloud_id 则沿用云端身份（同昵称换设备不重复创建）；否则用 uid 前缀防撞
-    doc._id = doc.cloud_id || ('l' + coll + '_' + uidPrefix() + '_' + doc.id)
+    // 有 cloud_id 则沿用云端身份（同昵称换设备不重复创建）；否则用**完整 uid** 防撞
+    doc._id = doc.cloud_id || ('l' + coll + '_' + uidToken() + '_' + doc.id)
+    legacyId = 'l' + coll + '_' + legacyUidToken() + '_' + doc.id
     doc._local_id = doc.id
     delete doc.id
   }
+  if (coll === 'settings' && typeof doc.key === 'string') legacyId = legacySettingsDocId(doc.key)
   if (coll === 'questions' && typeof doc._bank_id === 'number') {
     doc._local_bank_id = doc._bank_id
     // 题目继承所属题库的可见性（ACL 用 doc.visibility 判断公共/私有）
@@ -914,6 +960,8 @@ async function pushOne(coll: CloudCollection, r: any, syncKey: string): Promise<
   // 本机来源标记不上云（云端题已有 _local_id；src_local_id 只服务本机映射）
   delete (doc as any).src_local_id
   const ok = await pushDoc(coll, doc)
+  // 写成功才清旧格：旧形状那一行若还挂在**自己**名下，留着会让同一记录在云端出现两行
+  if (ok && legacyId && String(doc._id || '') !== legacyId) await dropLegacyDocId(coll, legacyId)
   // 2026-09-18 修复（重审 A-03）：无论成功还是「跳过」都要回写 synced_at——被跳过的那条本地改动
   //   永远推不上去（公共内容客户端无权写），不标就会每轮同步都重试并刷日志。
   //   但**绝不把它谎报为 pushed**：计数交给 pushToCloud 的 skipped，并一路报到设置页文案。
@@ -1464,7 +1512,7 @@ async function listAllSettings(): Promise<any[]> {
       for (const k of Object.keys(prog)) {
         if (prog[k] && typeof prog[k] === 'object') prog[k] = { ...prog[k], _src: { dev: myDev, v: PROG_SCHEMA_V } }
       }
-      out.push({ _id: 'lsettings_' + uidPrefix() + '_practice_progress', key: 'practice_progress', value: JSON.stringify(prog) })
+      out.push({ _id: settingsDocId('practice_progress'), key: 'practice_progress', value: JSON.stringify(prog) })
     }
   } catch (e) {
     console.warn('[cloud] 收集续练位置失败（不阻断）', e)
@@ -1482,7 +1530,7 @@ async function listAllSettings(): Promise<any[]> {
       console.warn(`[cloud] 设置项 ${k} 体积 ${(size / 1024).toFixed(1)}KB 超过上限 ${MAX_SETTING_BYTES / 1024}KB，已跳过上传（避免服务端 500）`)
       continue
     }
-    out.push({ _id: 'lsettings_' + uidPrefix() + '_' + k, key: k, value: v })
+    out.push({ _id: settingsDocId(k), key: k, value: v })
   }
   return out
 }
