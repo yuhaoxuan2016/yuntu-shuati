@@ -12,6 +12,8 @@ export interface SyncDetail {
   questions?: number
   records?: number
   subscriptions?: number
+  /** 订阅的公共题库名（能解析到就显示名单；解析不到退回数量）——2026-09-28 补 */
+  subsNames?: string[]
   settings?: number
 }
 
@@ -31,7 +33,10 @@ export function formatSyncDetail (d?: SyncDetail | null): string {
   if (banks.length) parts.push(`题库 ${formatBankNames(banks)}`)
   if (pos(d.questions)) parts.push(`题目 ${pos(d.questions)} 道`)
   if (pos(d.records)) parts.push(`记录 ${pos(d.records)} 条`)
-  if (pos(d.subscriptions)) parts.push(`订阅 ${pos(d.subscriptions)} 个`)
+  if (pos(d.subscriptions)) {
+    const names = (d.subsNames || []).map(x => String(x || '').trim()).filter(Boolean)
+    parts.push(names.length ? `订阅 ${formatBankNames(names)}` : `订阅 ${pos(d.subscriptions)} 个`)
+  }
   if (pos(d.settings)) parts.push(`设置 ${pos(d.settings)} 项`)
   return parts.length ? parts.join(' · ') : '无新增内容'
 }

@@ -822,6 +822,7 @@ export async function pushToCloud(): Promise<{ pushed: number; failed: number; s
     let failed = 0
     let skipped = 0   // A-03：客户端无权写的公共内容（不算成功、也不算失败，单独报给用户）
     const detail: SyncDetail = {}
+    pendingSubRefs = []
     // 先处理删除标记：取消收藏/标记掌握/放回等删除类操作同步到云端（P1.2 修复）
     await applyDeletedMarks()
     for (const coll of CLOUD_COLLECTIONS) {
@@ -855,6 +856,11 @@ export async function pushToCloud(): Promise<{ pushed: number; failed: number; s
           }
         }
       }
+    }
+    // 2026-09-28（补名单）：订阅库名解析放在收尾（一次小查询；失败/解析不全就退回数量文案）
+    if (pendingSubRefs.length) {
+      const names = await resolveSubNames(pendingSubRefs)
+      if (names.length) detail.subsNames = names
     }
     cloudState.lastSyncAt = now()
     if (failed > 0) {
@@ -982,6 +988,8 @@ export function scheduleAutoPush(): void {
 
 // 2026-09-28：同步明细归类 —— 设置页用它把「推送 N 条」说成人话（题库名单/题目/记录/订阅/设置）。
 // 订阅只在推送侧可数（settings 的 subscriptions 键）；拉取侧 settings 不产生 added，自然不计。
+// 2026-09-28（补名单）：订阅那一行里带着 refs ⇒ 顺手暂存，推送收尾时一次性解析库名（见 resolveSubNames）。
+let pendingSubRefs: string[] = []
 function classifyDetail (d: SyncDetail, coll: CloudCollection, row: any): void {
   if (coll === 'quiz_banks') {
     if (row && row.name) (d.banks = d.banks || []).push(String(row.name))
@@ -992,8 +1000,31 @@ function classifyDetail (d: SyncDetail, coll: CloudCollection, row: any): void {
   } else if (coll === 'settings') {
     d.settings = (d.settings || 0) + 1
     if (row && row.key === 'subscriptions') {
-      try { const arr = JSON.parse(String(row.value || '[]')); if (Array.isArray(arr)) d.subscriptions = arr.length } catch { /* 坏值不报 */ }
+      try {
+        const arr = JSON.parse(String(row.value || '[]'))
+        if (Array.isArray(arr)) {
+          d.subscriptions = arr.length
+          pendingSubRefs = arr.map((x: any) => String(x || '')).filter(Boolean)
+        }
+      } catch { /* 坏值不报 */ }
     }
+  }
+}
+
+// 订阅的公共题库 ref → 名字（best-effort：任一解析不到就整体退回数量文案，避免「订阅 2 个却只列 1 个名」）。
+// 一次 `_id in` 查询、上限 20 个；查询失败只记日志不阻断同步。
+async function resolveSubNames (refs: string[]): Promise<string[]> {
+  const uniq = [...new Set(refs.map(r => String(r || '')).filter(Boolean))].slice(0, 20)
+  if (!uniq.length) return []
+  try {
+    // ACL：查询条件必须是规则子集（公共库规则要 `visibility=='public'`），只带 `_id in` 会被拒
+    const rs: any = await db.collection('quiz_banks').where({ _id: db.command.in(uniq), visibility: 'public' }).field({ _id: true, name: true }).get()
+    const map = new Map<string, string>((((rs && rs.data) || []) as any[]).map((b: any) => [String(b._id || ''), String(b.name || '')]))
+    const names = uniq.map(r => map.get(r) || '')
+    return names.some(n => !n) ? [] : names
+  } catch (e) {
+    console.warn('[cloud] 订阅名单解析失败（退回数量文案）', e)
+    return []
   }
 }
 

@@ -102,6 +102,13 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.62</span>
+          <ul>
+            <li>同步明细里的「订阅」现在带题库名单（如「订阅 3 个（变电安规2026、中级2026、初级2026）」）</li>
+            <li>修复：订阅记录到小程序的投递通道此前是断的（小程序端一直收不到订阅），已随云函数修好</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.61</span>
           <ul>
             <li>新增进度守卫：本机进度近乎空（≤1 题已答）而云端有实质进度（≥5 题）时，以云端为准——打开练习页自动生成的新进度不会再顶掉真实进度；「重新开始」不受影响</li>
