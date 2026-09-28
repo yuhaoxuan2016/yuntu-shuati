@@ -284,7 +284,7 @@
             🌍 提交到公共题库（待审核）
           </button>
           <button v-else-if="b.visibility === 'pending'" disabled>⏳ 已提交，待管理员审核</button>
-          <button v-if="sourceOf(b)" :disabled="updatingId === b.id" @click="updateFromPublicBank(b)">
+          <button v-if="isImportedCopy(b)" :disabled="updatingId === b.id" @click="updateFromPublicBank(b)">
             <span v-if="updatingId === b.id">🔄 更新中 {{ updateProgress?.done ?? 0 }}/{{ updateProgress?.total ?? 0 }}</span>
             <span v-else>🔄 从公共题库更新</span>
           </button>
@@ -339,6 +339,7 @@ import { poemOfTheDay, todayLabel, type Poem } from '../lib/poems'
 import { idb, normalizeTs } from '../lib/db'
 import { formatDate } from '../lib/spaced-repetition'
 import OnboardingTour from '../components/OnboardingTour.vue'
+import { findSourceBank, isPublicCopy } from '../lib/bank-provenance'
 
 interface LastPractice {
   bank_id: number
@@ -777,26 +778,17 @@ function resumePractice() {
   if (lastPractice.value) router.push(`/practice/${lastPractice.value.bank_id}`)
 }
 
-// 将云端公共题库完整导入到本地「我的题库」，导入后自动获得进度/收藏/错题功能
-// 本地副本指回它来源的那个公共题库：优先用导入时存的 origin_ref；
-// 2026-09-24 之前导入的副本都没存，只能退回按题库名匹配。
+// 判据本体搬去 lib/bank-provenance.ts（纯函数、可离线直测，见 tests/bank-provenance.test.cjs）：
+// 这里只把「当前已加载的公共库列表」喂进去。2026-09-28 起两件事分开：
+//   · sourceOf = 定位内容来源（origin_ref 精确 → 名字兜底），只用于「取内容」；
+//   · isImportedCopy = 决定要不要给入口（🔴 名字兜底**排除 visibility='public' 的文件导入库**，
+//     否则一份恰好与公共库同名的自建库会被认成副本，卡片谎称来源、更新还会把公共库的解析写进它）。
 function sourceOf(b: any): any | null {
-  const ref = String(b?.origin_ref || '').trim()
-  if (ref) {
-    const hit = publicBanks.value.find((p: any) => String(p._id) === ref)
-    if (hit) return hit
-  }
-  return publicBanks.value.find((p: any) => p.name === b?.name) || null
+  return findSourceBank(b, publicBanks.value)
 }
 
-// 是否「从公共题库导入到本地的副本」——决定要不要给「提交到公共题库」。
-// ⚠️ 不能只看 sourceOf：它要么在**已加载的公共库列表**里命中、要么返回 null，而那份列表是云端拉的；
-//    拉不到时，即使本地库明明写着 origin_ref 也会被判成 null、提交按钮又冒出来。
-//    origin_ref 是导入时写在本地库上的标记（HomeView.importPublicBank 传的 b._id），不依赖网络 ⇒ 先看它；
-//    2026-09-24 之前导的老副本没这个字段，才退回 sourceOf 按题库名匹配。
 function isImportedCopy(b: any): boolean {
-  if (String(b?.origin_ref || '').trim()) return true
-  return !!sourceOf(b)
+  return isPublicCopy(b, publicBanks.value)
 }
 
 // 「从公共题库更新」：只补题库给的内容字段（解析／知识点／难度／配图）。
