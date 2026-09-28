@@ -16,7 +16,7 @@ import {
   type LedgerIndex,
   type LedgerKV,
 } from './sync-ledger'
-import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal, orderHitRate } from './sync-ids'
+import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal, mergeProgressMapForCloud, orderHitRate, PROG_SCHEMA_V } from './sync-ids'
 import type { SyncDetail } from './sync-format'
 
 // P2-7（T10a，2026-09-15）引入的时间戳归一化 helper 原本定义在本文件；
@@ -829,6 +829,11 @@ export async function pushToCloud(): Promise<{ pushed: number; failed: number; s
       const localRows = await listLocalAll(coll)
       // 增量过滤：有 synced_at = 已同步且本地未改动 → 跳过；settings 永远全推（量小）
       let dirty = coll === 'settings' ? localRows : localRows.filter(r => !r.synced_at)
+      // 进度 map 是全量打包上传的，必须逐键合并后再推（见 mergeProgressMapWithCloud 注释）
+      if (coll === 'settings') {
+        const merged = await mergeProgressMapWithCloud(dirty)
+        if (merged) dirty = merged
+      }
       // 2026-08-23 推送侧去重（防本地重复题反复上传）：
       // 题目若因历史叠加在本地产生同 bank_ref + stem 的多份副本（都无 synced_at），
       // 只推内容唯一的一条，其余视为同源跳过——避免推送侧再次放大云端重复。
@@ -1391,6 +1396,33 @@ async function listAllMastered(): Promise<any[]> {
 async function listAllFavorites(): Promise<any[]> {
   return idb.listAll('favorites')
 }
+// 2026-09-28（上传侧逐键合并）：进度 map 上传前先与云端已有的 map 合并 ——
+// 原先整条覆盖 ⇒ 一台「本机还没有那些键」的设备（新电脑 / 清过缓存 / 手机端）一推就把别的设备
+// 写的键整条抹掉。合并口径在 sync-ids.ts 的 mergeProgressMapForCloud（纯函数，可离线直测）。
+// 这里只负责取云端现值和拼回行；取不到就保持旧行为（按本机推），不让同步直接失败。
+async function mergeProgressMapWithCloud(rows: any[]): Promise<any[] | null> {
+  const idx = rows.findIndex(r => r && r.key === 'practice_progress')
+  if (idx < 0) return null
+  let cloudMap: Record<string, any> | null = null
+  try {
+    const res: any = await withTimeout(
+      db.collection('settings').where({ _openid: authedUid, key: 'practice_progress' }).limit(1).get(),
+      20000, '读取云端进度')
+    const row = ((res && res.data) || [])[0]
+    cloudMap = row ? JSON.parse(String(row.value || '{}')) : null
+  } catch (e) {
+    console.warn('[cloud] 读取云端进度 map 失败，本次按本机内容推送', e)
+    return null
+  }
+  let localMap: Record<string, any> | null = null
+  try { localMap = JSON.parse(String(rows[idx].value || '{}')) } catch { return null }
+  const { map, tookCloud } = mergeProgressMapForCloud(cloudMap, localMap)
+  if (tookCloud) console.info(`[cloud] 进度逐键合并：${tookCloud} 个库采用云端较新版本（本机不会覆盖它们）`)
+  const next = rows.slice()
+  next[idx] = { ...rows[idx], value: JSON.stringify(map) }
+  return next
+}
+
 async function listAllSettings(): Promise<any[]> {
   // 读取已知 key（从设置页用到的）
   // 注意：ai_api_key（AI 密钥）不参与云同步，仅保存在本地浏览器，避免泄露到云端
@@ -1426,9 +1458,11 @@ async function listAllSettings(): Promise<any[]> {
     if (Object.keys(prog).length) {
       // 2026-09-28：给每个库的进度打上本机设备标记（_src.dev）—— 落地侧靠它区分
       // 「本机写的（题号已是本机号，不必重映射）」与「他机写的（必须重映射）」。
+      // 2026-09-28 晚：版本号改用 PROG_SCHEMA_V（原先硬写 v: 2，而当前 schema 已是 v3 ——
+      // v2 在 sync-ids 的语义里等于「判据有误、内容待重算」，继续写 v2 会让未来读它的代码把本机推的内容当旧的）。
       const myDev = deviceId()
       for (const k of Object.keys(prog)) {
-        if (prog[k] && typeof prog[k] === 'object') prog[k] = { ...prog[k], _src: { dev: myDev, v: 2 } }
+        if (prog[k] && typeof prog[k] === 'object') prog[k] = { ...prog[k], _src: { dev: myDev, v: PROG_SCHEMA_V } }
       }
       out.push({ _id: 'lsettings_' + uidPrefix() + '_practice_progress', key: 'practice_progress', value: JSON.stringify(prog) })
     }

@@ -2,7 +2,7 @@
 //
 // 背景：每台设备给题目分配的本地 id 是各自自增的 —— 同一个数字在不同设备上指向不同的题。
 // 记录（错题/收藏/掌握/练习记录）与续练进度里的「题号引用」因此在跨设备时没有全局意义。
-// 本文件把映射决策收敛成纯函数（无 IO、可脚本直测，见 scripts/test-sync-ids.ts）：
+// 本文件把映射决策收敛成纯函数（无 IO、可脚本直测，见 tests/sync-ids.test.ts）：
 //   · 记录侧：cloud.ts 用云端题 `_id` 精确映射到本机题号（映射不上 = 丢弃，绝不挂错号）；
 //   · 进度侧：用「来源题号 → 本机题号」索引 + 设备标记，决定 写入/保持 与内容重塑。
 // 题目的「来源题号」来自云端题的 `_local_id`，落地时由 cloud.ts 存为本地题的 `src_local_id`。
@@ -105,6 +105,30 @@ export function mergeProgressForLocal(
   const mapped = (cloudIsMine || passthrough) ? { ...cloudProg } : remapProgress(cloudProg, index)
   mapped._src = { dev: myDev, v: PROG_SCHEMA_V }
   return { write: true, value: mapped }
+}
+
+/**
+ * **上传侧**的逐键合并（纯函数）：进度 map 是全量打包上传的，若直接整条覆盖云端，
+ * 一台「本机还没有那些键」的设备（新电脑 / 清过缓存 / 手机端）一推就会把别的设备写的键抹掉。
+ * 口径：云端 map 打底 + 本机键覆盖；同一个库两边都有时按 `saved_at` 取新，
+ * 并复用与 mergeProgressForLocal **同一条**空缺守卫（本机近乎空 + 云端实质 ⇒ 保留云端，
+ * `_reset` = 用户故意的空）。⇒「先推」与「先拉」结果一致，同步顺序不再影响数据。
+ */
+export function mergeProgressMapForCloud(
+  cloudMap: Record<string, any> | null, localMap: Record<string, any> | null,
+): { map: Record<string, any>; tookCloud: number } {
+  const c = (cloudMap && typeof cloudMap === 'object' && !Array.isArray(cloudMap)) ? cloudMap : {}
+  const l = (localMap && typeof localMap === 'object' && !Array.isArray(localMap)) ? localMap : {}
+  const out: Record<string, any> = { ...c }
+  let tookCloud = 0
+  for (const bid of Object.keys(l)) {
+    const cv = c[bid]
+    const lv = l[bid]
+    if (!cv) { out[bid] = lv; continue }
+    const guarded = submittedCount(cv) >= SUBSTANTIAL_MIN && submittedCount(lv) <= 1 && !(lv && lv._reset)
+    if (guarded || progTs(lv) < progTs(cv)) { out[bid] = cv; tookCloud++ } else { out[bid] = lv }
+  }
+  return { map: out, tookCloud }
 }
 
 /** 进度内容重映射：order_ids 剔除映射失败项；current_id 映射；answer_states 丢失败键。 */
