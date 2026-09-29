@@ -37,7 +37,7 @@ export function addDays(dateStr: string, days: number): string {
 // 2026-09-24：`cloudId` —— 题库/题目的云端 `_id`。能拿到就带上：删除云端那条时按 `_id`/`bank_ref`
 //   精确定位，不再只认「本设备当初分配的本地 id」（换过身份/设备的文档只认 cloud_id，否则删不掉、下次又拉回来）。
 function markCloudDeleted(
-  coll: 'favorites' | 'wrong_questions' | 'mastered_questions' | 'questions' | 'quiz_banks',
+  coll: 'favorites' | 'wrong_questions' | 'mastered_questions' | 'practice_records' | 'questions' | 'quiz_banks',
   bankId: number | string, questionId: number | string | null, cloudId: string | null = null,
 ) {
   // 2026-09-28（跨设备映射）：记录类删的是「一道题在本机的记录」——云端那份记录里的 question_id 是
@@ -121,6 +121,13 @@ export const api = {
     const cid = await bankCloudId(id)
     markCloudDeleted('quiz_banks', id, null, cid)
     markCloudDeleted('questions', id, null, cid)
+    // 2026-09-29：**记录类也要销账**（同一「整库语义」`question_id: null`）。原先只标题库+题目，
+    //   而 `idb.deleteBank` 会把本机六张表里的记录一起级联删掉 ⇒ 云端那批记录既没人删、又没有账本
+    //   条目 ⇒ 下次「下载」把它们拉回来挂在一个已不存在的库上（rabbit 账号当晚实测 95 行）。
+    markCloudDeleted('practice_records', id, null)
+    markCloudDeleted('wrong_questions', id, null)
+    markCloudDeleted('favorites', id, null)
+    markCloudDeleted('mastered_questions', id, null)
     await idb.deleteBank(id)
     scheduleCloudPush()
   },

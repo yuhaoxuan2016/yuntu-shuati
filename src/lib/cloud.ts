@@ -42,7 +42,7 @@ export const CLOUD_COLLECTIONS = [
 export type CloudCollection = (typeof CLOUD_COLLECTIONS)[number]
 
 // 删除账本只覆盖有「用户删除」语义的五个集合（settings 没有删除概念）
-const LEDGER_COLLS = new Set<string>(['quiz_banks', 'questions', 'favorites', 'wrong_questions', 'mastered_questions'])
+const LEDGER_COLLS = new Set<string>(['quiz_banks', 'questions', 'favorites', 'wrong_questions', 'mastered_questions', 'practice_records'])
 
 // 云同步配置（存 localStorage，避免进 IndexedDB 造成循环依赖）
 const CFG_KEY = 'cloudbase_config'
@@ -400,6 +400,11 @@ function deletedMarkWhere(coll: CloudCollection, m: DeletedMark): Record<string,
   // 2026-09-28（跨设备映射）：记录类删除优先按「题目的云端 _id」（m.cloud_id ⇒ 云端记录的
   // question_cloud_id）定位 —— 跨设备时 question_id 没有全局意义，只有它认得同一道题；
   // 存量记录由回填脚本补齐该字段，未回填到的（或本机自产未上云）自动回退旧键。
+  // 2026-09-29（删库级联）：`question_id == null` ＝**整库语义**（与 questions 同一约定）——
+  //   删题库时连同该库的记录一起销账，否则本机删了库、云端记录还在，下次「下载」把它们拉回来
+  //   挂在一个不存在的库上（当晚 95 行实例）。桥代写的镜像行是 `bank_id`（无 `_local_bank_id`）
+  //   且属主为各自的绑定身份，不在本条覆盖范围。
+  if (m.question_id == null) return { _local_bank_id: m.bank_id, _openid: authedUid }
   if (m.cloud_id) return { question_cloud_id: m.cloud_id, _openid: authedUid }
   return { _local_bank_id: m.bank_id, question_id: m.question_id, _openid: authedUid }
 }
@@ -476,7 +481,7 @@ async function applyDeletedMarks(): Promise<void> {
   //   （`scheduleCloudPush` 是空函数、本地删除又只动 IndexedDB）⇒ 下一次同步把整库原题从云端拉回来「复活」。
   //   现在补上 `questions` 与 `quiz_banks`：删除时由 api 层打标记（整库用 `question_id: null`），
   //   在这里按集合分流的 where 删云端文档（见 deletedMarkWhere）。
-  for (const coll of ['favorites', 'wrong_questions', 'mastered_questions', 'questions', 'quiz_banks'] as CloudCollection[]) {
+  for (const coll of ['favorites', 'wrong_questions', 'mastered_questions', 'practice_records', 'questions', 'quiz_banks'] as CloudCollection[]) {
     const list = marks[coll]
     if (!list || !list.length) continue
     const kept: DeletedMark[] = []

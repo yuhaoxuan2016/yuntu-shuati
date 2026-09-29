@@ -24,7 +24,9 @@
 // scripts/lib/sync-ledger.test.cjs）。
 export const LEDGER_KEY = 'sync_deleted_ledger'
 
-export type LedgerColl = 'quiz_banks' | 'questions' | 'favorites' | 'wrong_questions' | 'mastered_questions'
+// 2026-09-29：补 practice_records —— 删题库会级联删掉该库的练习记录，若账本不认这个集合，
+// 下次「下载」会把它们拉回来挂在一个已不存在的库上（rabbit 账号实测 95 行）。
+export type LedgerColl = 'quiz_banks' | 'questions' | 'favorites' | 'wrong_questions' | 'mastered_questions' | 'practice_records'
 
 export type LedgerEntry = {
   coll: LedgerColl
