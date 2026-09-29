@@ -147,6 +147,17 @@ async function main () {
     const seeded = await evalJs(ws, SEED)
     check(seeded === 'seeded', 'IndexedDB 已灌：订阅库 2 条错题 + 本地库 1 条错题，收藏各 1 条', '灌数据失败：' + seeded)
 
+    console.log('\n— ⓪ 静态前置：订阅进度必须在「公共库列表回来之后」再算一次')
+    // 这条是 rabbit 报的「已订阅卡片缺进度条」的根因守卫：loadSubs() 在 setup 阶段跑，
+    // 那时 subscribedBanks（＝publicBanks ∩ subs）还是空的 ⇒ 进度 map 恒为空。
+    // 只查行为（⑥）容易被"数据刚好先到"骗过，所以补一条文本守卫看那个调用点在不在。
+    {
+      const homeSrc = fs.readFileSync(path.resolve(HERE, '../src/views/HomeView.vue'), 'utf8')
+      const hasCall = /if \(banks\.status === 'fulfilled'\)[\s\S]{0,900}loadSubsProgress\(\)/.test(homeSrc)
+      check(hasCall, 'loadPublicData 里补算了订阅进度（两处都调，谁后完成都能补上）',
+        'loadPublicData 里没有 loadSubsProgress() ⇒ 订阅卡进度条会重新变成永远空白')
+    }
+
     console.log('\n— ① 首页两个入口')
     // 灌数据发生在首屏加载之后 ⇒ 必须重新加载一次，入口计数才会读到新库（这是测试的顺序，不是产品行为）
     await evalJs(ws, 'location.reload()')
@@ -217,6 +228,40 @@ async function main () {
       '选库列表仍没有订阅库：' + p2.txt.slice(0, 300))
     check(p2.txt.includes('测试本地库'), '本地库仍在列表里', '本地库从列表里消失了（回归）')
     check(p2.txt.includes('· 订阅'), '订阅库带「· 订阅」标记', '没有订阅标记')
+
+    console.log('\n— ⑥ 订阅卡的进度条（rabbit 报「已订阅卡片缺进度条」）')
+    // 先灌一条订阅库的本机进度，再看首页那张卡上有没有进度行（同一份数据本地库卡片是有的）
+    await evalJs(ws, `(async () => {
+      const db = await new Promise(res => { const r = indexedDB.open('shuati-bao-pwa'); r.onsuccess = () => res(r.result) })
+      const t = db.transaction('settings', 'readwrite')
+      t.objectStore('settings').put({ key: 'practice_progress_${PUB_REF}', value: JSON.stringify({
+        mode: 'order', order_ids: [1,2,3], answer_states: { 1: true, 2: false, 3: true }, saved_at: new Date().toISOString(),
+      }) })
+      await new Promise(r => { t.oncomplete = r })
+      db.close(); return 'seeded'
+    })()`)
+    await evalJs(ws, 'location.reload()')
+    await sleep(3500)
+    const home2 = await goto(ws, '#/')
+    // 订阅卡来自云端公共库列表（异步）⇒ 轮询等它出现，别拿首帧当结论（上一轮就假红在这）
+    let subCard = { found: false }
+    for (let i = 0; i < 24; i++) {
+      await sleep(500)
+      subCard = await evalJs(ws, `(() => {
+        const sec = document.querySelector('.subscribed-section'); if (!sec) return { found: false }
+        const card = [...sec.querySelectorAll('.card')].find(c => /中级2026/.test(c.innerText))
+        if (!card) return { found: false }
+        const row = card.querySelector('.progress-row')
+        return { found: true, hasBar: !!row, text: row ? row.innerText.replace(/\\s+/g,' ').trim() : '' }
+      })()`)
+      if (subCard.found) break
+    }
+    check(subCard.found, '订阅卡片在位（中级2026）', '首页找不到订阅卡：' + JSON.stringify(subCard))
+    check(!!subCard.hasBar, '订阅卡上有进度条（已答 3 题，本地库卡片同款）',
+      `订阅卡没有进度条 ⇒ rabbit 报的就是这条（卡片文本：${String(home2.txt).slice(0, 120)}）`)
+    if (subCard.hasBar) {
+      check(/已答\s*3/.test(subCard.text), `进度条文案对（${subCard.text}）`, `进度条文案不对：${subCard.text}`)
+    }
 
     // 反向对照：清空订阅后列表应只剩本地库 ⇒ 证明上面那条命中来自真实数据，不是写死的文案。
     // 必须**整页重载**：#/study-plan → #/study-plan 是同文档跳转，组件不会重新 loadData（上一轮就假红在这）。

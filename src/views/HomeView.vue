@@ -783,6 +783,12 @@ async function loadPublicData() {
       publicBanks.value = (banks.value || [])
         .filter(b => (b.question_count || 0) > 0)
         .sort((a, b) => (b.question_count || 0) - (a.question_count || 0))
+      // 🔴 2026-09-29：订阅卡的进度条必须**在这里**再算一次。
+      // `loadSubs()` 是 setup 阶段调用（早于 onMounted），那一刻 `subscribedBanks` 还是空的
+      // （它 = publicBanks ∩ subs，而 publicBanks 要等这次云端请求回来）⇒ 进度 map 恒为空
+      // ⇒ 订阅卡永远没有进度条（rabbit 报的「已订阅卡片缺进度条」就是这么来的）。
+      // 两处都调：谁后完成都能把进度补上（不做 watch —— 见本文件 TDZ 白屏事故的注释）。
+      loadSubsProgress()
     }
     if (exams.status === 'fulfilled') {
       publicExams.value = (exams.value || []).filter(e => e.visibility !== 'private' && (e.questions?.length || 0) > 0)
