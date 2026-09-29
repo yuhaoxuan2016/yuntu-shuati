@@ -17,6 +17,7 @@ import {
   type LedgerKV,
 } from './sync-ledger'
 import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal, mergeProgressMapForCloud, orderHitRate, PROG_SCHEMA_V } from './sync-ids'
+import { decideDeletedMark, nextTries, type RemoveResult } from './deleted-marks'
 import type { SyncDetail } from './sync-format'
 
 // P2-7（T10a，2026-09-15）引入的时间戳归一化 helper 原本定义在本文件；
@@ -258,7 +259,7 @@ const SYNC_DELETED_KEY = 'sync_deleted'
 // 2026-09-18 扩充（重审 A-15）：`question_id` 允许 `null` = **整库**语义
 //   （`quiz_banks` 用不到 question_id；`questions` 传 null 表示"删该库的全部题目"）。
 //   为什么不逐题打标记：一个 2000 题的题库会往 localStorage 写 2000 条标记，量级不可接受。
-type DeletedMark = { bank_id: number; question_id: number | string | null; cloud_id?: string | null; at?: number; tries?: number }
+type DeletedMark = { bank_id: number; question_id: number | string | null; cloud_id?: string | null; at?: number; tries?: number; uid?: string }
 
 function getDeletedMarks(): Record<string, DeletedMark[]> {
   try {
@@ -312,7 +313,7 @@ export function markCloudDeleted(
     // 老标记没带 cloud_id、这次拿到了 → 补上（删除时是按 _local_id 找的，那份可能永远找不到）
     if (cloudId && !hit.cloud_id) { hit.cloud_id = cloudId; saveDeletedMarks(marks) }
   } else {
-    list.push({ bank_id: bankId, question_id: questionId, cloud_id: cloudId, at: Date.now() })
+    list.push({ bank_id: bankId, question_id: questionId, cloud_id: cloudId, at: Date.now(), uid: authedUid || '' })
     saveDeletedMarks(marks)
   }
   recordDeletedLedger({
@@ -403,7 +404,11 @@ function deletedMarkWhere(coll: CloudCollection, m: DeletedMark): Record<string,
   return { _local_bank_id: m.bank_id, question_id: m.question_id, _openid: authedUid }
 }
 
-async function removeCloudDocsByMark(coll: CloudCollection, m: DeletedMark, syncKey: string): Promise<void> {
+// 返回扫描/删除计数，交给 decideDeletedMark 判「真删完了」还是「这次轮不到我删」——
+// 原先返回 void，调用方只能把"查不到"当成功，于是身份不对时把标记悄悄消费掉（2026-09-29 实例）。
+async function removeCloudDocsByMark(coll: CloudCollection, m: DeletedMark, syncKey: string): Promise<RemoveResult> {
+  let scanned = 0
+  let removedAll = 0
   // 分页只为请求量保护（每轮 100 条）：删除会让结果集变小，所以固定从头部重查，最多 20 轮防死循环。
   for (let round = 0; round < 20; round++) {
     const res = await withTimeout(
@@ -414,7 +419,8 @@ async function removeCloudDocsByMark(coll: CloudCollection, m: DeletedMark, sync
       20000, '删除同步',
     )
     const rows = Array.isArray(res.data) ? res.data : []
-    if (!rows.length) return
+    if (!rows.length) return { scanned, removed: removedAll }
+    scanned += rows.length
     let removed = 0
     let failed = 0
     for (const r of rows) {
@@ -437,6 +443,7 @@ async function removeCloudDocsByMark(coll: CloudCollection, m: DeletedMark, sync
       try {
         await withTimeout(db.collection(coll).where(removeWhere(r, coll)).remove(), 20000, '删除同步')
         removed++
+        removedAll++
       } catch (e: any) {
         // 2026-09-18 修复（重审 A-02）：原来这里是空的 catch——单条失败被吞掉，与本轮"没东西可删"
         // 返回同一个结果，调用方于是把整个集合的删除标记清掉 ⇒ 云端那条仍在，下一次 syncFromCloud
@@ -449,8 +456,9 @@ async function removeCloudDocsByMark(coll: CloudCollection, m: DeletedMark, sync
     // 只要有失败的就不算删干净：上抛让标记留下来（下面 applyDeletedMarks 有重试上限兜底）
     if (failed) throw new Error(`删除同步未全部完成：${coll} 本轮 ${failed}/${rows.length} 条失败`)
     // 本页没有可删的（全被第二重校验挡下）或已到最后一页 → 结束
-    if (removed === 0 || rows.length < 100) return
+    if (removed === 0 || rows.length < 100) return { scanned, removed: removedAll }
   }
+  return { scanned, removed: removedAll }
 }
 
 // 删除标记连续失败的次数上限：到顶就放弃该标记并明说（云端那条可能残留，但至少不再每次同步空转）。
@@ -474,11 +482,29 @@ async function applyDeletedMarks(): Promise<void> {
     const kept: DeletedMark[] = []
     for (const m of list) {
       try {
-        // 云端记录 push 时带 _local_bank_id（本地题库 id）+ question_id（+ _openid 属主）→ where 精确查删
-        await removeCloudDocsByMark(coll, m, syncKey)
+        const res = await removeCloudDocsByMark(coll, m, syncKey)
+        const outcome = decideDeletedMark(m as any, authedUid, res)
+        if (outcome === 'consumed') continue
+        if (outcome === 'keep-identity') {
+          // 不是失败，是"这次轮不到我删"：标记属于另一个身份。不消耗重试次数，
+          // 等绑定回同一个账号自然会清掉（2026-09-29：匿名身份把 wx_ 的删除标记吃掉的实例）。
+          kept.push(m)
+          console.warn(`删除同步：${coll} 的这条删除标记属于另一个身份（${String((m as any).uid).slice(0, 12)}… ≠ 当前），保留待重试`)
+          continue
+        }
+        // keep-empty：身份相符却一条都没扫到 —— 老标记（无 uid）无法排除"其实属于别的身份"，宁留
+        const tries = nextTries('keep-empty', (m as any).tries)
+        if (tries >= DELETED_MARK_MAX_TRIES) {
+          console.warn(`清理云端 ${coll} 删除标记连续 ${tries} 次没找到目标，放弃该标记（云端那条可能残留）`)
+        } else {
+          kept.push({ ...m, tries } as DeletedMark)
+          console.warn(`清理云端 ${coll} 删除标记没扫到目标（保留待重试 ${tries}/${DELETED_MARK_MAX_TRIES}）`)
+        }
       } catch (e: any) {
-        // 2026-09-18 修复（重审 A-02）：失败**不再**无条件丢弃标记（原实现在下面 `delete marks[coll]`，
-        // 等于"试过就清"，弱网下一次取消收藏就会静默丢失、下次拉取复活）。
+        // 2026-09-18 修复（重审 A-02）：原来这里是空的 catch——单条失败被吞掉，与本轮"没东西可删"
+        // 返回同一个结果，调用方于是把整个集合的删除标记清掉 ⇒ 云端那条仍在，下一次 syncFromCloud
+        // 按 sync_key 把它拉回来、界面上的收藏/错题**自己复活**（用户只看到「同步完成」）。
+        // 现在如实计数并上抛，由 applyDeletedMarks 决定"留着下轮重试"还是"放弃"。
         const tries = Number((m as any).tries || 0) + 1
         if (tries >= DELETED_MARK_MAX_TRIES) {
           console.warn(`清理云端 ${coll} 删除标记连续 ${tries} 次失败，放弃该标记（云端那条可能残留）：`, e?.message || e)
