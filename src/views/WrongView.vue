@@ -14,7 +14,7 @@
       </div>
       <section v-for="g in (tab === 'pending' ? groups : masteredGroups)" :key="String(g.key)" class="bank-group">
         <h3 class="group-head">
-          <span class="group-name">{{ g.name }}<span class="group-count"> {{ g.count }}</span></span>
+          <span class="group-name">{{ g.name }}<span class="group-count">· {{ g.count }}</span></span>
           <router-link class="group-link" :to="`/wrong/${encodeURIComponent(String(g.key))}`">只看这个库</router-link>
         </h3>
         <p v-if="g.unreachable" class="hint">该库题目暂时取不到（离线或云端失败），这里只显示数量。</p>
@@ -494,7 +494,7 @@ function getQuestionPreview(id: number): string {
 .bank-group { margin-bottom: 22px; }
 .group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 0 0 8px; font-size: 15px; }
 .group-name { font-weight: 600; }
-.group-count { color: var(--color-text-secondary, #888); font-weight: 400; font-size: 13px; }
+.group-count { color: var(--color-text-secondary, #888); font-weight: 400; font-size: 13px; margin-left: 6px; }
 .group-link { font-size: 12px; color: var(--color-primary, #42b883); text-decoration: none; white-space: nowrap; }
 .group-link:hover { text-decoration: underline; }
 .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--color-border); }

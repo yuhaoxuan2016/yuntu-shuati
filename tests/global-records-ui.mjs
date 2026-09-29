@@ -174,6 +174,11 @@ async function main () {
     const loc = w.groups.find(g => g.head.includes('测试本地库'))
     check(!!sub, '订阅库组出现，名字来自云端公共库列表', '没有订阅库组 ⇒ 聚合漏了订阅库（就是原先那个病）')
     check(!!loc, '本地库组出现', '没有本地库组')
+    // 组头「库名 + 数量」不能粘在一起（首版写成 `{{ g.name }} {{ g.count }}`，
+    // Vue 模板会裁掉元素边界处的空白 ⇒ 线上渲染成「中级20268」，真机一眼就看出是坏的）
+    const heads = w.groups.map(g => g.head)
+    const SEP = /·\s*\d+$/
+    check(heads.every(h => SEP.test(h)), '组头是「库名 · 数量」，没粘连', `组头粘连：${JSON.stringify(heads)}`)
     check(!!sub && sub.items.length === 2, '订阅库组内 2 道题', `订阅库组内 ${sub ? sub.items.length : '—'} 道`)
     check(!!sub && sub.items.some(t => t.includes('做错 4 次')), '顽固错题徽章（做错 4 次）在聚合态也渲染', '缺做错次数徽章')
     if (sub && sub.items.some(t => /第 501\d{3} 题/.test(t))) {
