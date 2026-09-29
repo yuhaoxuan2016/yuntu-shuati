@@ -11,12 +11,16 @@
       </div>
       <div class="form-group">
         <label>选择题库</label>
-        <div class="bank-list">
-          <label v-for="bank in banks" :key="bank.id" class="bank-item">
-            <input type="checkbox" v-model="form.bankIds" :value="bank.id" />
-            <span>{{ bank.name }} ({{ bank.question_count }}题)</span>
+        <div class="bank-list" v-if="banks.length">
+          <label v-for="bank in banks" :key="String(bank.key)" class="bank-item">
+            <input type="checkbox" v-model="form.bankIds" :value="bank.key" />
+            <span>{{ bankLabel(bank) }} ({{ bank.questionCount }}题)<template v-if="bank.kind === 'subscribed'"> · 订阅</template></span>
           </label>
         </div>
+        <!-- 空列表要说清为什么空，否则跟「按钮点不动」一样莫名其妙（这条就是学习计划被当成空壳的原因） -->
+        <p v-else class="hint">
+          还没有可练习的题库：先在首页「🌍 公共题库」订阅一个库，或导入本地题库，再回来创建计划。
+        </p>
       </div>
       <div class="form-group">
         <label>每日目标题数</label>
@@ -94,6 +98,7 @@ import { useRouter } from 'vue-router'
 import { api } from '../utils/api'
 import { idb } from '../lib/db'
 import { calculateDailyTask, formatDate } from '../lib/spaced-repetition'
+import { bankLabel, type BankKey, type PracticableBank } from '../lib/practicable-banks'
 import { toastSuccess, toastError, toastInfo } from '../utils/toast'
 
 const router = useRouter()
@@ -101,17 +106,20 @@ const router = useRouter()
 // 状态
 const showForm = ref(false)
 const plans = ref<any[]>([])
-const banks = ref<any[]>([])
+// 可选库 = 本地库 + 订阅的公共库。原先这里是 `api.listBanks()`（只有本地库），
+// 而订阅库不落本地行 ⇒ rabbit 删掉本地库后选库列表直接空、创建按钮永远点不动（计划功能成空壳）。
+const banks = ref<PracticableBank[]>([])
 const currentPlan = ref<any>(null)
 const todayTask = ref<any>({ reviewQuestions: [], newQuestions: [], totalGoal: 0 })
 const completedQuestions = ref<number[]>([])
 // 2026-08-22：题目 id → 所属题库 id 映射（计划跨题库时，练习页需要按题库过滤队列）
-const planQuestionBankMap = ref<Map<number, number>>(new Map())
+// 2026-09-29：库号放宽成 BankKey（本地库＝数字，订阅库＝bankRef 字符串）
+const planQuestionBankMap = ref<Map<number, BankKey>>(new Map())
 
 // 表单
 const form = ref({
   name: '',
-  bankIds: [] as number[],
+  bankIds: [] as BankKey[],
   dailyGoal: 50,
   examDate: ''
 })
@@ -136,8 +144,8 @@ const progressPercentage = computed(() => {
 // 加载数据
 async function loadData() {
   try {
-    // 加载题库
-    banks.value = await api.listBanks()
+    // 加载题库（本地 + 订阅）
+    banks.value = await api.listPracticableBanks()
     
     // 加载计划
     plans.value = await idb.listPlans()
@@ -158,7 +166,7 @@ async function loadTodayTask() {
   
   try {
     // 获取计划中的所有题目
-    const allQuestions: { id: number; bankId: number }[] = []
+    const allQuestions: { id: number; bankId: BankKey }[] = []
     planQuestionBankMap.value.clear()
     for (const bankId of currentPlan.value.bankIds) {
       const questions = await api.listQuestions(bankId)
@@ -172,7 +180,9 @@ async function loadTodayTask() {
     const reviewRecords = await idb.listReviewRecords()
     
     // 计算今日任务
-    todayTask.value = calculateDailyTask(currentPlan.value, reviewRecords, allQuestions)
+    // spaced-repetition.ts 与小程序端**逐字节相同**，不能为这里放宽签名；
+    // 它内部只把 bankId 当集合成员用（new Set(plan.bankIds).has(q.bankId)），数字/bankRef 字符串都成立。
+    todayTask.value = calculateDailyTask(currentPlan.value, reviewRecords, allQuestions as unknown as { id: number; bankId: number }[])
     
     // 获取已完成的题目（从本地存储）
     const stored = localStorage.getItem(`completed_${currentPlan.value.id}_${formatDate(new Date())}`)
@@ -268,10 +278,10 @@ function startPractice() {
 }
 
 // 获取题库名称
-function getBankNames(bankIds: number[]): string {
+function getBankNames(bankIds: BankKey[]): string {
   return bankIds.map(id => {
-    const bank = banks.value.find(b => b.id === id)
-    return bank ? bank.name : '未知题库'
+    const bank = banks.value.find(b => String(b.key) === String(id))
+    return bank ? bankLabel(bank) : '未知题库'
   }).join('、')
 }
 

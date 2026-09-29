@@ -260,6 +260,11 @@ export const api = {
   async listWrong(bankId: number | string | string): Promise<number[]> { return idb.listWrong(bankId) },
   // 错题本完整记录（含 correct_streak，供「连对 n 次」展示）
   async listWrongRecords(bankId: number | string): Promise<any[]> { return idb.listWrongRecords(bankId) },
+  // 跨库列举（聚合错题本/收藏，2026-09-29）：返回**整行**，因为每条记录必须自带 bank_id，
+  // 页面级的单一 bankId 在聚合态不成立（见 lib/records-aggregate.ts 顶部注释）。
+  async listAllWrongRecords(): Promise<any[]> { return idb.listAll('wrong_questions') },
+  async listAllMasteredRecords(): Promise<any[]> { return idb.listAll('mastered_questions') },
+  async listAllFavorites(): Promise<any[]> { return idb.listAll('favorites') },
   async listMastered(bankId: number | string): Promise<number[]> { return idb.listMastered(bankId) },
   async listMasteredRecords(bankId: number | string): Promise<any[]> { return idb.listMasteredRecords(bankId) },
   async markWrong(bankId: number | string, questionId: number | string): Promise<number> {
@@ -339,6 +344,19 @@ export const api = {
     }
     scheduleCloudPush()
     return n
+  },
+  async listPracticableBanks(): Promise<import('../lib/practicable-banks').PracticableBank[]> {
+    const { buildPracticableBanks } = await import('../lib/practicable-banks')
+    const [banks, subs] = await Promise.all([this.listBanks(), this.listSubscriptions()])
+    // 公共库列表要联网：拉不到就按「只有本地库」继续，别让页面整块报错
+    let pubs: any[] = []
+    try {
+      const { listPublicBanks } = await import('../lib/exam')
+      pubs = (await listPublicBanks()) || []
+    } catch (e: any) {
+      console.warn('可选库：公共题库列表没取到，订阅库将显示为「离线，未取到名称」：', e?.message || e)
+    }
+    return buildPracticableBanks(banks as any[], subs, pubs)
   },
   async listSubscriptions(): Promise<string[]> {
     const raw = await idb.getSetting(SUBS_KEY)

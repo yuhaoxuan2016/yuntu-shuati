@@ -1,13 +1,39 @@
 <template>
   <div class="wrong">
-    <h2>错题本（{{ wrongIds.length }} 题）</h2>
+    <h2>错题本（{{ isGlobal ? globalTotal : wrongIds.length }} 题）<template v-if="isGlobal"> · 全部题库</template></h2>
 
     <div class="tabs">
-      <button :class="{ active: tab === 'pending' }" @click="tab = 'pending'">待重练（{{ wrongIds.length }}）</button>
-      <button :class="{ active: tab === 'mastered' }" @click="tab = 'mastered'">已掌握（{{ masteredIds.length }}）</button>
+      <button :class="{ active: tab === 'pending' }" @click="tab = 'pending'">待重练（{{ isGlobal ? globalTotal : wrongIds.length }}）</button>
+      <button :class="{ active: tab === 'mastered' }" @click="tab = 'mastered'">已掌握（{{ isGlobal ? globalMasteredTotal : masteredIds.length }}）</button>
     </div>
 
-    <div v-if="tab === 'pending'">
+    <!-- 聚合态：按库分组，组头能跳回单库（跨库连续重练这轮不做） -->
+    <template v-if="isGlobal">
+      <div v-if="!(tab === 'pending' ? groups.length : masteredGroups.length)" class="empty">
+        {{ tab === 'pending' ? '暂无错题，继续加油！' : '还没有已掌握的错题' }}
+      </div>
+      <section v-for="g in (tab === 'pending' ? groups : masteredGroups)" :key="String(g.key)" class="bank-group">
+        <h3 class="group-head">
+          <span class="group-name">{{ g.name }}<span class="group-count"> {{ g.count }}</span></span>
+          <router-link class="group-link" :to="`/wrong/${encodeURIComponent(String(g.key))}`">只看这个库</router-link>
+        </h3>
+        <p v-if="g.unreachable" class="hint">该库题目暂时取不到（离线或云端失败），这里只显示数量。</p>
+        <ul class="wrong-list">
+          <li v-for="it in g.items" :key="String(g.key) + ':' + it.qid" class="wrong-item">
+            <span class="item-preview">{{ it.preview || `第 ${it.qid} 题` }}</span>
+            <span v-if="it.totalWrong" class="wrong-count-tag" :class="{ stubborn: it.totalWrong >= 3 }">🔁 做错 {{ it.totalWrong }} 次</span>
+            <span v-if="threshold > 0 && it.streak" class="streak-tag" :class="{ near: it.streak >= threshold - 1 }">✅ 连对 {{ it.streak }}/{{ threshold }}</span>
+            <template v-if="tab === 'pending'">
+              <button class="quick-master-btn" title="标记已掌握" @click.stop="gMarkMastered(g.key, it.qid)">✓ 掌握</button>
+              <button class="quick-del-btn" title="删除记录" @click.stop="gRemove(g.key, it.qid)">🗑</button>
+            </template>
+            <button v-else class="restore-btn" @click.stop="gRestore(g.key, it.qid)">放回错题</button>
+          </li>
+        </ul>
+      </section>
+    </template>
+
+    <div v-else-if="tab === 'pending'">
       <!-- 错题分类筛选 -->
       <div class="wrong-filter">
         <div class="filter-label">按题型筛选：</div>
@@ -124,14 +150,23 @@ import { api, Question, resolveBankId } from '../utils/api'
 import { toastError, toastSuccess, toastInfo } from '../utils/toast'
 import QuestionCard from '../components/QuestionCard.vue'
 import { classifyQuestionType } from '../lib/exam'
+import { groupRecords, loadQuestionsByBank, type BankGroup } from '../lib/records-aggregate'
 
 const route = useRoute()
 // 2026-09-27 订阅模式：路由参数可能是本地库数字 id，也可能是公共题库 bankRef（字符串 _id）。
-const bankId = resolveBankId(route.params.bankId)
+// 2026-09-29：**不带参数＝跨库聚合视图**（按库分组）。单库分支的行为逐字不变。
+const bankId = route.params.bankId ? resolveBankId(route.params.bankId) : null
+const isGlobal = bankId === null
+// 下面这些单库路径（重练/答后落库/标记掌握/删除/取消收藏）只在**带 :bankId** 时可达：
+// 聚合分支的模板里不给它们入口，行内操作走 gMarkMastered/gRemove/gRestore（库号从每一行取）。
+// 将来若给聚合态加「跨库重练」，这些 bankId! 必须改成按行取库号，否则会把记录写进错误的库。
 const allQuestions = ref<Question[]>([])
 const wrongIds = ref<number[]>([])
 const masteredIds = ref<number[]>([])
 const favoriteIds = ref<Set<number>>(new Set())
+// 聚合态：每组记录自带 bankKey（页面级单一 bankId 在跨库时不成立，写错库就是数据事故）
+const groups = ref<BankGroup[]>([])
+const masteredGroups = ref<BankGroup[]>([])
 const streakMap = ref<Map<number, number>>(new Map())  // 错题 id → 连续答对次数
 const totalWrongMap = ref<Map<number, number>>(new Map())  // 错题/已掌握 id → 累计做错次数（顽固错题统计）
 const threshold = ref(0)                               // 自动掌握阈值（0=关闭）
@@ -205,12 +240,13 @@ onMounted(async () => {
 })
 
 async function loadData() {
+  if (isGlobal) return loadGlobal()
   try {
-    allQuestions.value = await api.listQuestions(bankId)
+    allQuestions.value = await api.listQuestions(bankId!)
     const [wrongRecs, masteredRecs, favs] = await Promise.all([
-      api.listWrongRecords(bankId),
-      api.listMasteredRecords(bankId),
-      api.listFavorites(bankId),
+      api.listWrongRecords(bankId!),
+      api.listMasteredRecords(bankId!),
+      api.listFavorites(bankId!),
     ])
     wrongIds.value = wrongRecs.map((r: any) => r.question_id)
     streakMap.value = new Map(wrongRecs.map((r: any) => [r.question_id, r.correct_streak ?? 0]))
@@ -225,6 +261,51 @@ async function loadData() {
   } catch (e) {
     toastError('加载错题失败：' + (e instanceof Error ? e.message : String(e)))
   }
+}
+
+// ── 聚合态（无 :bankId）───────────────────────────────────────────────
+const globalTotal = computed(() => groups.value.reduce((n, g) => n + g.count, 0))
+const globalMasteredTotal = computed(() => masteredGroups.value.reduce((n, g) => n + g.count, 0))
+
+async function loadGlobal() {
+  try {
+    const [wrongRecs, masteredRecs, banks] = await Promise.all([
+      api.listAllWrongRecords(),
+      api.listAllMasteredRecords(),
+      api.listPracticableBanks(),
+    ])
+    threshold.value = await api.getWrongMasterThreshold()
+    const keys = [...new Set([...wrongRecs, ...masteredRecs].map((r: any) => String(r.bank_id ?? '')).filter(Boolean))]
+    // 订阅库的题在云端：按库取、限并发、单库失败只让那一组降级
+    const qby = await loadQuestionsByBank(keys, (k) => api.listQuestions(resolveBankId(k)))
+    groups.value = groupRecords(wrongRecs as any[], banks, qby)
+    masteredGroups.value = groupRecords(masteredRecs as any[], banks, qby)
+  } catch (e) {
+    toastError('加载错题失败：' + (e instanceof Error ? e.message : String(e)))
+  }
+}
+
+/** 聚合态的行内操作：库号从**那一行**取，不用页面级的 bankId */
+async function gMarkMastered(key: any, qid: number) {
+  try {
+    await api.markWrongMastered(key, qid)
+    toastSuccess('已标记掌握')
+    await loadGlobal()
+  } catch (e: any) { toastError('标记失败：' + (e?.message || e)) }
+}
+async function gRemove(key: any, qid: number) {
+  try {
+    await api.removeWrongRecord(key, qid)
+    toastSuccess('已删除该错题')
+    await loadGlobal()
+  } catch (e: any) { toastError('删除失败：' + (e?.message || e)) }
+}
+async function gRestore(key: any, qid: number) {
+  try {
+    await api.restoreWrongToPending(key, qid)
+    toastSuccess('已放回待重练')
+    await loadGlobal()
+  } catch (e: any) { toastError('操作失败：' + (e?.message || e)) }
 }
 
 function start() {
@@ -318,7 +399,7 @@ async function onAnswered(payload: { correct: boolean; answer: string; duration_
   if (current.value) {
     const qid = current.value.id
     try {
-      const res = await api.recordPractice({ bank_id: bankId, question_id: qid, user_answer: payload.answer, is_correct: payload.correct, duration_ms: payload.duration_ms })
+      const res = await api.recordPractice({ bank_id: bankId!, question_id: qid, user_answer: payload.answer, is_correct: payload.correct, duration_ms: payload.duration_ms })
       // 连续答对达到阈值 → 自动移入「已掌握」
       if (res?.autoMastered) {
         toastSuccess(`🎉 连续答对 ${res.streak} 次，已自动移入「已掌握」`)
@@ -345,7 +426,7 @@ async function onAnswered(payload: { correct: boolean; answer: string; duration_
 async function onToggleFavorite() {
   if (!current.value) return
   try {
-    const nowFav = await api.toggleFavorite(bankId, current.value.id)
+    const nowFav = await api.toggleFavorite(bankId!, current.value.id)
     const next = new Set(favoriteIds.value)
     if (nowFav) next.add(current.value.id)
     else next.delete(current.value.id)
@@ -357,7 +438,7 @@ async function onToggleFavorite() {
 
 async function markMastered(questionId: number) {
   try {
-    await api.markWrongMastered(bankId, questionId)
+    await api.markWrongMastered(bankId!, questionId)
     await loadData()
     // 自动跳下一题
     if (practicing.value) {
@@ -372,7 +453,7 @@ async function restoreToPending(questionId: number) {
   // BUG-011 修复：改用独立的 restore_wrong_to_pending 命令
   // 旧实现通过 recordPractice(is_correct=false) 实现，会写入 practice_records 表污染统计
   try {
-    await api.restoreWrongToPending(bankId, questionId)
+    await api.restoreWrongToPending(bankId!, questionId)
     await loadData()
   } catch (e) {
     toastError('放回失败：' + (e instanceof Error ? e.message : String(e)))
@@ -383,7 +464,7 @@ async function restoreToPending(questionId: number) {
 async function removeWrong(questionId: number) {
   if (!confirm('确定删除这条错题记录吗？（仅删除记录，不影响题目本身）')) return
   try {
-    await api.removeWrongRecord(bankId, questionId)
+    await api.removeWrongRecord(bankId!, questionId)
     await loadData()
   } catch (e) {
     toastError('删除失败：' + (e instanceof Error ? e.message : String(e)))
@@ -393,7 +474,7 @@ async function removeWrong(questionId: number) {
 async function removeMastered(questionId: number) {
   if (!confirm('确定删除这条已掌握记录吗？（仅删除记录，不影响题目本身）')) return
   try {
-    await api.removeMasteredRecord(bankId, questionId)
+    await api.removeMasteredRecord(bankId!, questionId)
     await loadData()
   } catch (e) {
     toastError('删除失败：' + (e instanceof Error ? e.message : String(e)))
@@ -409,6 +490,13 @@ function getQuestionPreview(id: number): string {
 
 <style scoped>
 .wrong { max-width: 800px; }
+/* 聚合态（无 :bankId）：按库分组 */
+.bank-group { margin-bottom: 22px; }
+.group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 0 0 8px; font-size: 15px; }
+.group-name { font-weight: 600; }
+.group-count { color: var(--color-text-secondary, #888); font-weight: 400; font-size: 13px; }
+.group-link { font-size: 12px; color: var(--color-primary, #42b883); text-decoration: none; white-space: nowrap; }
+.group-link:hover { text-decoration: underline; }
 .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--color-border); }
 .tabs button { background: none; border: none; padding: 8px 16px; cursor: pointer; color: var(--color-text-secondary); border-bottom: 2px solid transparent; }
 .tabs button.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }

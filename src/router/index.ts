@@ -5,8 +5,10 @@ const routes = [
   { path: '/', name: 'home', component: () => import('../views/HomeView.vue') },
   { path: '/import/:bankId?', name: 'import', component: () => import('../views/ImportView.vue') },
   { path: '/practice/:bankId', name: 'practice', component: () => import('../views/PracticeView.vue') },
-  { path: '/wrong/:bankId', name: 'wrong', component: () => import('../views/WrongView.vue') },
-  { path: '/favorites/:bankId', name: 'favorites', component: () => import('../views/FavoritesView.vue') },
+  // bankId 可选（2026-09-29）：不带＝跨库聚合视图（按库分组的错题本/收藏）。
+  // 订阅库不落本地行，所以只有聚合视图才能保证「取消订阅后错题不消失」——记录还在，原先只是没了入口。
+  { path: '/wrong/:bankId?', name: 'wrong', component: () => import('../views/WrongView.vue') },
+  { path: '/favorites/:bankId?', name: 'favorites', component: () => import('../views/FavoritesView.vue') },
   { path: '/stats/:bankId', name: 'stats', component: () => import('../views/StatsView.vue') },
   { path: '/mix-exam', name: 'mix-exam', component: () => import('../views/MixExamView.vue') },
   { path: '/compose-exam', name: 'compose-exam', component: () => import('../views/ComposeExamView.vue') },

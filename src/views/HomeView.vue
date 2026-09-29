@@ -15,6 +15,12 @@
         <a class="calc-btn" href="/calc/" target="_blank" rel="noopener">🧮 计算器</a>
         <button class="new-bank-btn" @click="showNew = true">+ 新建题库</button>
       </div>
+      <!-- 跨库聚合入口（2026-09-29）：订阅库不落本地行，原先错题/收藏只有库卡上的入口
+           ⇒ 取消订阅后记录虽然还在，却没有任何地方能看到。这两个入口就是补那一刀。 -->
+      <div class="header-btns records-btns">
+        <button class="record-btn" @click="$router.push('/wrong')">📕 错题本<template v-if="recordCounts.wrong"> · {{ recordCounts.wrong }}</template></button>
+        <button class="record-btn" @click="$router.push('/favorites')">⭐ 收藏<template v-if="recordCounts.fav"> · {{ recordCounts.fav }}</template></button>
+      </div>
     </div>
 
     <!-- 新手指引（2026-09-28）：新用户首开弹一次；判定在 onMounted 的 bankStore.load 回调里 -->
@@ -472,6 +478,16 @@ async function loadSubs () {
   loadSubsProgress()
 }
 loadSubs()
+
+// 跨库聚合入口上的计数（本地 IndexedDB 整表读，量级小；失败就只显示按钮不显示数字）
+const recordCounts = ref({ wrong: 0, fav: 0 })
+async function loadRecordCounts () {
+  try {
+    const [w, f] = await Promise.all([api.listAllWrongRecords(), api.listAllFavorites()])
+    recordCounts.value = { wrong: (w || []).length, fav: (f || []).length }
+  } catch { /* 计数拿不到不影响首页 */ }
+}
+loadRecordCounts()
 async function onToggleSub (b: any) {
   const bankRef = String((b && b._id) || '')
   if (!bankRef) return
@@ -1059,6 +1075,10 @@ onBeforeUnmount(() => { document.removeEventListener('click', onDocClick); docum
 .new-bank-btn { padding: 9px 18px; background: var(--color-primary); color: #fff; border: none; border-radius: var(--radius-md); font-size: 14px; cursor: pointer; font-weight: 500; transition: background 0.15s, transform 0.1s; white-space: nowrap; }
 .new-bank-btn:hover { background: var(--color-primary-dark); transform: translateY(-1px); }
 .header-btns { display: flex; gap: 8px; align-items: center; }
+/* 跨库聚合入口那一行（比主按钮轻一档，别抢「考试/综合抽题」的位置） */
+.records-btns { margin-top: 8px; }
+.record-btn { padding: 6px 12px; background: transparent; color: var(--color-text-secondary, #666); border: 1px solid var(--color-border, #ddd); border-radius: var(--radius-md); font-size: 13px; cursor: pointer; white-space: nowrap; }
+.record-btn:hover { color: var(--color-primary); border-color: var(--color-primary); }
 .btn-icon { width: 18px; height: 18px; vertical-align: -3px; margin-right: 4px; }
 .exam-btn, .mix-exam-btn { display: inline-flex; align-items: center; justify-content: center; }
 .exam-btn { padding: 9px 18px; background: linear-gradient(135deg, var(--color-warning-strong) 0%, var(--color-warning-deep) 100%); color: #fff; border: none; border-radius: var(--radius-md); font-size: 14px; cursor: pointer; font-weight: 500; transition: background 0.15s, transform 0.1s; white-space: nowrap; box-shadow: 0 2px 6px rgba(245, 158, 11, 0.3); }
