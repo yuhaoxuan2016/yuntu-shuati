@@ -192,6 +192,24 @@ async function loadTodayTask() {
   }
 }
 
+// 2026-10-02：学习计划随设置上云（键 `study_plans`）——跨端桥（pullBound 的 settings 通道）把它送到
+// 小程序端。只推规范化后的纯值，避免 Vue Proxy 混进 JSON（createPlan 已踩过 DataCloneError）。
+async function pushPlansToCloud() {
+  try {
+    const all = await idb.listPlans()
+    const payload = all.map((p: any) => ({
+      name: String(p.name || ''),
+      bankIds: (Array.isArray(p.bankIds) ? p.bankIds : []).map((k: any) => (typeof k === 'number' ? k : String(k))),
+      dailyGoal: Number(p.dailyGoal) || 0,
+      examDate: p.examDate ? String(p.examDate) : null,
+      createdAt: String(p.createdAt || ''),
+    }))
+    await api.setSetting('study_plans', JSON.stringify(payload))
+  } catch (e) {
+    console.warn('学习计划上云失败（不阻断）', e)
+  }
+}
+
 // 创建计划
 async function createPlan() {
   if (!canSubmit.value) return
@@ -209,6 +227,7 @@ async function createPlan() {
     }
     
     await idb.createPlan(plan)
+    await pushPlansToCloud()
     toastSuccess('学习计划创建成功')
     
     // 重置表单
@@ -228,6 +247,7 @@ async function deletePlan(id: number) {
   
   try {
     await idb.deletePlan(id)
+    await pushPlansToCloud()
     toastSuccess('计划已删除')
     
     if (currentPlan.value?.id === id) {
