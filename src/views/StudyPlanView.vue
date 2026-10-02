@@ -197,11 +197,14 @@ async function createPlan() {
   if (!canSubmit.value) return
   
   try {
+    // 2026-10-02：`bankIds` 里的订阅库 key 若来自响应式数组元素，会带一层 Proxy —— 原样落库
+    // 会抛 DataCloneError。此处显式收敛成纯值（Number/字符串），不依赖下游的兜底。
+    const bankIds = form.value.bankIds.map(k => (typeof k === 'number' ? k : String(k)))
     const plan = {
-      name: form.value.name,
-      bankIds: form.value.bankIds,
-      dailyGoal: form.value.dailyGoal,
-      examDate: form.value.examDate || null,
+      name: String(form.value.name),
+      bankIds,
+      dailyGoal: Number(form.value.dailyGoal),
+      examDate: form.value.examDate ? String(form.value.examDate) : null,
       createdAt: new Date().toISOString()
     }
     

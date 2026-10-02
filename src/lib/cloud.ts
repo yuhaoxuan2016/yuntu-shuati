@@ -1025,7 +1025,7 @@ async function markSynced(coll: CloudCollection, r: any, cloudId: string | null)
 
 // 拉取写入后补同步标记：wrong/mastered/favorites 按 (bank_id, question_id) 定位回写
 // （云端拉下来的数据视为已同步，避免下次推送又推回去；全表扫量级小，可接受）
-async function stampSyncedByKey(coll: 'wrong_questions' | 'mastered_questions' | 'favorites', bankId: number, questionId: number): Promise<void> {
+async function stampSyncedByKey(coll: 'wrong_questions' | 'mastered_questions' | 'favorites', bankId: number | string, questionId: number): Promise<void> {
   try {
     const rows = await idb.listAll(coll)
     const rec = rows.find(x => x.bank_id === bankId && x.question_id === questionId)
@@ -1126,15 +1126,15 @@ async function listLocalAll(coll: CloudCollection): Promise<any[]> {
 
 // questions 的 cloud_id 索引缓存（同一次同步内复用，避免 7049 道公共题逐条全量 listQuestions 造成 O(n²) 卡死）
 // 2026-08-23 扩展：cloudMap（cloud_id→题目）+ stemMap（stem→题目），供精确匹配 + 内容级去重，均 O(1)
-let qCloudIdx: { bankId: number; cloudMap: Map<string, any>; stemMap: Map<string, any> } | null = null
+let qCloudIdx: { bankId: number | string; cloudMap: Map<string, any>; stemMap: Map<string, any> } | null = null
 
 // 2026-09-28：跨设备题号映射的两个按库缓存（同一次同步内复用，reset 时清空）
 //   qCloudIdCache：云端题 _id → 本机题号（记录落地映射用）
 //   srcIdxCache：来源题号 → 本机题号（进度内容重映射用）
-let qCloudIdCache: { bankId: number; map: Map<string, number> } | null = null
-let srcIdxCache: { bankId: number; map: Map<number, number> } | null = null
+let qCloudIdCache: { bankId: number | string; map: Map<string, number> } | null = null
+let srcIdxCache: { bankId: number | string; map: Map<number, number> } | null = null
 // 2026-09-28：本机已知题号（题 id ∪ 源题号）——「进度与题库对不上」保护的判定集
-let knownIdsCache: { bankId: number; ids: Set<number> } | null = null
+let knownIdsCache: { bankId: number | string; ids: Set<number> } | null = null
 
 // 2026-08-23 本地题库映射缓存（mapCloudBankToLocal 内部会 listBanks；一次同步内固化，避免每道题都全量扫题库）
 let bankMapCache: { banks: any[] } | null = null
@@ -1287,16 +1287,30 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
     case 'mastered_questions':
     case 'favorites': {
       const r = { ...doc }
-      const bankId = await mapCloudBankToLocal(r._local_bank_id ?? r.bank_id)
+      // 2026-10-02（跨端桥可落地）：小程序端经服务端代写的行带 `bank_ref`（题库云 _id）+
+      // `question_cloud_id`（题目云 _id），但 `bank_id` / `question_id` 可能取不到「本机号」——
+      // 因为它们翻译用的 `quiz_banks._local_id` 只有**网页端自己 push 过的库**才有，
+      // 而订阅库（公共库）从未被网页端 push ⇒ 那两个字段恒为 0。
+      // 原先这条记录要么被 `bankId == null` 丢掉、要么挂到编号 0 的库上，用户看到的就是
+      // 「小程序答了题、网页版错题本/进度纹丝不动」。
+      // 现在：先解析题库，再解析题目，两个都允许**按云 _id 兜底**。
+      let bankId = await mapCloudBankToLocal(r._local_bank_id ?? r.bank_id)
+      if (bankId == null && r.bank_ref) bankId = await mapCloudBankRefToLocal(String(r.bank_ref))
+      // `_local_bank_id` 在 pushOne 里是「保留 bank_id 供云端统计」的并写字段，语义与 bank_id 同源，
+      // 别把它当云端 _id 用；只有 bank_ref 是真正的云身份。
       if (bankId != null) {
         r.bank_id = bankId
         // 2026-09-28（跨设备映射）：记录的 question_id 是「推送设备」的题号，在本机没有对应。
         // 带 question_cloud_id（云端题 _id）时按它精确定位本机题号；定位不到 = 题还没同步下来 → 跳过，
         // 绝不把记录挂到同号的另一道题上。无该字段（本机自产/历史遗留）→ 保持原样（本就是本机号语义）。
+        // 2026-10-02：此前 `question_id` 为 0 且无 question_cloud_id 时会原样落库（挂到 0 号题），
+        // 现在这种「定位不到也不带云身份」的行直接跳过 —— 挂错题比不挂更糟。
         if (r.question_cloud_id) {
           const localQid = await mapCloudQuestionToLocal(bankId, String(r.question_cloud_id))
           if (localQid == null) return 'skipped'
           r.question_id = localQid
+        } else if (!(Number(r.question_id) > 0)) {
+          return 'skipped'
         }
         if (coll === 'practice_records') {
           // 2026-08-16 修复：本地记录无 updated_at → 合并比较永远"云端较新" → 每次同步重复 add 同一条记录，
@@ -1393,7 +1407,7 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
 // 云端 bank_id → 本地 bank_id
 // 云端文档带 bank_ref（题库云端 _id）时优先按本地题库 cloud_id 匹配（可靠关联）；
 // 其次按 _local_bank_id（同设备/多设备同 id 兼容）或名字匹配
-async function mapCloudBankToLocal(cloudBankId: number | string | null | undefined): Promise<number | null> {
+async function mapCloudBankToLocal(cloudBankId: number | string | null | undefined): Promise<number | string | null> {
   // 2026-08-23 性能：一次同步内复用题库列表，避免每道题都全量 listBanks()
   if (!bankMapCache) bankMapCache = { banks: await idb.listBanks() }
   const banks = bankMapCache.banks
@@ -1410,9 +1424,35 @@ async function mapCloudBankToLocal(cloudBankId: number | string | null | undefin
   return null
 }
 
+// 2026-10-02（跨端桥可落地）：云端题库 `_id`（= 小程序端的 bankRef）→ 本机库号。
+// 与 mapCloudBankToLocal 的区别：后者认的是「云端文档上的 `_local_id` 数字」
+// （那是网页端 push 时自己写上去的序号，**订阅库/公共库根本没有这个字段**），
+// 本函数认的是**云文档 `_id` 本身**，覆盖两条来源：
+//   ① 云端 `quiz_banks._id` 已被本机某库登记为 `cloud_id`（网页端 push 过自己的库）；
+//   ② 该 `_id` 是**订阅的公共库** —— 本机不落库行（订阅=引用），但题目是按 bank_ref 落地/直读的，
+//      记录要挂到「这个订阅库在本机的表现形态」上：即 bank_id 直接用 bankRef 字符串
+//      （与 `practicable-banks.ts` 的 BankKey 口径一致，练习页与统计也按这个口径找库）。
+async function mapCloudBankRefToLocal(cloudBankRef: string): Promise<number | string | null> {
+  if (!cloudBankRef) return null
+  if (!bankMapCache) bankMapCache = { banks: await idb.listBanks() }
+  const byCloudId = bankMapCache.banks.find(b => b.cloud_id === cloudBankRef)
+  if (byCloudId) return byCloudId.id
+  // 订阅库：本机没有库行，bank_id 就用 bankRef 本身（字符串键），与订阅口径一致。
+  // 仅在确实订阅过时才接受，避免把「别人库里的记录」挂到一个本机没有的库上。
+  // key 'subscriptions' 与 utils/api.ts 的 SUBS_KEY 同值（那边未导出，此处按字面量对齐）。
+  try {
+    const subs = await idb.getSetting('subscriptions')
+    if (subs) {
+      const arr = JSON.parse(subs)
+      if (Array.isArray(arr) && arr.some(x => String(x) === cloudBankRef)) return cloudBankRef
+    }
+  } catch { /* 订阅列表读不到/坏值：不认这个库 */ }
+  return null
+}
+
 // 2026-09-28（跨设备映射）：云端题 `_id` → 本机题号（限定在该库内查；一次同步内按库缓存）。
 // 找不到返回 null —— 调用方按「跳过」处理，绝不回退到「同号即同一题」的猜测。
-async function mapCloudQuestionToLocal(bankId: number, cloudQId: string): Promise<number | null> {
+async function mapCloudQuestionToLocal(bankId: number | string, cloudQId: string): Promise<number | null> {
   if (!qCloudIdCache || qCloudIdCache.bankId !== bankId) {
     const all = await idb.listQuestions(bankId)
     const map = new Map<string, number>()
@@ -1424,7 +1464,7 @@ async function mapCloudQuestionToLocal(bankId: number, cloudQId: string): Promis
 }
 
 // 2026-09-28：本机题表 → 「来源题号 → 本机题号」索引（续练进度内容重映射用；按库缓存）。
-async function srcLocalIndexOf(bankId: number): Promise<Map<number, number>> {
+async function srcLocalIndexOf(bankId: number | string): Promise<Map<number, number>> {
   if (!srcIdxCache || srcIdxCache.bankId !== bankId) {
     srcIdxCache = { bankId, map: buildSrcLocalIndex(await idb.listQuestions(bankId)) }
   }
@@ -1432,7 +1472,7 @@ async function srcLocalIndexOf(bankId: number): Promise<Map<number, number>> {
 }
 
 // 2026-09-28：本机该库的「已知题号」集合（题 id ∪ 源题号）——「进度与题库对不上」的保护判定集，按库缓存。
-async function knownIdsOf(bankId: number): Promise<Set<number>> {
+async function knownIdsOf(bankId: number | string): Promise<Set<number>> {
   if (!knownIdsCache || knownIdsCache.bankId !== bankId) {
     const all = await idb.listQuestions(bankId)
     const ids = new Set<number>()

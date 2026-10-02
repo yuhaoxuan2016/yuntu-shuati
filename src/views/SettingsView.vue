@@ -102,7 +102,14 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
-          <span class="log-version">v1.2.62</span>
+          <span class="log-version">v1.2.64</span>
+          <ul>
+            <li>修复：勾选「订阅题库」创建学习计划时可能报「创建失败」（本地存储拒绝写入）</li>
+            <li>跨端打通增强：错题、做过题的对错、进度与首页统计在网页版与小程序之间同步得更完整</li>
+          </ul>
+        </div>
+        <div class="log-entry">
+          <span class="log-version">v1.2.63</span>
           <ul>
             <li>同步明细里的「订阅」现在带题库名单（如「订阅 3 个（变电安规2026、中级2026、初级2026）」）</li>
             <li>修复：订阅记录到小程序的投递通道此前是断的（小程序端一直收不到订阅），已随云函数修好</li>

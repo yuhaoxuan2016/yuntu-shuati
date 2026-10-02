@@ -46,7 +46,11 @@ export function buildPracticableBanks (
   }
   const seen = new Set<string>()
   for (const raw of subs || []) {
-    const ref = String(raw || '').trim()
+    // `String(raw)` 而不是 `raw.trim()`：调用方的 subs 常是 **reactive 数组**（`api.listSubscriptions()`
+    // 的结果被存进 ref），此时 `subs[i]` 是 Proxy —— `String(proxy)` 会走 valueOf/toString 正确取出
+    // 原始字符串，而把它原样当 `key` 传下去会在落库（structuredClone）时抛 DataCloneError。
+    // 2026-10-02 rabbit 报「创建学习计划失败：IDBObjectStore.add … could not be cloned」的根源。
+    const ref = String(raw == null ? '' : raw).trim()
     if (!ref || seen.has(ref)) continue
     seen.add(ref)
     const hit = pubByRef.get(ref)

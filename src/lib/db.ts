@@ -93,6 +93,48 @@ function tx<T>(storeName: string, mode: IDBTransactionMode, fn: (store: IDBObjec
   }))
 }
 
+// 写库前脱响应式：IndexedDB 用结构化克隆，而 Vue 的 reactive 对象是 Proxy
+// （`{...proxy}` 只是浅拷贝，嵌套值与被 v-model 收集进来的元素仍是 Proxy）——
+// 直接 add/put 会抛 `DataCloneError: [object Array] could not be cloned`。
+// 2026-10-02 rabbit 报「创建学习计划失败」即此：订阅库的 key 是「响应式数组的元素」，
+// 经 `v-model` 收进 form.bankIds 后原样落库。此处统一在写入口剥一层，调用方不必各自记得。
+//
+// 注意 db.ts 是零依赖模块（不引 Vue），故不能用 toRaw：
+//   · 首选结构化克隆（数据本来就该是纯 JSON，零成本原样返回）；
+//   · 克隆失败才走递归归一 —— **判据按「值」不按「类型」**：带原始值语义的包装对象
+//     （Proxy(Number)/Proxy(String)，即 Vue 收集数字 key 时的形态）用 valueOf 还原成原始值，
+//     否则一律降级成纯对象。这一步必须有，直接 `JSON.parse(JSON.stringify(x))` 会把
+//     Proxy({valueOf}) 变成 `{}` —— 静默丢数据比报错更糟。
+function plain<T>(data: T): T {
+  if (data === null || typeof data !== 'object') return data
+  try {
+    structuredClone(data)
+    return data
+  } catch { /* 含 Proxy 等不可克隆值：走下面的递归归一 */ }
+  return normalize(data) as T
+}
+
+function normalize(v: any): any {
+  if (v === null || typeof v !== 'object') return v
+  if (Array.isArray(v)) return v.map(normalize)
+  // 原始值包装（Vue 对 `reactive([1,2])` 的元素就是这种东西）：还原成原始值。
+  // ⚠️ 判据必须用 **typeof valueOf**，不能用 `instanceof Number/String` —— Vue 的 Proxy 会让
+  // `proxy instanceof Number` 为 false，那样会把「数字 key」降级成 `{}`（静默丢数据，比报错更糟）。
+  // ⚠️ 调用 valueOf 也必须 try/catch：`new Number(2)` 的方法要求 this 是 Number，Proxy 转发后
+  // this 变成 Proxy ⇒ 抛 `Number.prototype.valueOf requires that 'this' be a Number`。
+  try {
+    if (typeof v.valueOf === 'function') {
+      const prim = v.valueOf()
+      if (prim !== v && (prim === null || typeof prim !== 'object')) return prim
+    }
+  } catch { /* 取不到原始值就按普通对象继续降级 */ }
+  const out: Record<string, any> = {}
+  for (const k of Object.keys(v)) {
+    try { out[k] = normalize(v[k]) } catch { /* 单个字段失败不影响其余字段 */ }
+  }
+  return out
+}
+
 // 时间戳归一化：把「纪元毫秒数字」与「ISO / 日期字符串」都转成可比的毫秒数。
 // P2-7（T10a，2026-09-15）引入，原定义在 cloud.ts；T10b（2026-09-15）搬到本文件（本模块零依赖，
 // 而 cloud.ts 依赖本模块——放这里可避免 `db.ts ⇄ cloud.ts` 循环依赖），并在 cloud.ts 重新导出，
@@ -121,7 +163,7 @@ export const idb = {
     return tx('quiz_banks', 'readonly', s => s.getAll())
   },
   async createBank(data: any): Promise<any> {
-    const id = await tx('quiz_banks', 'readwrite', s => s.add(data)) as unknown as number
+    const id = await tx('quiz_banks', 'readwrite', s => s.add(plain(data))) as unknown as number
     return { id, ...data }
   },
   async deleteBank(id: number): Promise<void> {
@@ -170,7 +212,7 @@ export const idb = {
     return v ?? null
   },
   async updateBank(data: any): Promise<void> {
-    await tx('quiz_banks', 'readwrite', s => s.put(data))
+    await tx('quiz_banks', 'readwrite', s => s.put(plain(data)))
   },
   async listRecords(bankId: number | string): Promise<any[]> {
     const db = await openDB()
@@ -255,7 +297,7 @@ export const idb = {
     })
   },
   async updateQuestion(q: any): Promise<void> {
-    await tx('questions', 'readwrite', s => s.put(q))
+    await tx('questions', 'readwrite', s => s.put(plain(q)))
   },
   async getQuestion(id: number): Promise<any | null> {
     const v = await tx('questions', 'readonly', s => s.get(id))
@@ -271,7 +313,7 @@ export const idb = {
   // === practice_records ===
   // 2026-08-21：返回新记录 id（供云同步拉取后回写 synced_at 增量标记）
   async recordPractice(record: any): Promise<number> {
-    return tx('practice_records', 'readwrite', s => s.add(record)) as unknown as number
+    return tx('practice_records', 'readwrite', s => s.add(plain(record))) as unknown as number
   },
   // 2026-09-28（跨设备映射自愈）：按主键删单条练习记录（清理「挂不到题」的错位记录用）
   async removePracticeRecord(id: number): Promise<void> {
@@ -315,7 +357,7 @@ export const idb = {
     }
     if (!exists) {
       // 2026-08-19：correct_streak = 连续答对计数（错题重练答对累计，达到阈值自动转「已掌握」）
-      await tx('wrong_questions', 'readwrite', s => s.add({ bank_id: bankId, question_id: questionId, created_at: new Date().toISOString(), correct_streak: streak ?? 0, total_wrong: totalWrong }))
+      await tx('wrong_questions', 'readwrite', s => s.add(plain({ bank_id: bankId, question_id: questionId, created_at: new Date().toISOString(), correct_streak: streak ?? 0, total_wrong: totalWrong })))
     } else {
       // 记录已存在：更新累计错误数 + 刷新连对 streak（答错时清零）
       await this.setWrongRecord(bankId, questionId, { total_wrong: totalWrong, correct_streak: typeof streak === 'number' ? streak : 0 })
@@ -547,7 +589,7 @@ export const idb = {
       })
       return false
     } else {
-      await tx('favorites', 'readwrite', s => s.add({ bank_id: bankId, question_id: questionId, created_at: new Date().toISOString() }))
+      await tx('favorites', 'readwrite', s => s.add(plain({ bank_id: bankId, question_id: questionId, created_at: new Date().toISOString() })))
       return true
     }
   },
@@ -598,7 +640,7 @@ export const idb = {
     return v ? v.value : null
   },
   async setSetting(key: string, value: string): Promise<void> {
-    await tx('settings', 'readwrite', s => s.put({ key, value }))
+    await tx('settings', 'readwrite', s => s.put(plain({ key, value })))
   },
   async getAllSettings(): Promise<Record<string, string>> {
     const rows = await tx('settings', 'readonly', s => s.getAll()) as any[]
@@ -621,12 +663,12 @@ export const idb = {
       t.oncomplete = () => resolve()
       t.onerror = () => reject(t.error)
       const store = t.objectStore(storeName)
-      for (const r of rows) store.put(r)
+      for (const r of rows) store.put(plain(r))
     })
   },
   // === compose_records（智能组卷历史记录） ===
   async addComposeRecord(record: any): Promise<number> {
-    return tx('compose_records', 'readwrite', s => s.add(record)) as unknown as number
+    return tx('compose_records', 'readwrite', s => s.add(plain(record))) as unknown as number
   },
   async listComposeRecords(): Promise<any[]> {
     const db = await openDB()
@@ -673,7 +715,7 @@ export const idb = {
   },
   // === study_plans ===
   async createPlan(data: any): Promise<any> {
-    const id = await tx('study_plans', 'readwrite', s => s.add(data)) as unknown as number
+    const id = await tx('study_plans', 'readwrite', s => s.add(plain(data))) as unknown as number
     return { id, ...data }
   },
   async listPlans(): Promise<any[]> {
@@ -691,14 +733,14 @@ export const idb = {
     return v ?? null
   },
   async updatePlan(id: number, data: any): Promise<void> {
-    await tx('study_plans', 'readwrite', s => s.put({ id, ...data }))
+    await tx('study_plans', 'readwrite', s => s.put(plain({ id, ...data })))
   },
   async deletePlan(id: number): Promise<void> {
     await tx('study_plans', 'readwrite', s => s.delete(id))
   },
   // === review_records ===
   async addReviewRecord(data: any): Promise<number> {
-    return tx('review_records', 'readwrite', s => s.add(data)) as unknown as number
+    return tx('review_records', 'readwrite', s => s.add(plain(data))) as unknown as number
   },
   async getReviewRecordByQuestionId(questionId: number): Promise<any | null> {
     const db = await openDB()
@@ -723,7 +765,7 @@ export const idb = {
     })
   },
   async updateReviewRecord(id: number, data: any): Promise<void> {
-    await tx('review_records', 'readwrite', s => s.put({ id, ...data }))
+    await tx('review_records', 'readwrite', s => s.put(plain({ id, ...data })))
   },
   async listReviewRecords(): Promise<any[]> {
     return tx('review_records', 'readonly', s => s.getAll())
