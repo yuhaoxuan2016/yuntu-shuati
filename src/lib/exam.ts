@@ -854,7 +854,13 @@ export async function listPublicBanks(): Promise<any[]> {
         .orderBy('created_at', 'desc')
         .limit(100)
         .get(), 15000, '读取公共题库')
-      const banks = res.data || []
+      // 归档库（archived===true）从列表撤下——与 exams 归档同语义（数据保留、只是不占列表位）。
+      // 2026-10-02：此前题库的 archived 标记**只写不读**，7 个已归档的旧库仍明晃晃挂在
+      // 首页/订阅/出卷的公共库列表里（含「合集(旧)2941题」这种大块头）。
+      // 放在拉取后过滤而不是塞进 where：ACL 读规则是 `visibility=="public" || _openid==auth.openid`，
+      // where 必须是它的**子集**，加 archived 条件虽合法但两端 SDK 的 neq 语义要各自验证；
+      // 数据量只有十几个库，本地过滤零成本且不会因查询形状被拒。
+      const banks = (res.data || []).filter((b: any) => b?.archived !== true)
       // 加载优化档1（2026-09-23）：题库文档已有 question_count 就直接用，缺失的才回退 count 查询。
       // 实测原来每次进首页都会为 12 个库各发一次 count（12 次请求）；新库灌入时已写入该字段。
       await Promise.all(banks.map(async (b: any) => {
