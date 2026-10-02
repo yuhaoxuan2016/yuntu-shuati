@@ -102,6 +102,13 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.66</span>
+          <ul>
+            <li>学习计划上云：在网页版新建/删除学习计划会自动同步到云端，小程序端同步后即可看到（含题库、每日题量、考试日期）</li>
+            <li>跨端同步补全：错题、收藏与每道题的答对/答错标记现在能完整送达小程序端（订阅库的这些记录此前会被云函数过滤丢掉，表现为小程序里看不到）</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.65</span>
           <ul>
             <li>修复：开启「选项乱序」时，答错后显示的「正确答案：X」字母此前不随打乱换算（会出现「字说 A、绿标在 C」的错位），现在按屏幕上的字母显示</li>
