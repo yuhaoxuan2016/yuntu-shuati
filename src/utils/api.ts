@@ -151,6 +151,15 @@ export const api = {
         source_index: q.source_index ?? null,
         confidence: 0,
         images: q.images ?? null,
+        // 2026-10-02：补齐常态显示字段——难度徽标/知识点折叠/题面校对标记/口径存疑提示
+        //   此前在这一层被丢掉，订阅练习看不到（本地副本与 mapPublicQuestion 都带这些）。
+        knowledge: q.knowledge ?? null,
+        difficulty: q.difficulty ?? '',
+        difficulty_why: q.difficulty_why ?? null,
+        face_revised: q.face_revised ?? null,
+        answer_derived: q.answer_derived ?? null,
+        answer_conflict: q.answer_conflict ?? '',
+        answer_conflict_note: q.answer_conflict_note ?? null,
       }))
     }
     return idb.listQuestions(bankId)

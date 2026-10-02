@@ -413,6 +413,15 @@ const displayAnswer = computed(() => {
     //（与小程序 practice.vue 的 displayAnswer 同口径：judgeTruth === null ? ans : ...）
     return truth === null ? props.question.answer : (truth ? '正确' : '错误')
   }
+  // 2026-10-02：选项乱序开启时，字母按**展示顺序**重映射（与判分/高亮同一套 displayMap）。
+  //   此前回显的是题库原始字母，乱序下会出现「字说 A、绿标在 C」；小程序练习页已是重映射口径。
+  if (isChoice.value && props.shuffleOptions) {
+    const raw = parseAnswerLetters()
+    if (raw.length) {
+      const disp = raw.map(r => displayMap.value.indexOf(r)).filter(i => i >= 0).sort((a, b) => a - b)
+      if (disp.length === raw.length) return disp.map(i => letter(i)).join('')
+    }
+  }
   return props.question.answer
 })
 const keyHint = computed(() => {

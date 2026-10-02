@@ -102,6 +102,13 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.65</span>
+          <ul>
+            <li>修复：开启「选项乱序」时，答错后显示的「正确答案：X」字母此前不随打乱换算（会出现「字说 A、绿标在 C」的错位），现在按屏幕上的字母显示</li>
+            <li>订阅库练习补齐显示：难度徽标、知识点总结、题面校对标记与「口径存疑」提示现在也会显示（此前只有导入到本地的题库看得到）</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.64</span>
           <ul>
             <li>修复：勾选「订阅题库」创建学习计划时可能报「创建失败」（本地存储拒绝写入）</li>
