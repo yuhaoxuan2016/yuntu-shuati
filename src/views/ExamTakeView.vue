@@ -132,11 +132,16 @@
         </div>
       </div>
 
-      <!-- 题号导航 -->
+      <!-- 题号导航（2026-10-02：按题型分段，点组头跳该组第一题） -->
       <div class="dot-nav">
-        <button v-for="(q, i) in exam.questions" :key="i" class="dot"
-          :class="{ current: i === current, answered: isAnswered(q.id) }"
-          @click="current = i">{{ i + 1 }}</button>
+        <div v-for="g in navGroups" :key="g.cat" class="nav-group">
+          <button class="nav-group-title" @click="current = g.first">{{ g.label }} · {{ g.count }} 题</button>
+          <div class="nav-dots">
+            <button v-for="i in g.indexes" :key="i" class="dot"
+              :class="{ current: i === current, answered: isAnswered(exam.questions[i]?.id) }"
+              @click="current = i">{{ i + 1 }}</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -221,7 +226,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
-import { getExam, getCurrentUid, isExamOwner, submitExamResult, gradeExamViaServer, reviewByCode, saveExamSnapshot, errMsg, type Exam, type ExamResult } from '../lib/exam'
+import { getExam, getCurrentUid, isExamOwner, submitExamResult, gradeExamViaServer, reviewByCode, saveExamSnapshot, errMsg, groupQuestionsByCategory, type Exam, type ExamResult } from '../lib/exam'
 // 选项乱序种子用仓库唯一的字符串哈希（GC3 冻结文件，只导入不修改、不复制到 exam.ts）
 import { simpleHash } from '../lib/spaced-repetition'
 import { toastError, toastSuccess } from '../utils/toast'
@@ -436,6 +441,9 @@ function typeLabel(t: string) {
   if (isJudgeQuestion()) return '判断'
   return { single: '单选', multi: '多选', judge: '判断', blank: '填空', qa: '问答' }[t] || t
 }
+
+// 2026-10-02：题号导航按题型分段（组序=首次出现序；first=组内第一题的输入下标）
+const navGroups = computed(() => groupQuestionsByCategory(exam.value?.questions || []))
 // T8b：形参跟着 `ExamQuestion.id` 一起放宽为 `number | string`（模板 dot-nav 传的就是 `q.id`）。
 // 内部仍用 String() 归一成对象键，语义与旧的 `answers.value[qid]` 逐字节一致。
 function isAnswered(qid: number | string) {
@@ -834,7 +842,13 @@ onBeforeUnmount(() => {
 .nav-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .nav-btn.primary { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
 .nav-btn.success { background: var(--color-success-strong); color: #fff; border-color: var(--color-success-strong); }
-.dot-nav { display: flex; flex-wrap: wrap; gap: 5px; padding: 14px; background: var(--color-card); border: 1px solid var(--color-border-light); border-radius: var(--radius-md); }
+.dot-nav { padding: 14px; background: var(--color-card); border: 1px solid var(--color-border-light); border-radius: var(--radius-md); }
+/* 2026-10-02：题号导航按题型分段 */
+.nav-group { margin-bottom: 6px; }
+.nav-group:last-child { margin-bottom: 0; }
+.nav-group-title { font-size: 12px; color: var(--color-text-secondary); background: none; border: none; padding: 2px 4px; margin: 2px 0 4px; cursor: pointer; }
+.nav-group-title:hover { color: var(--color-primary); }
+.nav-dots { display: flex; flex-wrap: wrap; gap: 5px; }
 .dot { min-width: 30px; height: 30px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-card); color: var(--color-text-secondary); font-size: 12px; cursor: pointer; }
 .dot.answered { background: var(--color-primary-light); border-color: var(--color-primary); color: var(--color-primary); }
 .dot.current { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }

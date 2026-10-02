@@ -102,6 +102,12 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.67</span>
+          <ul>
+            <li>题号栏按题型分段：练习页、公共练习页与考试页的题号栏现在按题型分组显示（如「单选 · 75 题」），点分组标题直接跳到该题型的第一题；原来的对错色、当前题高亮与题型筛选联动全部不变</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.66</span>
           <ul>
             <li>学习计划上云：在网页版新建/删除学习计划会自动同步到云端，小程序端同步后即可看到（含题库、每日题量、考试日期）</li>

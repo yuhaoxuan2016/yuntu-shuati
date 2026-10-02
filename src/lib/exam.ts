@@ -106,6 +106,31 @@ export function classifyQuestionType(q: { type?: string | null; options?: string
   return 'single'
 }
 
+// ===== 题型分组（2026-10-02：题号栏按题型分段）=====
+// 标签表从 PracticeView 的局部常量升到这里——练习页筛选按钮、公共练习页与考试页的题号栏共用一份。
+export const TYPE_LABELS: Record<string, string> = { single: '单选', multi: '多选', judge: '判断', blank: '填空', qa: '问答' }
+
+// 按题型分组：输入「已按展示顺序排好的题目数组」，输出分组（组序=首次出现序，组内保持输入顺序）。
+// 三处题号栏（练习页/公共练习页/考试页）共用这一个实现；indexes 即输入下标，供圆点点击跳转，
+// first 供「点组头跳该组第一题」。判定走 classifyQuestionType（内容识别，判断题存成单选的老坑在内）。
+export interface QuestionTypeGroup { cat: string; label: string; count: number; first: number; indexes: number[] }
+export function groupQuestionsByCategory (items: Array<{ type?: string | null; options?: string | null; answer?: string | null }>): QuestionTypeGroup[] {
+  const groups: QuestionTypeGroup[] = []
+  const byCat = new Map<string, QuestionTypeGroup>()
+  items.forEach((q, i) => {
+    const cat = classifyQuestionType(q)
+    let g = byCat.get(cat)
+    if (!g) {
+      g = { cat, label: TYPE_LABELS[cat] || cat, count: 0, first: i, indexes: [] }
+      byCat.set(cat, g)
+      groups.push(g)
+    }
+    g.count++
+    g.indexes.push(i)
+  })
+  return groups
+}
+
 // 判断题答案统一为 'true'/'false'（A=首个选项对应的真值，兼容 answer 直接存判断词）
 // 2026-08-23 修复：空答案默认返回 '' 而非 'true'，避免误判为正确
 export function judgeAnswerBool(ans: string | null, options: string[] | null): string {

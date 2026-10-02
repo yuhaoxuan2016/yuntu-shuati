@@ -168,15 +168,20 @@
             <span class="dot-stat unanswered">○ {{ unansweredCount }}</span>
           </span>
         </div>
-        <div class="nav-dots">
-          <button
-            v-for="(q, i) in displayQuestions"
-            :key="q.id"
-            class="nav-dot"
-            :class="getDotClass(i, q.id)"
-            :title="`第 ${i + 1} 题`"
-            @click="goToQuestion(i)"
-          >{{ i + 1 }}</button>
+        <div class="nav-groups">
+          <div v-for="g in navGroups" :key="g.cat" class="nav-group">
+            <button class="nav-group-title" @click="goToQuestion(g.first)">{{ g.label }} · {{ g.count }} 题</button>
+            <div class="nav-dots">
+              <button
+                v-for="i in g.indexes"
+                :key="i"
+                class="nav-dot"
+                :class="getDotClass(i, displayQuestions[i]?.id)"
+                :title="`第 ${i + 1} 题`"
+                @click="goToQuestion(i)"
+              >{{ i + 1 }}</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -192,7 +197,7 @@ import { toastError, toastSuccess, toastInfo } from '../utils/toast'
 import { useBankStore } from '../stores/bank'
 import { idb } from '../lib/db'
 import QuestionCard, { type QuestionState } from '../components/QuestionCard.vue'
-import { classifyQuestionType } from '../lib/exam'
+import { classifyQuestionType, TYPE_LABELS, groupQuestionsByCategory } from '../lib/exam'
 import { calculateAutoQuality, calculateNextReview, qualityLabel, labelToQuality, formatDate, computeNextReviewTs, toReviewTs, type QualityLabel } from '../lib/spaced-repetition'
 import { formatSyncDetail } from '../lib/sync-format'
 
@@ -292,7 +297,7 @@ const showHelp = ref(false)
 
 // 题目类型筛选：typeFilter 存储**被排除**的题型（默认全选=空数组）
 const typeFilter = ref<string[]>([])
-const TYPE_LABELS: Record<string, string> = { single: '单选', multi: '多选', judge: '判断', blank: '填空', qa: '问答' }
+// 2026-10-02：TYPE_LABELS 升到 lib/exam.ts（题号栏分组三处共用一份），这里直接 import
 // 2026-08-16 修复：题型归类必须内容识别（判断题在库里是 type:'single' + ["正确","错误"]，
 // 裸用 q.type 会把判断题并进"单选"，筛选框只剩单选/多选）
 function questionTypeLabel(q: Question): string {
@@ -340,6 +345,8 @@ const displayQuestions = computed(() => {
     return !typeFilter.value.includes(questionTypeLabel(q))
   })
 })
+// 2026-10-02：题号栏按题型分段（组序=首次出现序；first=组内第一题的展示下标，供组头跳转）
+const navGroups = computed(() => groupQuestionsByCategory(displayQuestions.value))
 
 // 2026-08-16：单题库「模拟考试」已取消（功能与「创建考试」重叠，且存在切模式计时器泄漏等缺陷）
 
@@ -1045,7 +1052,13 @@ async function restart() {
 .dot-stat.correct { background: var(--color-success-bg); color: var(--color-success-deep); }
 .dot-stat.wrong { background: var(--color-danger-bg); color: var(--color-danger-deep); }
 .dot-stat.unanswered { background: var(--color-border-light); color: var(--color-text-secondary); }
-.nav-dots { display: flex; flex-wrap: wrap; gap: 4px; max-height: 180px; overflow-y: auto; padding: 2px; }
+/* 2026-10-02：题号栏按题型分段——滚动容器从 .nav-dots 换成 .nav-groups（外层），每组自带标题行 */
+.nav-groups { max-height: 180px; overflow-y: auto; padding: 2px; }
+.nav-group { margin-bottom: 6px; }
+.nav-group:last-child { margin-bottom: 0; }
+.nav-group-title { font-size: 12px; color: var(--color-text-secondary); background: none; border: none; padding: 2px 4px; margin: 2px 0 4px; cursor: pointer; }
+.nav-group-title:hover { color: var(--color-primary); }
+.nav-dots { display: flex; flex-wrap: wrap; gap: 4px; }
 .nav-dot { min-width: 28px; height: 28px; padding: 0 4px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-card); color: var(--color-text-secondary); font-size: 11px; cursor: pointer; transition: all 0.12s; display: inline-flex; align-items: center; justify-content: center; font-weight: 500; }
 .nav-dot:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,0.1); border-color: var(--color-primary); color: var(--color-primary); }
 .nav-dot.current { background: var(--color-primary); color: #fff; border-color: var(--color-primary); box-shadow: 0 0 0 2px var(--color-primary-light); }

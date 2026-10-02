@@ -155,11 +155,16 @@
         </div>
       </div>
 
-      <!-- 题号导航 -->
+      <!-- 题号导航（2026-10-02：按题型分段，点组头跳该组第一题） -->
       <div class="dot-nav">
-        <button v-for="(q, i) in order" :key="i" class="dot"
-          :class="{ current: i === current, answered: isAnswered(q.id), correct: answeredStatus[String(q.id)] === true, wrong: answeredStatus[String(q.id)] === false }"
-          @click="current = i">{{ i + 1 }}</button>
+        <div v-for="g in navGroups" :key="g.cat" class="nav-group">
+          <button class="nav-group-title" @click="current = g.first">{{ g.label }} · {{ g.count }} 题</button>
+          <div class="nav-dots">
+            <button v-for="i in g.indexes" :key="i" class="dot"
+              :class="{ current: i === current, answered: isAnswered(order[i]?.id), correct: answeredStatus[String(order[i]?.id)] === true, wrong: answeredStatus[String(order[i]?.id)] === false }"
+              @click="current = i">{{ i + 1 }}</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -168,7 +173,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { listPublicBankQuestions, type ExamQuestion } from '../lib/exam'
+import { listPublicBankQuestions, groupQuestionsByCategory, type ExamQuestion } from '../lib/exam'
 
 interface StudentAnswer { selected: number[]; blank: string; judge: boolean | null }
 
@@ -292,6 +297,8 @@ watch(filteredQuestions, (list) => {
 const order = computed(() => {
   return mode.value === 'random' ? randomOrder.value : filteredQuestions.value
 })
+// 2026-10-02：题号栏按题型分段（组序=首次出现序；first=组内第一题的下标，供组头跳转）
+const navGroups = computed(() => groupQuestionsByCategory(order.value))
 const currentQuestion = computed(() => order.value[current.value] || null)
 // 显示类型（规范化后），供 q-type 标签使用
 const currentType = computed(() => normType(currentQuestion.value))
@@ -570,7 +577,13 @@ onMounted(async () => {
 .nav-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .nav-btn.primary { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
 .nav-btn.success { background: #16a34a; color: #fff; border-color: #16a34a; }
-.dot-nav { display: flex; flex-wrap: wrap; gap: 5px; padding: 14px; background: var(--color-card); border: 1px solid var(--color-border-light); border-radius: var(--radius-md); }
+.dot-nav { padding: 14px; background: var(--color-card); border: 1px solid var(--color-border-light); border-radius: var(--radius-md); }
+/* 2026-10-02：题号栏按题型分段 */
+.nav-group { margin-bottom: 6px; }
+.nav-group:last-child { margin-bottom: 0; }
+.nav-group-title { font-size: 12px; color: var(--color-text-secondary); background: none; border: none; padding: 2px 4px; margin: 2px 0 4px; cursor: pointer; }
+.nav-group-title:hover { color: var(--color-primary); }
+.nav-dots { display: flex; flex-wrap: wrap; gap: 5px; }
 .dot { min-width: 30px; height: 30px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-card); color: var(--color-text-secondary); font-size: 12px; cursor: pointer; }
 .dot.answered { background: var(--color-primary-light); border-color: var(--color-primary); color: var(--color-primary); }
 .dot.current { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
