@@ -53,6 +53,10 @@
       <button class="restart-btn" @click="restart">重新开始</button>
     </div>
 
+    <!-- 2026-10-03：存档守望的可见出口（写不进去/落盘校验不过时出现，点一下补存）＋计划模式提示 -->
+    <div v-if="saveWarn" class="save-warn" @click="retrySave">{{ saveWarn }}</div>
+    <div v-if="isPlanMode" class="plan-hint">计划模式：本次练习不更新这道库的「练习进度」（错题/统计照常记录）</div>
+
     <div v-if="searchResults" class="search-result-banner">
       搜索到 <b>{{ searchResults.length }}</b> 道包含"<b>{{ searchQuery }}</b>"的题目，点击跳转
       <button class="close-btn" @click="clearSearch">✕</button>
@@ -548,26 +552,60 @@ watch(mode, async (m) => {
 
 // 防抖保存进度
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+// 2026-10-03：存档守望（防「静默停写」）——实况：某场会话的进度在某一笔之后**一笔没再写**、页面毫无异样
+//（错题/已掌握线却正常），用户对着旧进度干瞪眼。口径：有改动置 dirty、落盘成功清 dirty；
+// 守望每 45s 与「切回前台」时体检：仍脏且无在途定时器 ⇒ 立即补存；写入/落盘校验失败 ⇒ 页面出横幅可重试。
+const dirtySince = ref(0)
+const saveWarn = ref('')
+let lastSaveTry = 0
+let saveWatchTimer: ReturnType<typeof setInterval> | null = null
 function scheduleSave() {
   if (restoring.value) return
   if (!loaded.value) return
   // 2026-08-22：计划模式不写入普通练习进度（队列来自计划，避免下次普通练习被计划队列污染）
   if (isPlanMode) return
+  dirtySince.value = dirtySince.value || Date.now()
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(saveProgress, 500)
 }
+function checkSaveHealth() {
+  if (!dirtySince.value) return
+  if (restoring.value || !loaded.value || isPlanMode) return
+  if (saveTimer) return
+  if (Date.now() - lastSaveTry < 8000) return
+  console.warn('[practice] 存档守望补存：进度已挂 ' + Math.round((Date.now() - dirtySince.value) / 1000) + 's 未落盘')
+  void saveProgress()
+}
+function onVisibilityChange() {
+  // 切后台/可能被冻结或回收前，先硬存一笔；切回前台立即体检
+  if (document.visibilityState === 'hidden') { if (dirtySince.value) void saveProgress() }
+  else checkSaveHealth()
+}
+function retrySave() { void saveProgress() }
+onMounted(() => {
+  saveWatchTimer = setInterval(checkSaveHealth, 45000)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+onBeforeUnmount(() => {
+  if (saveWatchTimer) clearInterval(saveWatchTimer)
+  saveWatchTimer = null
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+})
 
 async function saveProgress() {
   if (!questions.value.length || !order.value.length) return
-  // 完成练习后清除进度，下次从头开始
-  if (finished.value) {
-    try {
-      await api.setSetting(progressKey.value, '')
-    } catch (e) {
-      console.error('清除进度失败：', e)
-    }
-    return
+  // 防重入：守望/切后台的补存可能与防抖保存并发——两次写、后一次赢，先写的那次「落盘校验」会误报失败
+  if (saveInFlight) return
+  saveInFlight = true
+  try {
+    await saveProgressInner()
+  } finally {
+    saveInFlight = false
   }
+}
+let saveInFlight = false
+
+async function saveProgressInner() {
   const cur = order.value[current.value]
   if (cur === undefined) return
   const progress: SavedProgress = {
@@ -577,14 +615,24 @@ async function saveProgress() {
       .filter((id): id is number => id !== undefined),
     current_id: questions.value[cur].id,
     answer_states: Object.fromEntries(answerStates.value.entries()),
-    finished: false,
+    // 2026-10-03（rabbit 口径）：练到末尾**不再清零**——「做完了」要留下可同步的完成记录。
+    // 旧行为（完成即写空串、"下次从头"）会在完成的一瞬把整库进度抹掉，跨端永远等不到"完成"
+    //（沙盒实况：完成后落盘 84755 → 0 字节，守卫 tests/practice-save-boundary.mjs 钉住此行为）。
+    finished: finished.value,
     saved_at: new Date().toISOString(),
   }
   // 保留「重新开始」标记：本机是故意的空，同步守卫不得用云端旧进度把它顶回来
   if (resetMarked.value) progress._reset = resetMarked.value
+  lastSaveTry = Date.now()
+  const body = JSON.stringify(progress)
   try {
     if (canTrack.value) {
-      await api.setSetting(progressKey.value, JSON.stringify(progress))
+      await api.setSetting(progressKey.value, body)
+      // 落盘校验（2026-10-03）：写成功再读回比对 saved_at——"写丢了还当成功"是静默停写最隐蔽的形态
+      const back = await api.getSetting(progressKey.value)
+      let landed = false
+      try { const p = JSON.parse(back || 'null'); landed = !!(p && p.saved_at === progress.saved_at) } catch { landed = false }
+      if (!landed) throw new Error('落盘校验不过（读回与本次不符）')
       // 同步更新全局最近练习记录（首页"继续刷题"卡片使用）
       const lastPractice = {
         bank_id: bankId,
@@ -596,10 +644,13 @@ async function saveProgress() {
       await api.setSetting(LAST_PRACTICE_KEY, JSON.stringify(lastPractice))
     } else {
       // 未订阅的公共库：进度**只写本机**（直写 idb，不触发云推送），也不改首页"继续刷题"指向
-      await idb.setSetting(progressKey.value, JSON.stringify(progress))
+      await idb.setSetting(progressKey.value, body)
     }
+    dirtySince.value = 0
+    saveWarn.value = ''
   } catch (e) {
     console.error('保存进度失败：', e)
+    saveWarn.value = '⚠️ 进度可能没存上（' + String((e && e.message) || e) + '）——点此立即重试'
   }
 }
 
@@ -1042,6 +1093,10 @@ async function restart() {
 .memory-quality-btn:hover { transform: translateY(-1px); border-color: var(--color-primary); color: var(--color-primary); }
 .memory-quality-btn.active { background: var(--color-primary); color: #fff; border-color: var(--color-primary); }
 .memory-next { margin-left: auto; font-size: 12px; color: var(--color-text-tertiary); }
+
+/* 2026-10-03：存档守望横幅 + 计划模式提示 */
+.save-warn { margin: 8px 0; padding: 9px 12px; border-radius: var(--radius-md); background: var(--color-danger-bg); color: var(--color-danger-deep); font-size: 13px; cursor: pointer; }
+.plan-hint { margin: 8px 0; padding: 8px 12px; border-radius: var(--radius-md); background: var(--color-warning-bg); color: var(--color-warning-text); font-size: 12.5px; }
 
 /* 题目导航条 */
 .question-nav { margin-top: 18px; padding: 14px 16px; background: var(--color-card); border: 1px solid var(--color-border-light); border-radius: var(--radius-md); }
