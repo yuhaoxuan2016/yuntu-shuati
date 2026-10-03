@@ -48,6 +48,8 @@ function postCollection(host, path, token, day, coll, gz) {
 // 第一版在模块顶层调了 app.storage() ⇒ 模块加载即抛错、进程秒退（线上 145 报错）。
 
 // 备份覆盖的集合（2026-09-16 全量清单；新增集合时在此追加）
+// 2026-10-03 补：加 `review_records`（当时 1,579 条，此前无任何备份）。
+//   `sync_ledger` 实测**集合不存在**（ResourceNotFound），不加——加了每晚只会多一行 ERROR。
 const COLLECTIONS = [
   'practice_records',
   'wrong_questions',
@@ -61,6 +63,7 @@ const COLLECTIONS = [
   'bind_codes',
   'admin_auth',
   'visit_stats',
+  'review_records',
 ]
 
 const META_COLL = 'backup_meta'
@@ -119,17 +122,31 @@ exports.main = async () => {
 
   for (const coll of COLLECTIONS) {
     try {
-      const rows = await dumpCollection(coll)
-      const rowsJson = JSON.stringify(rows)
-      const buf = Buffer.from(JSON.stringify({ collection: coll, date, count: rows.length, rows }), 'utf8')
+      let rows = await dumpCollection(coll)
+      const count = rows.length
+      let rowsJson = JSON.stringify(rows)
+      // 2026-10-03：本函数曾对 rows **两次全量序列化**（先 stringify(rows) 供推送、再
+      // stringify({...rows}) 供上传），questions 3.2 万条时峰值多出整一份全集；在 512MB 容器上
+      // 实盘连续两轮挂在 questions（重部署后 OOM，03:00 旧包能过 = 一直在悬崖边）。改法：
+      // 序列化一次 → 立刻释放对象图 → 包络字符串复用这段 JSON → gzip 直接吃字符串（省一次 Buffer 拷贝）。
+      // ⚠️ 包络字段与格式必须保持与历史一致（date 仍是 Date 序列化后的 ISO 串，不是 day 字符串），
+      //    恢复脚本按原样读。
+      rows = null
+      const buf = Buffer.from(
+        `{"collection":${JSON.stringify(coll)},"date":${JSON.stringify(date)},"count":${count},"rows":` + rowsJson + '}',
+        'utf8'
+      )
       const cloudPath = `backups/${day}/${coll}.json`
       const up = await app.uploadFile({ cloudPath, fileContent: buf })
       fileIDs.push(up && up.fileID ? up.fileID : null)
-      summary.push(`${coll}:${rows.length}`)
+      summary.push(`${coll}:${count}`)
+      // 每集合留一行 RSS：512MB 容器上「哪一步逼近上限」只能靠这个看（2026-10-03 排查 OOM 时加的）
+      console.log(`[dbBackup] ${coll} ${count} 条，rss ${Math.round(process.memoryUsage().rss / 1048576)}MB`)
       // 异地第二副本：本集合压缩后**单包**推送（gz 后 questions 约 3MB，内存峰值可控）
       if (BACKUP_URL && BACKUP_TOKEN) {
         try {
-          const gz = zlib.gzipSync(Buffer.from(rowsJson, 'utf8'))
+          const gz = zlib.gzipSync(rowsJson)
+          rowsJson = null
           const u = new URL(BACKUP_URL)
           const pr = await postCollection(u.hostname, u.pathname, BACKUP_TOKEN, day, coll, gz)
           if (pr.status !== 200) throw new Error('HTTP ' + pr.status + ' ' + pr.body)
