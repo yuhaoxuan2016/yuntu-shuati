@@ -211,6 +211,14 @@ onMounted(() => {
   autoCheckOnStartup().catch(e => console.error('启动检查更新失败：', e))
 })
 
+// 2026-10-03：启动后静默拉一次云端（≥10 分钟节流、可在设置里关）——
+// 「单位手机练 / 另一台电脑练 → 回家开这台电脑直接继续」。
+onMounted(() => {
+  window.setTimeout(() => {
+    import('./lib/cloud').then(m => m.maybeAutoSyncOnOpen()).catch(() => {})
+  }, 4000)
+})
+
 // 新版本检测的排程（dev 不启：入口没哈希）。装载后 20 秒首查，之后每 20 分钟；
 // 切回前台/窗口聚焦再查一次——手机端「切回来」是最常见的时机。
 onMounted(() => {

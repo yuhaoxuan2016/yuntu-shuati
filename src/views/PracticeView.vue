@@ -51,6 +51,8 @@
         🔀 选项乱序
       </label>
       <button class="restart-btn" @click="restart">重新开始</button>
+      <!-- 2026-10-03：同步状态（断网/失败可见，可点重试） -->
+      <span class="sync-chip" :class="{ ok: syncStat.state === 'ok', fail: syncStat.state === 'fail' }" :title="syncStat.msg || ''" @click="onSyncChipTap">{{ syncChipText }}</span>
     </div>
 
     <!-- 2026-10-03：存档守望的可见出口（写不进去/落盘校验不过时出现，点一下补存）＋计划模式提示 -->
@@ -204,6 +206,8 @@ import QuestionCard, { type QuestionState } from '../components/QuestionCard.vue
 import { classifyQuestionType, TYPE_LABELS, groupQuestionsByCategory } from '../lib/exam'
 import { calculateAutoQuality, calculateNextReview, qualityLabel, labelToQuality, formatDate, computeNextReviewTs, toReviewTs, type QualityLabel } from '../lib/spaced-repetition'
 import { formatSyncDetail } from '../lib/sync-format'
+import { getWebSyncStatus, retryProgressSync } from '../lib/cloud'
+import { msToSecs } from '../lib/duration'
 
 interface SavedProgress {
   mode: string
@@ -582,14 +586,40 @@ function onVisibilityChange() {
   else checkSaveHealth()
 }
 function retrySave() { void saveProgress() }
+
+// 2026-10-03：顶栏同步状态（断网/失败可见、可点重试）——只读云同步模块的内存状态，每 3s 刷一次
+const syncStat = ref(getWebSyncStatus())
+let syncStatTimer: number | null = null
+const syncChipText = computed(() => {
+  const s = syncStat.value
+  if (s.state === 'syncing') return '同步中…'
+  if (s.state === 'fail') return '同步失败·点重试'
+  if (s.state === 'ok') {
+    const d = new Date(Number(s.at) || Date.now())
+    const p2 = (n: number) => String(n).padStart(2, '0')
+    return `已同步 ${p2(d.getHours())}:${p2(d.getMinutes())}`
+  }
+  return '未同步'
+})
+function refreshSyncStat () { syncStat.value = getWebSyncStatus() }
+async function onSyncChipTap () {
+  if (syncStat.value.state === 'syncing') return
+  refreshSyncStat()
+  await retryProgressSync()
+  refreshSyncStat()
+}
+
 onMounted(() => {
   saveWatchTimer = setInterval(checkSaveHealth, 45000)
   document.addEventListener('visibilitychange', onVisibilityChange)
+  refreshSyncStat()
+  syncStatTimer = window.setInterval(refreshSyncStat, 3000)
 })
 onBeforeUnmount(() => {
   if (saveWatchTimer) clearInterval(saveWatchTimer)
   saveWatchTimer = null
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  if (syncStatTimer) { window.clearInterval(syncStatTimer); syncStatTimer = null }
 })
 
 async function saveProgress() {
@@ -648,6 +678,8 @@ async function saveProgressInner() {
     }
     dirtySince.value = 0
     saveWarn.value = ''
+    // 2026-10-03：落盘成功后防抖轻推（只推进度/当天统计/续练指针三条设置行；可在设置里关）
+    void import('../lib/cloud').then(m => m.scheduleProgressPush()).catch(() => {})
   } catch (e) {
     console.error('保存进度失败：', e)
     saveWarn.value = '⚠️ 进度可能没存上（' + String((e && e.message) || e) + '）——点此立即重试'
@@ -719,8 +751,8 @@ async function onAnswered(payload: { correct: boolean; answer: string; duration_
     const res = await api.recordPractice({ bank_id: bankId, question_id: q.id, user_answer: payload.answer, is_correct: payload.correct, duration_ms: payload.duration_ms })
     // 2026-08-19：连续答对达到阈值 → 自动移入「已掌握」
     if (res?.autoMastered) toastSuccess(`🎉 连续答对 ${res.streak} 次，该题已自动移入「已掌握」`)
-    // 累计每日统计（用于热力图）
-    await bumpDailyRecord(payload.correct)
+    // 累计每日统计（用于热力图）；2026-10-03 起同时累加本题用时
+    await bumpDailyRecord(payload.correct, payload.duration_ms)
   } catch (e) {
     console.error('记录练习失败：', e)
   }
@@ -882,20 +914,24 @@ async function markPlanCompleted(questionId: number) {
 // BUG-008 修复：加前端互斥锁，避免连续答题时 read-modify-write 竞态导致统计丢失
 // 旧实现：两次并发 bumpDailyRecord 都读到同一份 records，各自 +1 后写回，后写覆盖先写
 let bumpDailyRecordChain: Promise<void> = Promise.resolve()
-function bumpDailyRecord(correct: boolean): Promise<void> {
+function bumpDailyRecord(correct: boolean, durationMs: number | null = null): Promise<void> {
   // 串行化：将每次调用接到 chain 末尾，保证不并发
   const run = async () => {
     try {
       const raw = await api.getSetting('daily_records')
-      const records: { date: string; total: number; correct: number }[] = raw ? JSON.parse(raw) : []
+      const records: { date: string; total: number; correct: number; duration?: number }[] = raw ? JSON.parse(raw) : []
       const d = new Date()
       const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      // 2026-10-03：累加本题用时（秒）。duration 是**可选字段**——历史行没有它，
+      // 读取侧一律按 0 兜底；只在有值时累加，避免把 null 写进去污染类型。
+      const addSecs = msToSecs(durationMs)
       const idx = records.findIndex(r => r.date === today)
       if (idx >= 0) {
         records[idx].total++
         if (correct) records[idx].correct++
+        if (addSecs > 0) records[idx].duration = (Number(records[idx].duration) || 0) + addSecs
       } else {
-        records.push({ date: today, total: 1, correct: correct ? 1 : 0 })
+        records.push({ date: today, total: 1, correct: correct ? 1 : 0, ...(addSecs > 0 ? { duration: addSecs } : {}) })
       }
       // 只保留最近 400 天
       const sorted = records.sort((a, b) => a.date.localeCompare(b.date))
@@ -1129,6 +1165,10 @@ async function restart() {
 .auto-next-toggle input { cursor: pointer; }
 
 .restart-btn { padding: 5px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-card); cursor: pointer; font-size: 13px; color: var(--color-text); }
+/* 2026-10-03：同步状态小片（顶栏第二排） */
+.sync-chip { padding: 4px 10px; border-radius: 999px; font-size: 12px; color: var(--color-text-secondary); }
+.sync-chip.ok { opacity: 0.75; }
+.sync-chip.fail { color: var(--color-danger-deep); font-weight: 600; cursor: pointer; }
 .restart-btn:hover { background: var(--color-border-light); }
 
 .search-result-banner { background: var(--color-info-light); color: var(--color-info); padding: 8px 16px; border-radius: var(--radius-md); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }

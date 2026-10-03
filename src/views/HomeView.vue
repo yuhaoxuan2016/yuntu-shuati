@@ -58,7 +58,7 @@
         <img class="daily-icon" src="/icons/flame.gif" alt="🔥" />
         <div>
           <div class="daily-title">今天已刷 <b>{{ todayStats.total }}</b> 题</div>
-          <div class="daily-sub">正确率 {{ todayStats.accuracy }}% · 连续刷题 <b>{{ streakDays }}</b> 天</div>
+          <div class="daily-sub">正确率 {{ todayStats.accuracy }}% · 连续刷题 <b>{{ streakDays }}</b> 天<template v-if="hasTodayDuration"> · 用时 {{ todayDurationText }}</template></div>
         </div>
       </div>
       <div class="daily-progress">
@@ -346,6 +346,7 @@ import { idb, normalizeTs } from '../lib/db'
 import { formatDate } from '../lib/spaced-repetition'
 import OnboardingTour from '../components/OnboardingTour.vue'
 import { findSourceBank, isPublicCopy } from '../lib/bank-provenance'
+import { formatDuration, hasDuration } from '../lib/duration'
 
 interface LastPractice {
   bank_id: number
@@ -355,8 +356,9 @@ interface LastPractice {
   saved_at: string
 }
 interface Stats { total: number; practiced: number; correct: number; mastered: number; accuracy: number }
-interface TodayStats { total: number; correct: number; accuracy: number }
-interface DailyRecord { date: string; total: number; correct: number }
+interface TodayStats { total: number; correct: number; accuracy: number; duration?: number }
+// 2026-10-03：duration（当日练习时长，秒）是**可选字段**——本项上线前的历史行没有它。
+interface DailyRecord { date: string; total: number; correct: number; duration?: number }
 
 const router = useRouter()
 const bankStore = useBankStore()
@@ -407,6 +409,10 @@ const lastPractice = ref<LastPractice | null>(null)
 const openMenuId = ref<number | null>(null)
 const bankStatsMap = ref<Map<number, Stats>>(new Map())
 const todayStats = ref<TodayStats>({ total: 0, correct: 0, accuracy: 0 })
+// 2026-10-03：当日练习时长。历史行/其它端写入的行可能没有 duration，一律按 0 兜底；
+// 为 0 时整段不渲染（避免首页出现「用时 00:00:00」这种没信息量的噪声）。
+const hasTodayDuration = computed(() => hasDuration(todayStats.value.duration))
+const todayDurationText = computed(() => formatDuration(todayStats.value.duration))
 const streakDays = ref(0)
 const publicBanks = ref<any[]>([])
 
@@ -731,6 +737,7 @@ onMounted(async () => {
         total: todayRec.total,
         correct: todayRec.correct,
         accuracy: todayRec.total > 0 ? Math.round((todayRec.correct / todayRec.total) * 100) : 0,
+        duration: Number(todayRec.duration) || 0,
       }
     }
     // 连续天数：从今天往回数，每天都有记录

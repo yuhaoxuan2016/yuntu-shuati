@@ -150,3 +150,38 @@ export function remapProgress(prog: any, index: Map<number, number>): any {
   }
   return out
 }
+
+/** 2026-10-03：把小程序上行的进度条目（题号是 `bankRef::id:<云题 _id>`）重塑成网页端本地形态。
+ *  idMap = 「云题 _id → 本机题号」索引（由调用方异步构建）；映射不到的题号一律丢弃
+ *  （丢失策略与记录侧一致：绝不挂错号）；order_ids 全空时返回 null（放弃合并）。 */
+export function reshapeMpProgress(prog: any, idMap: Map<string, number>): any | null {
+  const toLocal = (qid: unknown): number | null => {
+    const s = String(qid || '')
+    const at = s.lastIndexOf('::id:')
+    const docId = at >= 0 ? s.slice(at + 5) : s
+    if (!docId) return null
+    const hit = idMap.get(docId)
+    return hit == null ? null : hit
+  }
+  if (!prog || typeof prog !== 'object') return null
+  const order_ids = (Array.isArray(prog.order_ids) ? (prog.order_ids as unknown[]) : [])
+    .map(toLocal)
+    .filter((x: number | null): x is number => x != null)
+  if (!order_ids.length) return null
+  const answer_states: Record<string, any> = {}
+  const src = (prog.answer_states && typeof prog.answer_states === 'object') ? prog.answer_states : {}
+  for (const [k, v] of Object.entries(src)) {
+    const m = toLocal(k)
+    if (m != null) answer_states[String(m)] = v
+  }
+  const current = toLocal(prog.current_id)
+  return {
+    mode: prog.mode || 'order',
+    order_ids,
+    current_id: current == null ? order_ids[0] : current,
+    answer_states,
+    finished: !!prog.finished,
+    saved_at: prog.saved_at,
+    _src: prog._src,
+  }
+}

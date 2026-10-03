@@ -102,6 +102,13 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.70</span>
+          <ul>
+            <li>首页「今天已刷 N 题」加上练习时长（时:分:秒，按每题实际用时累加）；统计页新增「按天明细」逐日列出时长、题数与正确率，热力图悬停也能看到当天用时</li>
+            <li>跨端「准实时」同步：打开网页自动拉一次、做题后自动回传进度；手机练完随手切走，回家开电脑就能接着练（网页↔网页同样生效；与小程序打通后默认开启、未打通默认关，可在设置里改）。练习页顶栏有同步状态：失败会提示、可点重试</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.69</span>
           <ul>
             <li>练习进度更稳：新增「存档守望」——进度一旦没能落盘会自动补存、并在页面上给出可点重试的提示，不再出现「悄悄不记进度」</li>
@@ -611,6 +618,13 @@
             <label>同步昵称</label>
             <input v-model="syncNickname" @blur="saveSyncNickname" placeholder="换设备填同一昵称可同步私人进度/错题/收藏" class="dir-input" />
           </div>
+          <!-- 2026-10-03：自动同步开关（默认开）——打开页面自动拉取；做题后自动回传进度 -->
+          <div class="cloud-row">
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;">
+              <input type="checkbox" v-model="autoSync" @change="onAutoSyncToggle" />
+              <span>自动同步（打开页面自动拉取；做题后自动回传进度）· 与小程序打通后默认开，未打通需手动开</span>
+            </label>
+          </div>
           <div class="cloud-actions">
             <button class="data-btn" :disabled="!cloudEnvId.trim() || cloudSyncing" @click="saveCloudConfig">{{ cloudSyncing ? '☁️ 同步中...' : '☁️ 连接并同步' }}</button>
             <!-- 2026-09-24（rabbit）：一个「同步」说不清方向 → 拆成上传/下载/双向三件，与小程序端对齐。
@@ -890,6 +904,7 @@ const cloudSaved = ref(false)
 const cloudSyncing = ref(false)
 const cloudError = ref(false)
 const cloudStatusText = ref('')
+const autoSync = ref(true)
 const syncNickname = ref('')
 const wrongAutoMaster = ref('3')
 
@@ -1030,10 +1045,22 @@ onMounted(async () => {
   }
 })
 
+// 2026-10-03：自动同步开关（默认开）——本机行为；关掉后打开页面不再自动拉、答题后不再自动推
+async function onAutoSyncToggle() {
+  try {
+    const mod = await import('../lib/cloud')
+    await mod.setAutoSyncEnabled(autoSync.value)
+    toastSuccess(autoSync.value ? '已开启自动同步' : '已关闭自动同步')
+  } catch (e) {
+    toastError('设置失败：' + (e instanceof Error ? e.message : String(e)))
+  }
+}
+
 // === 云同步逻辑 ===
 async function loadCloudConfig() {
   try {
     const mod = await import('../lib/cloud')
+    autoSync.value = await mod.getAutoSyncEnabled()
     const cfgRaw = localStorage.getItem('cloudbase_config')
     if (cfgRaw) {
       const cfg = JSON.parse(cfgRaw)

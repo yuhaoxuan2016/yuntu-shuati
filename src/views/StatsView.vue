@@ -59,7 +59,7 @@
                 :key="ci"
                 class="heatmap-cell"
                 :class="['level-' + cell.level, { 'today': cell.isToday }]"
-                :title="cell.date ? `${cell.date}：${cell.total} 题（对 ${cell.correct}）` : ''"
+                :title="cell.date ? `${cell.date}：${cell.total} 题（对 ${cell.correct}）${cell.duration > 0 ? ' · 用时 ' + formatDuration(cell.duration) : ''}` : ''"
               ></div>
             </div>
           </div>
@@ -75,6 +75,27 @@
         </div>
         <div class="heatmap-summary">
           共刷题 <b>{{ heatmap.totalCount }}</b> 次 · 连续 <b>{{ heatmap.streakDays }}</b> 天 · 最长 <b>{{ heatmap.maxStreak }}</b> 天
+        </div>
+      </div>
+
+      <!-- 按天明细（2026-10-03）：逐日列出时长/题数/正确率。只读，不做「点进去看当天答了哪些题」
+           ——那需要按 practiced_at 反查 practice_records 并处理跨端，本轮不扩。 -->
+      <div class="daily-detail-section">
+        <h3>按天明细（最近 {{ dailyDetail.length }} 天）</h3>
+        <div v-if="!dailyDetail.length" class="detail-empty">还没有练习记录</div>
+        <div v-else class="detail-table">
+          <div class="detail-row detail-head">
+            <span class="d-date">日期</span>
+            <span class="d-dur">用时</span>
+            <span class="d-total">题数</span>
+            <span class="d-acc">正确率</span>
+          </div>
+          <div v-for="r in dailyDetail" :key="r.date" class="detail-row">
+            <span class="d-date">{{ r.date.slice(5) }}</span>
+            <span class="d-dur">{{ r.duration > 0 ? formatDuration(r.duration) : '-' }}</span>
+            <span class="d-total">{{ r.total }}</span>
+            <span class="d-acc">{{ r.total > 0 ? Math.round((r.correct / r.total) * 100) + '%' : '-' }}</span>
+          </div>
         </div>
       </div>
 
@@ -158,6 +179,7 @@ import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { api, toLocalDateStr, addDays, resolveBankId } from '../utils/api'
 import { toastError } from '../utils/toast'
+import { formatDuration } from '../lib/duration'
 
 const route = useRoute()
 // 2026-09-27 订阅模式：同 WrongView —— 数字=本地库，否则=公共题库 bankRef。
@@ -445,7 +467,7 @@ watch(loaded, async (val) => {
 })
 
 // 热力图数据
-interface HeatCell { date: string | null; level: number; total: number; correct: number; isToday: boolean }
+interface HeatCell { date: string | null; level: number; total: number; correct: number; duration: number; isToday: boolean }
 interface HeatmapData {
   weeks: HeatCell[][]
   months: { label: string; col: number; span: number }[]
@@ -454,10 +476,13 @@ interface HeatmapData {
   maxStreak: number
 }
 const heatmap = ref<HeatmapData>({ weeks: [], months: [], totalCount: 0, streakDays: 0, maxStreak: 0 })
+// 2026-10-03：按天明细（duration 秒；历史行缺该字段按 0，显示为 '-'）
+const dailyDetail = ref<{ date: string; total: number; correct: number; duration: number }[]>([])
 
 async function loadHeatmap() {
   const raw = await api.getSetting('daily_records')
-  let records: { date: string; total: number; correct: number }[] = []
+  // duration（当日练习时长，秒）是可选字段——本项上线前的历史行没有它
+  let records: { date: string; total: number; correct: number; duration?: number }[] = []
   try {
     records = raw ? JSON.parse(raw) : []
   } catch (e) {
@@ -490,7 +515,7 @@ async function loadHeatmap() {
     const week: HeatCell[] = []
     for (let dow = 0; dow < 7; dow++) {
       if (cursor > today) {
-        week.push({ date: null, level: 0, total: 0, correct: 0, isToday: false })
+        week.push({ date: null, level: 0, total: 0, correct: 0, duration: 0, isToday: false })
       } else {
         const iso = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`
         const rec = map.get(iso)
@@ -504,7 +529,7 @@ async function loadHeatmap() {
           else level = 1
         }
         const isToday = cursor.getTime() === today.getTime()
-        week.push({ date: iso, level, total, correct: rec?.correct ?? 0, isToday })
+        week.push({ date: iso, level, total, correct: rec?.correct ?? 0, duration: Number(rec?.duration) || 0, isToday })
         if (cursor.getDate() === 1 || (col === 0 && dow === 0)) {
           const label = `${cursor.getMonth() + 1}月`
           if (prevMonth !== cursor.getMonth()) {
@@ -575,6 +600,14 @@ async function loadHeatmap() {
   }
 
   heatmap.value = { weeks, months: monthLabels, totalCount, streakDays: streak, maxStreak }
+
+  // 按天明细：只列有刷题的日期，倒序（新的在上），窗口 30 天
+  dailyDetail.value = records
+    .filter(r => r.total > 0)
+    .slice()
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 30)
+    .map(r => ({ date: r.date, total: Number(r.total) || 0, correct: Number(r.correct) || 0, duration: Number(r.duration) || 0 }))
 }
 </script>
 
@@ -657,6 +690,22 @@ async function loadHeatmap() {
 [data-theme="dark"] .legend-cell.level-4 { background: #39d353; }
 .heatmap-summary { font-size: 12px; color: var(--color-text-secondary); margin-top: 8px; }
 .heatmap-summary b { color: var(--color-primary); font-weight: 600; }
+
+/* 按天明细（2026-10-03） */
+.daily-detail-section { margin-top: 24px; }
+.daily-detail-section h3 { font-size: 15px; font-weight: 600; margin: 0 0 12px; }
+.detail-empty { padding: 24px 0; text-align: center; font-size: 13px; color: var(--color-text-tertiary); }
+.detail-table { border: 1px solid var(--color-border-light); border-radius: var(--radius-lg); overflow: hidden; }
+.detail-row { display: flex; align-items: center; padding: 10px 14px; font-size: 13px; border-bottom: 1px solid var(--color-border-light); }
+.detail-row:last-child { border-bottom: none; }
+/* 相间底色：30 行表格没有斑马纹很难横向对位 */
+.detail-row:nth-child(odd) { background: var(--color-bg-secondary, transparent); }
+.detail-head { font-weight: 600; color: var(--color-text-secondary); background: var(--color-bg-secondary, transparent); }
+.detail-row .d-date { flex: 1; text-align: left; color: var(--color-text-secondary); }
+/* 时长用等宽数字：逐行秒数不同，比例数字跳动会让整列左右晃 */
+.detail-row .d-dur { flex: 1; text-align: right; font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.detail-row .d-total { flex: 1; text-align: right; font-variant-numeric: tabular-nums; }
+.detail-row .d-acc { flex: 1; text-align: right; font-variant-numeric: tabular-nums; color: var(--color-text-secondary); }
 
 /* 移动端适配：缩小热力图格子，尽量一屏显示 */
 @media (max-width: 768px) {

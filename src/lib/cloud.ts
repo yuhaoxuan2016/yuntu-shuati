@@ -16,7 +16,7 @@ import {
   type LedgerIndex,
   type LedgerKV,
 } from './sync-ledger'
-import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal, mergeProgressMapForCloud, orderHitRate, PROG_SCHEMA_V } from './sync-ids'
+import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal, mergeProgressMapForCloud, orderHitRate, PROG_SCHEMA_V, reshapeMpProgress } from './sync-ids'
 import { decideDeletedMark, nextTries, type RemoveResult } from './deleted-marks'
 import type { SyncDetail } from './sync-format'
 
@@ -1068,6 +1068,109 @@ export function scheduleAutoPush(): void {
   return // 自动同步已关闭（手动同步见设置页）
 }
 
+// ===== 2026-10-03 准实时（打开即拉 + 答题后轻推）=====
+// rabbit 场景：「单位手机练 → 回家开电脑直接继续」（网页↔网页同理）。自动动作静默、失败走状态提示。
+const AUTO_PULL_KEY = 'cloud_auto_pull_at'
+const AUTO_PULL_INTERVAL_MS = 10 * 60 * 1000
+const AUTO_PUSH_DEBOUNCE_MS = 8000
+const AUTO_PUSH_MIN_INTERVAL_MS = 30 * 1000   // 轻推最小间隔（防密集作答把大进度包连发）
+
+/** 纯函数（可离线直测）：自动同步开关口径——显式设置优先；没设过时随绑定态
+ *  （与小程序打通后默认开；未打通＝纯网页↔网页，默认关、需手动开启）。rabbit 2026-10-03 口径。 */
+export function resolveAutoSyncGate(stored: string | null | undefined, bound: boolean): boolean {
+  if (stored === '1') return true
+  if (stored === '0') return false
+  return bound
+}
+export async function getAutoSyncEnabled(): Promise<boolean> {
+  let v: string | null = null
+  try { v = await idb.getSetting('auto_sync') } catch { v = null }
+  return resolveAutoSyncGate(v, isBoundToMiniProgram())
+}
+export async function setAutoSyncEnabled(on: boolean): Promise<void> {
+  try { await idb.setSetting('auto_sync', on ? '1' : '0') } catch { /* 静默 */ }
+}
+
+// 轻同步状态（练习页顶栏「已同步 / 失败重试」提示的数据源；纯内存）
+export type WebSyncState = 'idle' | 'syncing' | 'ok' | 'fail'
+const webSyncStatus = { state: 'idle' as WebSyncState, at: 0, msg: '' }
+function setWebSyncStatus (state: WebSyncState, msg = ''): void {
+  webSyncStatus.state = state
+  webSyncStatus.at = Date.now()
+  webSyncStatus.msg = msg
+}
+export function getWebSyncStatus (): { state: WebSyncState; at: number; msg: string } {
+  return { ...webSyncStatus }
+}
+
+// 打开网页时静默拉一次（≥10 分钟节流；开关关闭或云未启用时不跑）。结果落状态（失败可见）。
+export async function maybeAutoSyncOnOpen(): Promise<void> {
+  try {
+    if (!isCloudEnabled()) return
+    if (!(await getAutoSyncEnabled())) return
+    let last = 0
+    try { last = Number(localStorage.getItem(AUTO_PULL_KEY) || 0) } catch { last = 0 }
+    if (last && Date.now() - last < AUTO_PULL_INTERVAL_MS) return
+    try { localStorage.setItem(AUTO_PULL_KEY, String(Date.now())) } catch { /* 静默 */ }
+    setWebSyncStatus('syncing')
+    await syncFromCloud()
+    // syncFromCloud 内部吞错、不抛出 ⇒ 用 cloudState.error 判定亮灯
+    if (cloudState.error) setWebSyncStatus('fail', cloudState.error)
+    else setWebSyncStatus('ok')
+  } catch (e: any) {
+    setWebSyncStatus('fail', (e && e.message) || String(e))
+    console.warn('[cloud] 打开自动同步失败（静默）', e)
+  }
+}
+
+// 答题落盘后调它：防抖 8s 后只推「进度 + 当天统计 + 续练指针」三条设置行——
+// 不走全量推送（2026-08-09 关自动推的起因是全量推送在刷题时卡顿，只推这三条没有这个问题）。
+let progressPushTimer: ReturnType<typeof setTimeout> | null = null
+let lastLightPushAt = 0
+export function scheduleProgressPush(): void {
+  if (progressPushTimer) clearTimeout(progressPushTimer)
+  progressPushTimer = setTimeout(() => { progressPushTimer = null; void pushProgressLight() }, AUTO_PUSH_DEBOUNCE_MS)
+}
+
+// 顶栏「点重试」：显式动作——不等防抖、不受自动开关闸门（用户点了就是要传）。
+export async function retryProgressSync(): Promise<boolean> {
+  await pushProgressLight(true)
+  return webSyncStatus.state === 'ok'
+}
+
+async function pushProgressLight(force = false): Promise<void> {
+  if (!force && Date.now() - lastLightPushAt < AUTO_PUSH_MIN_INTERVAL_MS) return
+  setWebSyncStatus('syncing')
+  try {
+    if (!(await ensureApp())) { setWebSyncStatus('fail', '云未连接'); return }
+    if (!isAuthed()) { setWebSyncStatus('fail', '未登录云端'); return }
+    if (!force && !(await getAutoSyncEnabled())) { setWebSyncStatus('idle'); return }
+    const rows: any[] = []
+    const progRow = await collectPracticeProgressRow()
+    if (progRow) rows.push(progRow)
+    for (const k of ['daily_records', 'last_practice']) {
+      const v = await idb.getSetting(k)
+      if (v == null || v === '') continue
+      rows.push({ _id: settingsDocId(k), key: k, value: v })
+    }
+    if (!rows.length) { setWebSyncStatus('ok'); return }
+    // 进度包先与云端逐键合并（防止把别处设备较新的库进度顶掉）——与手动推送同一条口径
+    const merged = (await mergeProgressMapWithCloud(rows)) || rows
+    let ok = 0
+    for (const r of merged) { if (await pushDoc('settings', r)) ok++ }
+    if (ok) {
+      lastLightPushAt = Date.now()
+      cloudState.lastSyncAt = now()
+      setWebSyncStatus('ok')
+    } else {
+      setWebSyncStatus('fail', '推送未生效（网络或权限）')
+    }
+  } catch (e: any) {
+    setWebSyncStatus('fail', (e && e.message) || String(e))
+    console.warn('[cloud] 进度自动推送失败（静默，下次作答会再试）', e)
+  }
+}
+
 // ===== 本地辅助 =====
 
 // 2026-09-28：同步明细归类 —— 设置页用它把「推送 N 条」说成人话（题库名单/题目/记录/订阅/设置）。
@@ -1344,6 +1447,48 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
       // P1-11：ai_base_url / ai_base_url_ack 同理 —— 端点与「自定义端点确认」都只能由本机决定；
       // 旧版本可能已在云端留下 ai_base_url 文档，这里一律不落地，避免静默改写端点。
       if (doc.key === 'ai_api_key' || doc.key === 'ai_base_url' || doc.key === 'ai_base_url_ack') return 'skipped'
+      // 2026-10-03：last_practice 拉取守卫——只吃「比本机更新」的指针。自动拉取常态化后，
+      // 一台较旧的设备把旧指针推上来，会把本机较新的「继续刷题」指针顶回去。
+      if (doc.key === 'last_practice') {
+        try {
+          const incoming = JSON.parse(String(doc.value || '""'))
+          const curRaw = await idb.getSetting('last_practice')
+          let cur: any = null
+          try { cur = curRaw ? JSON.parse(String(curRaw)) : null } catch { cur = null }
+          const at = (x: any) => Date.parse(String((x && x.saved_at) || '')) || 0
+          if (!incoming || typeof incoming !== 'object' || at(incoming) <= at(cur)) return 'skipped'
+          await idb.bulkPut('settings', [{ key: doc.key, value: String(doc.value), synced_at: now() }])
+        } catch (e) { console.warn('[cloud] last_practice 落地失败（不阻断）', e) }
+        return 'skipped'
+      }
+      // 2026-10-03：daily_records 拉取合并——逐日取大（网页单行只增不减；自动拉取若直接整套覆盖，
+      // 会被另一台设备较旧的快照把本机当天计数打回去）。两台设备同日各练的严格求和需要给行加设备号，暂不做。
+      if (doc.key === 'daily_records') {
+        try {
+          const incoming = JSON.parse(String(doc.value || '[]'))
+          const curRaw = await idb.getSetting('daily_records')
+          let cur: any[] = []
+          try { cur = curRaw ? JSON.parse(String(curRaw)) : [] } catch { cur = [] }
+          const byDate = new Map<string, { date: string; total: number; correct: number; duration: number }>()
+          const num = (x: any) => Number(x) || 0
+          for (const r of [...(Array.isArray(cur) ? cur : []), ...(Array.isArray(incoming) ? incoming : [])]) {
+            if (!r || !/^\d{4}-\d{2}-\d{2}$/.test(String(r.date || ''))) continue
+            const prev = byDate.get(String(r.date))
+            if (!prev) byDate.set(String(r.date), { date: String(r.date), total: num(r.total), correct: num(r.correct), duration: num(r.duration) })
+            else {
+              prev.total = Math.max(prev.total, num(r.total))
+              prev.correct = Math.max(prev.correct, num(r.correct))
+              prev.duration = Math.max(prev.duration, num(r.duration))
+            }
+          }
+          const merged = [...byDate.values()]
+            .sort((a, b) => a.date.localeCompare(b.date))
+            .slice(-400)
+            .map(r => ({ date: r.date, total: r.total, correct: r.correct, ...(r.duration > 0 ? { duration: r.duration } : {}) }))
+          await idb.bulkPut('settings', [{ key: doc.key, value: JSON.stringify(merged), synced_at: now() }])
+        } catch (e) { console.warn('[cloud] daily_records 合并失败（不阻断）', e) }
+        return 'skipped'
+      }
       // 2026-09-27：续练位置是「打包成一个 map」上来的，落地时要**逐库拆回** `practice_progress_<bankId>`。
       // 合并口径：同一题库两边都有 ⇒ 比 `saved_at`，**取较新的一份**（避免把本机更新的进度用云端旧值覆盖）；
       // 不同题库互不影响。云端 / 本机的坏值都跳过，不影响其余库。
@@ -1370,6 +1515,9 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
             let res
             if (bankId != null) {
               const index = await srcLocalIndexOf(bankId)
+              // 2026-10-03：小程序上行条目（_src.dev='mp'）——题号是「bankRef::id:<云题 _id>」，
+              // 按云题映射本机题号后走同一套合并（映射失败即丢弃，绝不挂错号）。
+              const isMpEntry = !!(map[bid] && map[bid]._src && map[bid]._src.dev === 'mp')
               // 2026-09-28（保护）：本机进度与题库完全对不上（命中率 <30%，如跨库错挂 / 坏值）
               // ⇒ 即使「本地更新」也丢弃本地、以云端为准（防「一次异常练习永久顶掉正确进度」）。
               let localRaw: string | null = localAll[lk] ?? null
@@ -1382,7 +1530,12 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
                   }
                 } catch { localRaw = null }   // 坏 JSON 同样视为无效
               }
-              res = mergeProgressForLocal(map[bid], localRaw, myDev, index)
+              if (isMpEntry) {
+                const conv = reshapeMpProgress(map[bid], await cloudQuestionLocalIndex(bankId))
+                res = conv ? mergeProgressForLocal(conv, localRaw, myDev, index, true) : { write: false }
+              } else {
+                res = mergeProgressForLocal(map[bid], localRaw, myDev, index)
+              }
             } else if (legacyKey) {
               continue // 旧数字键 + 本地无此库：无意义
             } else {
@@ -1452,6 +1605,18 @@ async function mapCloudBankRefToLocal(cloudBankRef: string): Promise<number | st
 
 // 2026-09-28（跨设备映射）：云端题 `_id` → 本机题号（限定在该库内查；一次同步内按库缓存）。
 // 找不到返回 null —— 调用方按「跳过」处理，绝不回退到「同号即同一题」的猜测。
+// 2026-10-03：某库的「云题 _id → 本机题号」索引（一次性读库内题目构建；mp 上行进度落地用）。
+async function cloudQuestionLocalIndex(bankId: number | string): Promise<Map<string, number>> {
+  const m = new Map<string, number>()
+  try {
+    const qs = await idb.listQuestions(bankId)
+    for (const q of qs || []) {
+      if (q && q.cloud_id != null && typeof q.id === 'number') m.set(String(q.cloud_id), q.id)
+    }
+  } catch { /* 读不到 → 空索引 → 该条目放弃合并 */ }
+  return m
+}
+
 async function mapCloudQuestionToLocal(bankId: number | string, cloudQId: string): Promise<number | null> {
   if (!qCloudIdCache || qCloudIdCache.bankId !== bankId) {
     const all = await idb.listQuestions(bankId)
@@ -1542,6 +1707,32 @@ async function mergeProgressMapWithCloud(rows: any[]): Promise<any[] | null> {
   return next
 }
 
+// 2026-10-03：练习进度打包（手动全量推送与答题后轻推共用；轻推只发这一条 + 当天统计 + 续练指针）。
+// 返回 null = 本机没有任何库进度；_src 标记的语义见下方历史注释（v3 起「本机最终形态」才可信）。
+async function collectPracticeProgressRow(): Promise<any | null> {
+  try {
+    const allSet = await idb.getAllSettings()
+    const prog: Record<string, any> = {}
+    for (const k of Object.keys(allSet)) {
+      if (!k.startsWith('practice_progress_')) continue
+      const bid = k.slice('practice_progress_'.length)
+      if (!bid) continue
+      try { prog[bid] = JSON.parse(allSet[k] || '{}') } catch { /* 坏值跳过，不影响其它库 */ }
+    }
+    if (!Object.keys(prog).length) return null
+    // 2026-09-28：给每个库的进度打上本机设备标记（_src.dev）—— 落地侧靠它区分
+    // 「本机写的（题号已是本机号，不必重映射）」与「他机写的（必须重映射）」。
+    const myDev = deviceId()
+    for (const k of Object.keys(prog)) {
+      if (prog[k] && typeof prog[k] === 'object') prog[k] = { ...prog[k], _src: { dev: myDev, v: PROG_SCHEMA_V } }
+    }
+    return { _id: settingsDocId('practice_progress'), key: 'practice_progress', value: JSON.stringify(prog) }
+  } catch (e) {
+    console.warn('[cloud] 收集续练位置失败（不阻断）', e)
+    return null
+  }
+}
+
 async function listAllSettings(): Promise<any[]> {
   // 读取已知 key（从设置页用到的）
   // 注意：ai_api_key（AI 密钥）不参与云同步，仅保存在本地浏览器，避免泄露到云端
@@ -1565,29 +1756,8 @@ async function listAllSettings(): Promise<any[]> {
   // 永远读不到值 ⇒ 这个"进度同步"从写下的那天起就没工作过（rabbit 实测：换设备后进度归零）。
   // 现在改为：**把所有 `practice_progress_*` 打包成一个 map 上传**（一个键，一次同步全部题库）。
   // 体积可控：每个题库约几百字节，几十个题库也只有十几 KB，远低于下面的 64KB 上限。
-  try {
-    const allSet = await idb.getAllSettings()
-    const prog: Record<string, any> = {}
-    for (const k of Object.keys(allSet)) {
-      if (!k.startsWith('practice_progress_')) continue
-      const bid = k.slice('practice_progress_'.length)
-      if (!bid) continue
-      try { prog[bid] = JSON.parse(allSet[k] || '{}') } catch { /* 坏值跳过，不影响其它库 */ }
-    }
-    if (Object.keys(prog).length) {
-      // 2026-09-28：给每个库的进度打上本机设备标记（_src.dev）—— 落地侧靠它区分
-      // 「本机写的（题号已是本机号，不必重映射）」与「他机写的（必须重映射）」。
-      // 2026-09-28 晚：版本号改用 PROG_SCHEMA_V（原先硬写 v: 2，而当前 schema 已是 v3 ——
-      // v2 在 sync-ids 的语义里等于「判据有误、内容待重算」，继续写 v2 会让未来读它的代码把本机推的内容当旧的）。
-      const myDev = deviceId()
-      for (const k of Object.keys(prog)) {
-        if (prog[k] && typeof prog[k] === 'object') prog[k] = { ...prog[k], _src: { dev: myDev, v: PROG_SCHEMA_V } }
-      }
-      out.push({ _id: settingsDocId('practice_progress'), key: 'practice_progress', value: JSON.stringify(prog) })
-    }
-  } catch (e) {
-    console.warn('[cloud] 收集续练位置失败（不阻断）', e)
-  }
+  const progRow = await collectPracticeProgressRow()
+  if (progRow) out.push(progRow)
   // 2026-09-27：单键体积上限。起因：写 settings 时服务端返回 500 Internal Server Error，
   // 而云端已存在一条 187KB 的文档（小程序旧格式，内含 __progress 逐题进度）⇒ 判断为**请求体过大**
   // 导致网关侧 500（不是权限错误：403 已排除）。这里对超限的键**跳过上传**并打印体积，
