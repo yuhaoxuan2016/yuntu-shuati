@@ -9,7 +9,7 @@
 // 集合清单：硬编码（node-sdk 枚举集合要用 manager SDK，云函数里没有）；新增集合时在此追加。
 const cloudbase = require('@cloudbase/node-sdk')
 const https = require('https')
-const zlib = require('zlib')
+const { buildBackups } = require('./stream.js')
 
 const app = cloudbase.init({ env: cloudbase.SYMBOL_CURRENT_ENV })
 const db = app.database()
@@ -68,7 +68,6 @@ const COLLECTIONS = [
 
 const META_COLL = 'backup_meta'
 const RETAIN_DAYS = 30
-const PAGE = 1000
 
 function firstDoc(res) {
   // ⚠️ node-sdk 的 get() 回执 data 是数组（客户端 SDK 是对象），见 admin-api 同款坑
@@ -77,32 +76,20 @@ function firstDoc(res) {
   return d || null
 }
 
-async function dumpCollection(name) {
+function pageFetcher(name) {
   // 管理端 SDK 直查全量（无 where）：客户端「无条件查询返回空」的地雷只作用于受规则约束的客户端，
   // 云函数是管理端权限，不受此限（admin-server 的 pullAll 同款写法已在线上验证多年）。
   //
-  // 2026-09-25 修复：原实现是 `skip(offset).limit(PAGE)` 的**无过滤深分页**——跳过的行数随页号线性增长
-  //   （整轮接近二次），questions 涨到 5.4 万条后跑不完函数的 120s 超时，被**静默切断**：
-  //   实盘 `backups/2026-09-25/` 只有 8/12 个集合、`backup_meta` 停在 09-24（登记写在主循环之后，
-  //   连失败都没机会上报）。改成 `_id` 游标：`where({_id: gt(last)}) + orderBy('_id','asc')`，
-  //   走主键索引，单页成本与深度无关。等价性实测（同一全集 54,018/54,018、双向零差异）见
-  //   scripts/probe-slowquery-20260925.cjs。
-  //   ⚠️ 备份文件里**行的顺序**由自然顺序变成 `_id` 升序：集合与条目一个不增一个不减，恢复按 _id。
-  const all = []
-  let lastId = null
-  for (let page = 0; ; page++) {
-    // 游标必须单调前进：万一 gt 没生效（返回同一页），这里要炸掉而不是转到内存耗尽
-    if (page > 200) throw new Error(`${name} 分页超过 200 页，游标疑似未推进（lastId=${String(lastId)}）`)
+  // ⚠️ 2026-10-03 起本函数**不再把整集合读进内存**（questions 3.3 万条 × 2.76KB 会把 512MB 容器顶穿），
+  //   改用 stream.js 的流式打包；这里只保留分页取数（_id 游标）。
+  //   历史沿革：2026-09-25 前是 skip/limit 深分页（questions 涨到 5.4 万后跑不完 120s 超时、静默切断），
+  //   09-25 改 _id 游标（走主键索引，单页成本与深度无关），10-03 改流式。
+  //   ⚠️ 备份文件里**行的顺序**＝ `_id` 升序：集合与条目一个不增一个不减，恢复按 _id。
+  return (lastId, limit) => {
     let q = db.collection(name)
     if (lastId !== null) q = q.where({ _id: _.gt(lastId) })
-    const res = await q.orderBy('_id', 'asc').limit(PAGE).get()
-    const rows = (res && res.data) || []
-    if (!rows.length) break
-    all.push(...rows)
-    lastId = rows[rows.length - 1]._id
-    if (rows.length < PAGE) break
+    return q.orderBy('_id', 'asc').limit(limit).get().then((res) => (res && res.data) || [])
   }
-  return all
 }
 
 exports.main = async () => {
@@ -122,22 +109,17 @@ exports.main = async () => {
 
   for (const coll of COLLECTIONS) {
     try {
-      let rows = await dumpCollection(coll)
-      const count = rows.length
-      let rowsJson = JSON.stringify(rows)
-      // 2026-10-03：本函数曾对 rows **两次全量序列化**（先 stringify(rows) 供推送、再
-      // stringify({...rows}) 供上传），questions 3.2 万条时峰值多出整一份全集；在 512MB 容器上
-      // 实盘连续两轮挂在 questions（重部署后 OOM，03:00 旧包能过 = 一直在悬崖边）。改法：
-      // 序列化一次 → 立刻释放对象图 → 包络字符串复用这段 JSON → gzip 直接吃字符串（省一次 Buffer 拷贝）。
-      // ⚠️ 包络字段与格式必须保持与历史一致（date 仍是 Date 序列化后的 ISO 串，不是 day 字符串），
-      //    恢复脚本按原样读。
-      rows = null
-      const buf = Buffer.from(
-        `{"collection":${JSON.stringify(coll)},"date":${JSON.stringify(date)},"count":${count},"rows":` + rowsJson + '}',
-        'utf8'
-      )
+      // 2026-10-03 流式改版：不再整集合进内存。stream.js 两遍走同一分页器——
+      // 第一遍产纯数组 gz（异地推送，格式与历史一致），第二遍产包络 gz（云存储，
+      // 键序 collection→date→count→rows 与历史一致；date 仍是 Date 序列化后的 ISO 串，不是 day 字符串）。
+      // 全程只驻留一页（1000 条）与压缩输出；历史包袱见 pageFetcher 顶部注释。
+      const { count, plainGz, envelopeGz } = await buildBackups({
+        fetchPage: pageFetcher(coll),
+        name: coll,
+        dateIso: date.toISOString(),
+      })
       const cloudPath = `backups/${day}/${coll}.json`
-      const up = await app.uploadFile({ cloudPath, fileContent: buf })
+      const up = await app.uploadFile({ cloudPath, fileContent: envelopeGz })
       fileIDs.push(up && up.fileID ? up.fileID : null)
       summary.push(`${coll}:${count}`)
       // 每集合留一行 RSS：512MB 容器上「哪一步逼近上限」只能靠这个看（2026-10-03 排查 OOM 时加的）
@@ -145,10 +127,8 @@ exports.main = async () => {
       // 异地第二副本：本集合压缩后**单包**推送（gz 后 questions 约 3MB，内存峰值可控）
       if (BACKUP_URL && BACKUP_TOKEN) {
         try {
-          const gz = zlib.gzipSync(rowsJson)
-          rowsJson = null
           const u = new URL(BACKUP_URL)
-          const pr = await postCollection(u.hostname, u.pathname, BACKUP_TOKEN, day, coll, gz)
+          const pr = await postCollection(u.hostname, u.pathname, BACKUP_TOKEN, day, coll, plainGz)
           if (pr.status !== 200) throw new Error('HTTP ' + pr.status + ' ' + pr.body)
           pushSummary.push(`${coll}:OK`)
         } catch (e) {
