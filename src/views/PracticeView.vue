@@ -457,74 +457,78 @@ async function restoreProgress() {
   resetMarked.value = progress._reset ? String(progress._reset) : null
 
   restoring.value = true
-
-  // 恢复练习模式
-  if (progress.mode === 'order' || progress.mode === 'random') {
-    mode.value = progress.mode
-  }
-
-  // 构建 题目id → 当前索引 的映射（题目列表可能已变化）
-  // 2026-09-28：同时建「来源题号(q.src_local_id) → 索引」索引 —— 未完成换算的跨设备进度
-  // （内容里还是源设备题号）也能直接恢复；两种题号都命中不了才算这份进度无效。
-  const idToIndex = new Map(questions.value.map((q, i) => [q.id, i]))
-  const srcToIndex = new Map<number, number>()
-  questions.value.forEach((q: any, i) => {
-    const s = Number(q && q.src_local_id)
-    if (Number.isFinite(s) && s > 0) srcToIndex.set(s, i)
-  })
-  const idxOf = (id: number): number | undefined => idToIndex.get(id) ?? srcToIndex.get(id)
-
-  // 恢复题目顺序
-  if (progress.order_ids && progress.order_ids.length === questions.value.length) {
-    const restoredOrder: number[] = []
-    let valid = true
-    for (const id of progress.order_ids) {
-      const idx = idxOf(id)
-      if (idx === undefined) { valid = false; break }
-      restoredOrder.push(idx)
+  // 2026-10-04：复位挪进 finally —— 恢复途中任何一次抛错都会让 restoring 永久停在 true，
+  // 那会连锁静默关掉「保存 → 推送 → 存档守望」整条链（页面毫无异样、照常答题）。
+  try {
+    // 恢复练习模式
+    if (progress.mode === 'order' || progress.mode === 'random') {
+      mode.value = progress.mode
     }
-    if (valid) {
-      order.value = restoredOrder
+
+    // 构建 题目id → 当前索引 的映射（题目列表可能已变化）
+    // 2026-09-28：同时建「来源题号(q.src_local_id) → 索引」索引 —— 未完成换算的跨设备进度
+    // （内容里还是源设备题号）也能直接恢复；两种题号都命中不了才算这份进度无效。
+    const idToIndex = new Map(questions.value.map((q, i) => [q.id, i]))
+    const srcToIndex = new Map<number, number>()
+    questions.value.forEach((q: any, i) => {
+      const s = Number(q && q.src_local_id)
+      if (Number.isFinite(s) && s > 0) srcToIndex.set(s, i)
+    })
+    const idxOf = (id: number): number | undefined => idToIndex.get(id) ?? srcToIndex.get(id)
+
+    // 恢复题目顺序
+    if (progress.order_ids && progress.order_ids.length === questions.value.length) {
+      const restoredOrder: number[] = []
+      let valid = true
+      for (const id of progress.order_ids) {
+        const idx = idxOf(id)
+        if (idx === undefined) { valid = false; break }
+        restoredOrder.push(idx)
+      }
+      if (valid) {
+        order.value = restoredOrder
+      } else if (mode.value === 'random') {
+        order.value = shuffle(questions.value.map((_, i) => i))
+      }
+      // 顺序模式下 order.value 已是 [0,1,...,n-1]
     } else if (mode.value === 'random') {
       order.value = shuffle(questions.value.map((_, i) => i))
     }
-    // 顺序模式下 order.value 已是 [0,1,...,n-1]
-  } else if (mode.value === 'random') {
-    order.value = shuffle(questions.value.map((_, i) => i))
-  }
 
-  // 恢复当前题号（按题目 id 定位，避免题目列表变化导致错位）
-  const currentOrderIdx = order.value.findIndex(i => {
-    const q: any = questions.value[i]
-    if (!q) return false
-    return q.id === progress.current_id || Number(q.src_local_id) === progress.current_id
-  })
-  current.value = currentOrderIdx >= 0 ? currentOrderIdx : 0
+    // 恢复当前题号（按题目 id 定位，避免题目列表变化导致错位）
+    const currentOrderIdx = order.value.findIndex(i => {
+      const q: any = questions.value[i]
+      if (!q) return false
+      return q.id === progress.current_id || Number(q.src_local_id) === progress.current_id
+    })
+    current.value = currentOrderIdx >= 0 ? currentOrderIdx : 0
 
-  // 恢复各题答题状态
-  if (progress.answer_states) {
-    const map = new Map<number, QuestionState>()
-    for (const [idStr, state] of Object.entries(progress.answer_states)) {
-      const id = Number(idStr)
-      const idx = idxOf(id)
-      if (idx !== undefined) {
-        // 统一按「本机题号」落 map（消费方按 currentQuestion.id 读）
-        const localId = Number((questions.value[idx] as any)?.id)
-        if (Number.isFinite(localId)) map.set(localId, state as QuestionState)
+    // 恢复各题答题状态
+    if (progress.answer_states) {
+      const map = new Map<number, QuestionState>()
+      for (const [idStr, state] of Object.entries(progress.answer_states)) {
+        const id = Number(idStr)
+        const idx = idxOf(id)
+        if (idx !== undefined) {
+          // 统一按「本机题号」落 map（消费方按 currentQuestion.id 读）
+          const localId = Number((questions.value[idx] as any)?.id)
+          if (Number.isFinite(localId)) map.set(localId, state as QuestionState)
+        }
       }
+      answerStates.value = map
     }
-    answerStates.value = map
-  }
 
-  if (progress.finished) {
-    finished.value = true
-  } else if (currentOrderIdx >= 0) {
-    restoredBanner.value = true
-    setTimeout(() => { restoredBanner.value = false }, 5000)
-  }
+    if (progress.finished) {
+      finished.value = true
+    } else if (currentOrderIdx >= 0) {
+      restoredBanner.value = true
+      setTimeout(() => { restoredBanner.value = false }, 5000)
+    }
 
-  await nextTick()
-  restoring.value = false
+    await nextTick()
+  } finally {
+    restoring.value = false
+  }
 }
 
 // 模式切换：重新生成顺序并回到第一题（恢复阶段跳过）
@@ -673,7 +677,10 @@ async function saveProgressInner() {
       }
       await api.setSetting(LAST_PRACTICE_KEY, JSON.stringify(lastPractice))
     } else {
-      // 未订阅的公共库：进度**只写本机**（直写 idb，不触发云推送），也不改首页"继续刷题"指向
+      // 未订阅的公共库：进度直写 idb，且**不改首页"继续刷题"指向**
+      // 2026-10-04 更正：原注释写「不触发云推送」，与代码不符——下面那句轻推是共用的，而进度包是
+      // **整包上传**（collectPracticeProgressRow 收所有 practice_progress_* 键），所以这个库的进度
+      // 也会随下一次轻推上云。行为照旧，只把话说准（要不要改成"真的不推"是产品口径，另议）。
       await idb.setSetting(progressKey.value, body)
     }
     dirtySince.value = 0

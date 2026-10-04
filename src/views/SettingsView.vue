@@ -102,6 +102,12 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.73</span>
+          <ul>
+            <li>修复「连续答题时进度上传不及时」：以前要等你**停手**才会把进度传上去，一直答就一直不传；现在最迟**一分钟**同步一次（本机存档一直都是安全的，只是云端跟得慢）</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.72</span>
           <ul>
             <li>修复「同步失败」的假警报：练习页顶栏此前会常驻「同步失败·点重试」，其实数据一直在正常同步——是判断「写没写成功」时读错了云端返回的字段。现在只有真的没同步上才会报失败；设置页里被误记成「跳过」的设置项也恢复计入「已上传」</li>

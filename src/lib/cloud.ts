@@ -1086,6 +1086,10 @@ const AUTO_PULL_KEY = 'cloud_auto_pull_at'
 const AUTO_PULL_INTERVAL_MS = 10 * 60 * 1000
 const AUTO_PUSH_DEBOUNCE_MS = 8000
 const AUTO_PUSH_MIN_INTERVAL_MS = 30 * 1000   // 轻推最小间隔（防密集作答把大进度包连发）
+// 2026-10-04：**封顶等待**。起因（rabbit 实测）：连答 50 题、云端一次都没更新 —— 那个 8 秒是**尾触发**，
+// 而每次落盘都会把它重置 ⇒ 只要不停手，它永远到不了期（本地照存、云端滞后，芯片还停在旧时间）。
+// 现口径：8 秒没有新动作就推；但**本轮挂满 60 秒必推一次**，连续作答不再无限推迟。
+const AUTO_PUSH_MAX_WAIT_MS = 60 * 1000
 
 /** 纯函数（可离线直测）：自动同步开关口径——显式设置优先；没设过时随绑定态
  *  （与小程序打通后默认开；未打通＝纯网页↔网页，默认关、需手动开启）。rabbit 2026-10-03 口径。 */
@@ -1138,10 +1142,33 @@ export async function maybeAutoSyncOnOpen(): Promise<void> {
 // 答题落盘后调它：防抖 8s 后只推「进度 + 当天统计 + 续练指针」三条设置行——
 // 不走全量推送（2026-08-09 关自动推的起因是全量推送在刷题时卡顿，只推这三条没有这个问题）。
 let progressPushTimer: ReturnType<typeof setTimeout> | null = null
+let progressPushRoundStart = 0   // 本轮首次调度时刻（0＝还没开轮）；封顶等待以它为基准
 let lastLightPushAt = 0
+
+/** 纯函数（可离线直测，见 tests/progress-push-cap.test.cjs）：轻推的调度决策。
+ *  · 'fire'        —— 本轮已挂满 AUTO_PUSH_MAX_WAIT_MS ⇒ 立刻推一次（连续作答不再无限推迟）
+ *  · 'reset-timer' —— 照常规重置 8 秒尾触发计时器
+ *  first＝0 表示本轮还没开始（本次调用即开轮）。 */
+export function decideProgressPushSchedule(now: number, first: number): 'fire' | 'reset-timer' {
+  if (first > 0 && now - first >= AUTO_PUSH_MAX_WAIT_MS) return 'fire'
+  return 'reset-timer'
+}
+
 export function scheduleProgressPush(): void {
+  const nowMs = Date.now()
+  if (!progressPushRoundStart) progressPushRoundStart = nowMs
+  if (decideProgressPushSchedule(nowMs, progressPushRoundStart) === 'fire') {
+    if (progressPushTimer) { clearTimeout(progressPushTimer); progressPushTimer = null }
+    progressPushRoundStart = 0
+    void pushProgressLight()
+    return
+  }
   if (progressPushTimer) clearTimeout(progressPushTimer)
-  progressPushTimer = setTimeout(() => { progressPushTimer = null; void pushProgressLight() }, AUTO_PUSH_DEBOUNCE_MS)
+  progressPushTimer = setTimeout(() => {
+    progressPushTimer = null
+    progressPushRoundStart = 0
+    void pushProgressLight()
+  }, AUTO_PUSH_DEBOUNCE_MS)
 }
 
 // 顶栏「点重试」：显式动作——不等防抖、不受自动开关闸门（用户点了就是要传）。
