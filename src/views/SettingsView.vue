@@ -102,6 +102,12 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.76</span>
+          <ul>
+            <li>找回码支持<b>「🔄 换码」</b>：怀疑码被别人看到/记下时点一下，旧码立即作废、换发新码（记得重新复制或下载保存）。已登录的设备不受影响，只是旧码从此不能再用来登录</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.75</span>
           <ul>
             <li>换设备 / 清缓存再也不怕丢数据：新增<b>「找回码」</b>——开启云同步后自动生成（8 位），点「复制 / 下载」存好；在新设备填这枚码，题库、进度、错题、收藏连「与小程序打通」的状态一起回来。<b>码丢了找不回，请务必先保存</b></li>
@@ -659,6 +665,8 @@
                 <code class="recover-code">{{ recoverCode }}</code>
                 <button class="data-btn slim" @click="copyRecoverCode">复制</button>
                 <button class="data-btn slim" @click="downloadRecoverCode">下载</button>
+                <!-- 2026-10-04：换码（码疑似泄露时用）——旧码立即作废并重发新码；已登录设备不受影响 -->
+                <button class="data-btn slim" title="码疑似泄露时用：旧码立即作废，生成新码（记得重新下载保存）" @click="doRotateRecoverCode">🔄 换码</button>
               </template>
               <span v-else class="hint">{{ recoverCodeHint }}</span>
             </div>
@@ -898,7 +906,7 @@
 <script setup lang="ts">
 // P2-4 的 refreshBoundState 与 cloud.ts 的其余调用一样走**动态 import**（保持 SDK 不进主包），
 // 故此处不静态导入它——静态导入会多出一条 TS6133「已声明未使用」，也会把 cloud.ts 静态拉进本视图 chunk。
-import { redeemBindCode, unbindMiniProgram, isBoundToMiniProgram, ensureRecoverCode, getRecoverCode, isValidRecoverCodeInput, needsRecoverCodePrompt, markRecoverCodePrompted, pushNicknameSetting, recoverByIdentityCode } from '../lib/cloud'
+import { redeemBindCode, unbindMiniProgram, isBoundToMiniProgram, ensureRecoverCode, getRecoverCode, isValidRecoverCodeInput, needsRecoverCodePrompt, markRecoverCodePrompted, pushNicknameSetting, recoverByIdentityCode, rotateRecoverCode } from '../lib/cloud'
 // 2026-09-15（用户裁定「挂上入口」）：意见反馈弹窗自 Initial commit 起就在仓库里却**没有任何调用点**
 // （全仓 grep 零引用），用户永远打不开它；P2-19 已把它的「附加最近 100 行运行日志」修成真的。
 // 现在从设置页「关于本项目」卡片挂一个入口进来。日志缓冲由该组件首次打开时自行安装（复审 MF-1）。
@@ -1094,6 +1102,21 @@ async function copyRecoverCode() {
   } catch {
     toastError('复制失败，请手动选择复制')
   }
+}
+/** 换码：确认 → 服务端吊销全部旧码并重发；成功后刷显示并弹一次「请存好」提示。
+ *  文案只需说清「旧码作废」；「已发登录会话不吊销」是安全边界，写进 confirm 的第二句。 */
+async function doRotateRecoverCode() {
+  const okGo = window.confirm('换码后，旧码立即作废（不能再凭它登录/找回）；已经登录着的设备不受影响。\n换完记得立刻「下载」或「复制」新码存好——码丢了找不回。\n\n确定换码？')
+  if (!okGo) return
+  const r = await rotateRecoverCode()
+  if (!r.ok || !r.code) {
+    toastError('换码失败：' + (r.msg || '未知错误'))
+    return
+  }
+  recoverCode.value = r.code
+  recoverCodeHint.value = ''
+  showCodePrompt.value = true
+  toastSuccess('已换码，旧码已失效')
 }
 function downloadRecoverCode() {
   if (!recoverCode.value) return

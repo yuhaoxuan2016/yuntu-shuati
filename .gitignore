@@ -181,3 +181,6 @@ src-tauri/
 # 09-24：本会话踩到的两类垃圾——credits 插件的读数件、以及 MCP 遥测把 ~ 当相对路径写进仓库
 .qoder-credits/
 ~/
+
+# 2026-10-04：esbuild 构建/断言需重定向 TEMP 的落点（本机 %TEMP% 写入被拒）
+.tmp-esbuild/

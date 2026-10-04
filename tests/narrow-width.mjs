@@ -98,6 +98,17 @@ const evalJs = async (ws, expr) => {
 }
 
 const userDataDir = fs.mkdtempSync(path.join(process.env.TEMP || '/tmp', 'edge-probe-'))
+
+// 先探活再开浏览器：对死掉的服务器导航会挂十几分钟，且所有检查项都变成「找不到元素」的空判
+// （2026-10-04 踩过：dev server 已死，对 1420 空跑 16 分钟，5 项失败被误读成布局回归）。
+try {
+  const r = await fetch(URL_)
+  if (!r.ok) throw new Error('HTTP ' + r.status)
+} catch (e) {
+  console.error(`✗ 目标不可达（${URL_}）：${e?.message || e} —— 先把 dev（1420）或 preview（4173）起起来再跑本探针`)
+  process.exit(2)
+}
+
 const edge = spawn(EDGE, [
   '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
   `--remote-debugging-port=${PORT}`, `--user-data-dir=${userDataDir}`,

@@ -227,6 +227,24 @@ export async function ensureRecoverCode(force = false): Promise<{ ok: boolean; s
   }
 }
 
+/** 换码（rotate）：码疑似泄露时，服务端吊销该身份名下**全部**旧码并重发一枚。
+ *  逐条边界：旧码立即不能再签票；**换码前已签出的登录会话不吊销**（ticket expire 24h，
+ *  所以「泄露期间对方登进来过」的会话最长还能活 24h，换完让自己这端重新登录一次最稳）。 */
+export async function rotateRecoverCode(): Promise<{ ok: boolean; code?: string; revoked?: number; msg?: string }> {
+  if (!(await ensureApp())) return { ok: false, msg: '云环境未连接' }
+  try {
+    const res: any = await app.callFunction({ name: 'bindAccount', data: { action: 'rotateCode' } })
+    const out: any = res?.result ?? res
+    if (!out?.ok) return { ok: false, msg: out?.msg || '换码失败' }
+    const code = String(out.code || '').toUpperCase()
+    if (!/^[A-Z0-9]{8}$/.test(code)) return { ok: false, msg: '返回码形态异常' }
+    try { localStorage.setItem(RECOVER_CODE_KEY, code) } catch { /* ignore */ }
+    return { ok: true, code, revoked: Number(out.revoked || 0) }
+  } catch (e: any) {
+    return { ok: false, msg: e?.message || String(e) }
+  }
+}
+
 /** 凭码找回：切换身份（signOut → ticket 登录），成功后置待拉标记并返回 uid；调用方负责 reload。 */
 export async function recoverByIdentityCode(rawInput: string): Promise<{ ok: boolean; msg?: string; uid?: string }> {
   const code = normalizeRecoverCodeInput(rawInput)
