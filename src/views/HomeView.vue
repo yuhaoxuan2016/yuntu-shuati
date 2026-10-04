@@ -29,15 +29,15 @@
     <!-- 云朵彩蛋欢迎条（触发过彩蛋后显示） -->
     <div v-if="cloudEgg" class="cloud-welcome-bar">☁️ 小兔错题本 已经准备就绪，旅行者请开始今天的练习 ⭐</div>
 
-    <!-- 本机存储提醒（有数据但没配云同步时显示一次；点「知道了」长期不再打扰） -->
+    <!-- 本机存储提醒（有数据但没配云同步时显示；2026-10-04 起改为常驻，「知道了」只收起当天） -->
     <div v-if="showCacheTip" class="local-tip">
       <span class="local-tip-icon">⚠️</span>
       <span class="local-tip-text">
         你的题库与进度只存在<b>本机浏览器</b>：清缓存、换浏览器或换设备都会丢。
-        去设置里配一次<b>云同步</b>并点「上传」，或定期用「导出备份」留一份。
+        去设置里开一次<b>云同步</b>（两分钟），或定期用「导出备份」留一份。
       </span>
       <button class="local-tip-btn" @click="$router.push('/settings')">去设置</button>
-      <button class="local-tip-x" title="知道了，不再提示" @click="dismissCacheTip">知道了</button>
+      <button class="local-tip-x" title="今天先不提示，明天会再提醒" @click="dismissCacheTip">知道了</button>
     </div>
 
     <!-- 访问统计 -->
@@ -57,7 +57,7 @@
       <div class="daily-left">
         <img class="daily-icon" src="/icons/flame.gif" alt="🔥" />
         <div>
-          <div class="daily-title">今天已刷 <b>{{ todayStats.total }}</b> 题</div>
+          <div class="daily-title">{{ myName }}，今天已刷 <b>{{ todayStats.total }}</b> 题</div>
           <div class="daily-sub">正确率 {{ todayStats.accuracy }}% · 连续刷题 <b>{{ streakDays }}</b> 天<template v-if="hasTodayDuration"> · 用时 {{ todayDurationText }}</template></div>
         </div>
       </div>
@@ -380,10 +380,19 @@ const cloudEgg = (() => {
 
 // 2026-09-25（rabbit 开放给团队后要求）：**本机存储提醒**。
 // 网页版的题库/进度/错题/收藏全在本机 IndexedDB —— 清缓存、换浏览器、换设备就没了。
-// 只在「有数据 且 没配过云同步」时提示；点过「知道了」就长期不再打扰（存 localStorage）。
-// 判据直接读 cloudbase_config（避免把 cloud.ts 拉进首页 chunk）：enabled && envId 才算配过。
-const CACHE_TIP_KEY = 'local_cache_tip_dismissed_v1'
+// 只在「有数据 且 没配过云同步」时提示；判据直接读 cloudbase_config（避免把 cloud.ts 拉进首页 chunk）。
+// 2026-10-04（rabbit）：原实现「点过『知道了』永久不再出现」对最该看它的人（一直点掉的人）失效，
+// 改为**常驻**——「知道了」只收起当天，次日再现；换 v2 键让已点掉的老用户重新见到。
+const CACHE_TIP_KEY = 'local_cache_tip_dismissed_v2'
 const showCacheTip = ref(false)
+// 2026-10-04：问候行用名字（纯网名）。同样直接读 localStorage，理由同上（不拉 cloud.ts 进首页 chunk）。
+const myName = (() => {
+  try { return String(localStorage.getItem('sync_nickname') || '兔子') } catch { return '兔子' }
+})()
+function todayStamp(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+}
 function cloudConfigured(): boolean {
   try {
     const raw = localStorage.getItem('cloudbase_config')
@@ -393,12 +402,12 @@ function cloudConfigured(): boolean {
   } catch { return false }
 }
 function updateCacheTip(): void {
-  let dismissed = false
-  try { dismissed = localStorage.getItem(CACHE_TIP_KEY) === '1' } catch { /* 存储被禁：照常提示 */ }
-  showCacheTip.value = !dismissed && bankStore.banks.length > 0 && !cloudConfigured()
+  let dismissedToday = false
+  try { dismissedToday = localStorage.getItem(CACHE_TIP_KEY) === todayStamp() } catch { /* 存储被禁：照常提示 */ }
+  showCacheTip.value = !dismissedToday && bankStore.banks.length > 0 && !cloudConfigured()
 }
 function dismissCacheTip(): void {
-  try { localStorage.setItem(CACHE_TIP_KEY, '1') } catch { /* ignore */ }
+  try { localStorage.setItem(CACHE_TIP_KEY, todayStamp()) } catch { /* ignore */ }
   showCacheTip.value = false
 }
 const newName = ref('')

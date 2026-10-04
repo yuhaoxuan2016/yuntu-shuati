@@ -319,6 +319,9 @@ function startTimer() {
   if (timerId) return
   startTime.value = Date.now()
   const baseSecs = elapsedSecs.value ?? 0
+  // 2026-10-04（rabbit 报：计时器在题目出现后才冒出来，导致题目突然换行、手快易点错）：
+  // 立即落 0（或已存的秒数），让计时 span 在**首帧**就位——此前它等第一次 tick 才挂载，行宽突变。
+  elapsedSecs.value = baseSecs
   timerId = window.setInterval(() => {
     if (startTime.value) {
       elapsedSecs.value = baseSecs + Math.floor((Date.now() - startTime.value) / 1000)
@@ -710,7 +713,7 @@ async function analyze() {
 .stem.no-toolbar { padding-right: 0; }
 .idx { font-weight: bold; margin-right: 8px; }
 .type-tag { background: var(--color-border-light); padding: 2px 8px; border-radius: var(--radius-sm); font-size: 12px; margin-right: 8px; }
-.timer { color: var(--color-text-tertiary); font-size: 12px; margin-right: 8px; font-family: monospace; background: var(--color-border-light); padding: 2px 6px; border-radius: var(--radius-sm); }
+.timer { color: var(--color-text-tertiary); font-size: 12px; margin-right: 8px; font-family: monospace; background: var(--color-border-light); padding: 2px 6px; border-radius: var(--radius-sm); min-width: 46px; text-align: center; box-sizing: border-box; display: inline-block; }
 
 /* 右上角工具栏 */
 .card-toolbar { position: absolute; top: -4px; right: 0; display: flex; gap: 6px; }

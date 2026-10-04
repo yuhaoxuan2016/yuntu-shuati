@@ -39,7 +39,9 @@ const HEIGHT = 844
 // 要体检的元素：选择器 + 断言（中文标点按字换行是合法行为，但**标题这种短标签被折成多行就是布局事故**）
 const CHECKS = NO_HEADER ? [] : [
   { sel: '.section-header h3', name: '「🌍 公共题库」标题', maxLines: 1 },
-  { sel: '.old-toggle', name: '「展开已归档」开关', maxLines: 1 },
+  // 2026-10-04：移除「展开已归档 (.old-toggle)」检查 —— 2026-10-02 起 `listPublicBanks` 已在拉取后
+  // 过滤 `archived === true`（归档库不再进列表），`oldBankCount` 恒为 0、该元素不可能渲染；
+  // 此检查自 10-02 起已失去对象（随名字/找回码批复跑时发现，非该批回归）。
 ]
 // 允许临时加检查项：--check "选择器=最多行数[:说明]"，例如体检练习页的难度徽章
 for (const a of args) {

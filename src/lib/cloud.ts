@@ -177,6 +177,134 @@ function now(): string { return new Date().toISOString() }
 // 归一成毫秒数后再比：数字原样；ISO 串/日期串走 Date.parse；数字字符串（"1789…"）按数字解析；
 // 取不到时间 → 0（视为最早，不能当「最新」）。
 
+// ===== 2026-10-04：找回码（网页版长期身份码）=====
+// 设计全文：内部计划文件《名字找回与丢数据提示-计划-20261004.md》。要点：云函数按平台注入的
+// TCB_UUID 为当前身份登记一枚 8 位固定码（登记表只存 HMAC）；本机把明文码存 localStorage；
+// 换设备/清缓存后凭码签票回到同一身份（含小程序打通态）。⚠️ 码丢了找不回（无后门，UI 明示）。
+const RECOVER_CODE_KEY = 'recover_code'
+const RECOVER_CODE_PROMPTED_KEY = 'recover_code_prompted'
+const RECOVER_PENDING_PULL_KEY = 'recover_pending_pull'
+
+export function getRecoverCode(): string {
+  try { return String(localStorage.getItem(RECOVER_CODE_KEY) || '') } catch { return '' }
+}
+/** 归一化找回码输入：去空白、转大写、剥「兔子_」全名前缀（老用户按旧习惯输全名也能用） */
+export function normalizeRecoverCodeInput(raw: string): string {
+  return String(raw || '').trim().toUpperCase().replace(/^兔子_/, '')
+}
+export function isValidRecoverCodeInput(raw: string): boolean {
+  return /^[A-Z0-9]{8}$/.test(normalizeRecoverCodeInput(raw))
+}
+/** 「首次拿到码」的一次性提示开关（保存/复制界面用；不做永久关闭——提示只出一次本身） */
+export function needsRecoverCodePrompt(): boolean {
+  try { return getRecoverCode() !== '' && localStorage.getItem(RECOVER_CODE_PROMPTED_KEY) !== '1' } catch { return false }
+}
+export function markRecoverCodePrompted(): void {
+  try { localStorage.setItem(RECOVER_CODE_PROMPTED_KEY, '1') } catch { /* ignore */ }
+}
+
+/** 登记（ensure）：本机已有码 → 直接返回（不发请求）；否则调云函数——
+ *  candidate = 老用户自动名 `兔子_XXXXXXXX` 的尾段（尾段转正）；服务端四态：
+ *  issued（新发）/ adopted（候选转正）/ taken（被占，服务端会自动补发 → issued）/ existing（已有登记但本机没码，取不回明文）。 */
+export async function ensureRecoverCode(force = false): Promise<{ ok: boolean; state?: string; code?: string; msg?: string }> {
+  const existing = getRecoverCode()
+  // force：解绑后为新的匿名身份领新码时用（本机还留着旧身份那枚，不能短路）
+  if (existing && !force) return { ok: true, state: 'local', code: existing }
+  if (!(await ensureApp())) return { ok: false, msg: '云环境未连接' }
+  const m = /^兔子_([A-Z0-9]{8})$/.exec(getSyncKey())
+  const candidate = m ? m[1] : ''
+  try {
+    const res: any = await app.callFunction({ name: 'bindAccount', data: { action: 'ensureCode', candidate } })
+    const out: any = res?.result ?? res
+    if (!out?.ok) return { ok: false, msg: out?.msg || '登记失败' }
+    if (out.state === 'existing') return { ok: true, state: 'existing' }
+    const code = String(out.code || '').toUpperCase()
+    if (!/^[A-Z0-9]{8}$/.test(code)) return { ok: false, msg: '返回码形态异常' }
+    try { localStorage.setItem(RECOVER_CODE_KEY, code) } catch { /* ignore */ }
+    return { ok: true, state: out.state, code }
+  } catch (e: any) {
+    return { ok: false, msg: e?.message || String(e) }
+  }
+}
+
+/** 凭码找回：切换身份（signOut → ticket 登录），成功后置待拉标记并返回 uid；调用方负责 reload。 */
+export async function recoverByIdentityCode(rawInput: string): Promise<{ ok: boolean; msg?: string; uid?: string }> {
+  const code = normalizeRecoverCodeInput(rawInput)
+  if (!/^[A-Z0-9]{8}$/.test(code)) return { ok: false, msg: '找回码应为 8 位字母数字' }
+  if (!(await ensureApp())) return { ok: false, msg: '云环境未连接，请先在设置中开启云同步' }
+  let ticket = ''
+  try {
+    const res: any = await app.callFunction({ name: 'bindAccount', data: { action: 'recoverByCode', code } })
+    const out: any = res?.result ?? res
+    if (!out?.ok) return { ok: false, msg: out?.msg || '码无效' }
+    ticket = out.ticket
+    if (!ticket) return { ok: false, msg: '未获取到登录凭证' }
+    try { await auth.signOut() } catch { /* 匿名态可能无法登出 */ }
+    await auth.signInWithTicket(ticket)
+    const uid = await resolveLoginUid()
+    if (!uid) {
+      authedUid = null
+      cloudState.authed = false
+      return { ok: false, msg: '登录态获取失败（已退出原登录态，请刷新页面后重试）' }
+    }
+    authedUid = uid
+    cloudState.authed = true
+    // 用过的码存回本机：用户刚证明了自己持有它，没理由让人再抄一遍（也顺手完成「老用户迁移」的登记显示）。
+    try { localStorage.setItem(RECOVER_CODE_KEY, code) } catch { /* ignore */ }
+    // 本机多为新设备/空数据：标记「启动后强制拉一次」（不吃自动同步开关与节流）
+    try { localStorage.setItem(RECOVER_PENDING_PULL_KEY, '1') } catch { /* ignore */ }
+    return { ok: true, uid }
+  } catch (e: any) {
+    const msg = e?.message || String(e)
+    // P1-15 同类兜底：部分 SDK 版本没有 signInWithTicket，改走 customAuthProvider
+    if (ticket && /signInWithTicket is not a function/i.test(msg)) {
+      try {
+        await auth.customAuthProvider().signIn(ticket)
+        const uid = await resolveLoginUid()
+        if (uid) {
+          authedUid = uid
+          cloudState.authed = true
+          try { localStorage.setItem(RECOVER_CODE_KEY, code) } catch { /* ignore */ }
+          try { localStorage.setItem(RECOVER_PENDING_PULL_KEY, '1') } catch { /* ignore */ }
+          return { ok: true, uid }
+        }
+      } catch { /* 落到下方失败复位 */ }
+    }
+    authedUid = null
+    cloudState.authed = false
+    return { ok: false, msg: '找回失败：' + msg }
+  }
+}
+
+/** 启动时消费「找回后待拉」标记：强制拉一次（失败静默，只记日志）。 */
+export async function consumeRecoverPendingPull(): Promise<void> {
+  let pending = false
+  try { pending = localStorage.getItem(RECOVER_PENDING_PULL_KEY) === '1' } catch { return }
+  if (!pending) return
+  try { localStorage.removeItem(RECOVER_PENDING_PULL_KEY) } catch { /* ignore */ }
+  // 顺手推进自动拉的节流时间戳：刚强制拉过，本轮不必再重复拉
+  try { localStorage.setItem(AUTO_PULL_KEY, String(Date.now())) } catch { /* ignore */ }
+  try {
+    if (!isCloudEnabled()) return
+    if (!(await ensureApp())) return
+    await syncFromCloud()
+  } catch (e) {
+    console.warn('[cloud] 找回后自动拉取失败（静默）', e)
+  }
+}
+
+/** 昵称变更后立即推一行设置行（best-effort；失败静默——下轮全量推送会再带） */
+export async function pushNicknameSetting(): Promise<void> {
+  try {
+    if (!isCloudEnabled()) return
+    if (!(await ensureApp())) return
+    if (!isAuthed()) return
+    await pushDoc('settings', { _id: settingsDocId('nickname'), key: 'nickname', value: getSyncKey() })
+  } catch (e) {
+    console.warn('[cloud] 昵称推送失败（静默）', e)
+  }
+}
+
 // ===== 集合级操作 =====
 
 // 同步昵称（跨设备身份）：设置页可自定义，默认随机生成；存 localStorage
@@ -190,26 +318,16 @@ export const SYNC_KEY_MIN_LEN = 6
 export const SYNC_KEY_MAX_LEN = 32
 // 允许：中文、字母、数字、下划线、连字符（云端查询按字符串精确匹配，不含通配/引号等字符）
 const SYNC_KEY_ALLOWED = /^[\u4e00-\u9fa5A-Za-z0-9_-]+$/
-// 弱昵称：全数字、全同一字符（如 "111111"、"aaaaaa"）——这类昵称最容易被别人猜到/撞上
-const SYNC_KEY_WEAK = /^[0-9]+$|^(.)\1+$/
 
-// 随机 base36 串，长度**保证**为 len。原写法 `Math.random().toString(36).slice(2, 6)` 有个隐形坑：
-// Math.random() 取值较小时 base36 串本身很短（如 0.5 → "0.i"），slice(2,6) 只会拿到 1 个字符，
-// 即「4 位随机」有时只有 1~3 位。这里循环补齐，长度确定。
-function randomBase36(len: number): string {
-  let s = ''
-  while (s.length < len) s += Math.random().toString(36).slice(2)
-  return s.slice(0, len).toUpperCase()
-}
-
+// 2026-10-04：昵称与「找回码」拆分后，名字只是**纯网名**（随便改、可重名、不承担身份）——
+// 默认值从「兔子_<8位随机>」改回朴素的「兔子」。随机尾段的历史使命（当身份标识）已结束，
+// 仅老用户迁移时作为找回码候选（见 ensureRecoverCode）。
 export function getSyncKey(): string {
   try {
     const v = localStorage.getItem(SYNC_KEY_CFG)
     if (v) return v
   } catch { /* ignore */ }
-  // (a) 随机部分 4 位 → 8 位：36^4 ≈ 1.7e6 撞名组合，36^8 ≈ 2.8e12（约 160 万倍），
-  //     默认昵称被他人猜中/撞上从而互相覆盖云端数据的概率大幅下降。
-  const gen = '兔子_' + randomBase36(8)
+  const gen = '兔子'
   try { localStorage.setItem(SYNC_KEY_CFG, gen) } catch { /* ignore */ }
   return gen
 }
@@ -220,15 +338,12 @@ export interface SyncKeyCheck { ok: boolean; msg?: string; warn?: string }
 // 必须仍能读回自己的数据，否则等于把老用户锁在数据外面。
 export function checkSyncKey(name: string): SyncKeyCheck {
   const v = String(name ?? '').trim()
-  if (!v) return { ok: false, msg: '同步昵称不能为空' }
-  if (v.length < SYNC_KEY_MIN_LEN) {
-    return { ok: false, msg: `同步昵称至少 ${SYNC_KEY_MIN_LEN} 个字符：太短的昵称容易被别人撞上，撞名会互相覆盖云端数据` }
-  }
-  if (v.length > SYNC_KEY_MAX_LEN) return { ok: false, msg: `同步昵称最长 ${SYNC_KEY_MAX_LEN} 个字符` }
-  if (!SYNC_KEY_ALLOWED.test(v)) return { ok: false, msg: '同步昵称只能用中文、字母、数字、下划线或连字符' }
-  if (SYNC_KEY_WEAK.test(v) || v.length < 8) {
-    return { ok: true, warn: '昵称同时是跨设备身份标识，太短或太好猜容易被他人撞名并互相覆盖数据，建议 8 位以上、字母数字混合' }
-  }
+  // 2026-10-04：昵称与找回码拆分后，昵称是**纯网名**——不承担跨设备身份、撞名无害 ⇒ 只做
+  // 「非空 + 长度 + 字符集」三项底线校验；旧的「最短 6 位 / 弱昵称」警告整体退役（那把尺子
+  // 量的是钥匙，而钥匙现在是 8 位找回码）。读取侧一如既往**不校验**（老值属历史数据）。
+  if (!v) return { ok: false, msg: '名字不能为空' }
+  if (v.length > SYNC_KEY_MAX_LEN) return { ok: false, msg: `名字最长 ${SYNC_KEY_MAX_LEN} 个字符` }
+  if (!SYNC_KEY_ALLOWED.test(v)) return { ok: false, msg: '名字只能用中文、字母、数字、下划线或连字符' }
   return { ok: true }
 }
 
@@ -1486,6 +1601,17 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
       // P1-11：ai_base_url / ai_base_url_ack 同理 —— 端点与「自定义端点确认」都只能由本机决定；
       // 旧版本可能已在云端留下 ai_base_url 文档，这里一律不落地，避免静默改写端点。
       if (doc.key === 'ai_api_key' || doc.key === 'ai_base_url' || doc.key === 'ai_base_url_ack') return 'skipped'
+      // 2026-10-04：昵称（纯网名）跨端拉取——直接采用云端值（后写者胜；双向同步是「先推后拉」，
+      // 本机刚改的名字先推上去、再拉回来值相同，不会自打）。读取侧不做校验，只做长度形态兜底。
+      if (doc.key === 'nickname') {
+        try {
+          const incoming = String(doc.value || '').trim()
+          if (incoming && incoming !== getSyncKey() && incoming.length <= SYNC_KEY_MAX_LEN) {
+            localStorage.setItem(SYNC_KEY_CFG, incoming)
+          }
+        } catch (e) { console.warn('[cloud] 昵称落地失败（不阻断）', e) }
+        return 'skipped'
+      }
       // 2026-10-03：last_practice 拉取守卫——只吃「比本机更新」的指针。自动拉取常态化后，
       // 一台较旧的设备把旧指针推上来，会把本机较新的「继续刷题」指针顶回去。
       if (doc.key === 'last_practice') {
@@ -1812,6 +1938,9 @@ async function listAllSettings(): Promise<any[]> {
     }
     out.push({ _id: settingsDocId(k), key: k, value: v })
   }
+  // 2026-10-04：昵称（纯网名）随设置行上云——小程序「我的」显示它、两端双向（后写者胜）。
+  // 值直接取本机 localStorage（昵称不存 idb），体积 ≤32 字符，无需体积守卫。
+  out.push({ _id: settingsDocId('nickname'), key: 'nickname', value: getSyncKey() })
   return out
 }
 
@@ -2001,9 +2130,11 @@ export async function redeemBindCode(code: string): Promise<{ ok: boolean; msg?:
   let ticket = ''
   try {
     // 1) 调云函数换 ticket
+    // 2026-10-04：顺带带上本机找回码（carryCode）——服务端只在「调用者恰为该码登记主人」时，
+    // 把登记 uid 复指到打通后的共用身份；空值/不符都静默跳过，不影响绑定本身。
     const res: any = await app.callFunction({
       name: 'bindAccount',
-      data: { action: 'redeemCode', code: clean },
+      data: { action: 'redeemCode', code: clean, carryCode: getRecoverCode() },
     })
     // 两种形态都吃：函数返回顶层带 `code` 时，js-sdk 会把 payload 平铺到响应本身而不再包 `result`
     // （8 例差分见 `cloud-parse.ts` 同处注释）。bindAccount 当前这条 `redeemCode` 分支不带 `code`，

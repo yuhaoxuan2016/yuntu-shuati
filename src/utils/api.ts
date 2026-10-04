@@ -420,7 +420,9 @@ export const api = {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `小兔错题本备份_${new Date().toISOString().slice(0, 10)}.json`
+    // 2026-10-04：文件名带名字（网名）——多设备/多份备份一眼分得清是谁的；名字先剔文件系统非法字符。
+    const who = (() => { try { return String(localStorage.getItem('sync_nickname') || '').replace(/[\\/:*?"<>|\s]/g, '') } catch { return '' } })()
+    a.download = `小兔错题本备份_${who ? who + '_' : ''}${new Date().toISOString().slice(0, 10)}.json`
     a.click()
     URL.revokeObjectURL(url)
     return '已下载备份文件'

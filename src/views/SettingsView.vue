@@ -102,6 +102,14 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.75</span>
+          <ul>
+            <li>换设备 / 清缓存再也不怕丢数据：新增<b>「找回码」</b>——开启云同步后自动生成（8 位），点「复制 / 下载」存好；在新设备填这枚码，题库、进度、错题、收藏连「与小程序打通」的状态一起回来。<b>码丢了找不回，请务必先保存</b></li>
+            <li>「同步昵称」拆为<b>「名字」</b>（纯网名：随便改、可重名，别填真实姓名）与<b>「找回码」</b>；首页未开云同步的提醒改为常驻（「知道了」只收起当天）；首页问候带上你的名字；备份文件名带上名字</li>
+            <li>小程序端同步跟上：可设置名字、「我的」页显示名字；未打通也能手动开启自动同步；数据保护提醒更醒目</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.74</span>
           <ul>
             <li>修复进度被「空进度」顶掉：一端刚打开某个题库时生成的空进度，会把另一端已经答过的进度（含逐题对错）压成 0 —— 现在这类空进度**不许覆盖有实质作答的进度**；你自己点「清除本题库进度」这种**有意清空**照常生效</li>
@@ -639,8 +647,29 @@
             <input v-model="cloudEnvId" :placeholder="DEFAULT_CLOUD_ENV_ID || '请输入环境 ID'" class="dir-input" />
           </div>
           <div class="cloud-row">
-            <label>同步昵称</label>
-            <input v-model="syncNickname" @blur="saveSyncNickname" placeholder="换设备填同一昵称可同步私人进度/错题/收藏" class="dir-input" />
+            <label>名字</label>
+            <input v-model="syncNickname" @blur="saveSyncNickname" maxlength="32" placeholder="随便起、可重名（只是网名）" class="dir-input" />
+          </div>
+          <!-- 2026-10-04：找回码 —— 换设备 / 清浏览器数据后凭它回到同一身份（含小程序打通态）。
+               8 位、服务端登记（只存 HMAC）；码丢了找不回，所以复制 / 下载两个出口都给。 -->
+          <div class="cloud-row">
+            <label>我的找回码</label>
+            <div class="recover-code-box">
+              <template v-if="recoverCode">
+                <code class="recover-code">{{ recoverCode }}</code>
+                <button class="data-btn slim" @click="copyRecoverCode">复制</button>
+                <button class="data-btn slim" @click="downloadRecoverCode">下载</button>
+              </template>
+              <span v-else class="hint">{{ recoverCodeHint }}</span>
+            </div>
+          </div>
+          <div v-if="showCodePrompt" class="code-prompt">
+            <p><b>这是你的找回码，请先存好</b>（复制 / 下载都行）——换设备、清了浏览器数据时，就靠它把全部数据找回来。<b>码丢了找不回</b>。</p>
+            <div class="code-prompt-actions">
+              <button class="data-btn" @click="copyRecoverCode">复制</button>
+              <button class="data-btn" @click="downloadRecoverCode">下载</button>
+              <button class="data-btn" @click="showCodePrompt = false">我存好了</button>
+            </div>
           </div>
           <!-- 2026-10-03：自动同步开关（默认开）——打开页面自动拉取；做题后自动回传进度 -->
           <div class="cloud-row">
@@ -663,22 +692,22 @@
             <button class="data-btn" :disabled="!cloudSaved || cloudSyncing" @click="doRestoreFromCloud">🛟 以云端为准恢复进度</button>
             <button class="data-btn" :disabled="!cloudSaved || cloudSyncing" @click="doSync">{{ syncAction === 'both' ? '🔁 同步中...' : '🔁 双向同步' }}</button>
           </div>
-          <p class="hint cloud-tip">① 昵称默认随机生成，可改成好记的；换设备填<b>同一昵称</b>即可拉回私人进度。② <b>上传</b>＝把本机改动推到云端（题库、错题、收藏、进度）；<b>下载</b>＝把云端的拉回本机（按修改时间合并，不覆盖本机较新的数据）；拿不准就点<b>双向同步</b>。③ 本机<b>删掉</b>的题库/题目，上传时云端也会删掉；之后下载不会再把它拉回来（云端那份若属于旧身份、客户端无权删，就只在本机拦住，不再下载）。④ ⚠️ 这个昵称<b>等同于你的跨设备身份</b>（云端按它区分数据归属）：<b>请勿使用真实姓名、手机号等个人信息</b>；也不要用太短或太好猜的昵称——别人用了同名昵称就会与你的云端数据互相覆盖。</p>
+          <p class="hint cloud-tip">① 名字只是<b>网名</b>：随便改、可重名，<b>别填真实姓名等个人信息</b>；找回数据靠上方的<b>找回码</b>。② <b>上传</b>＝本机 → 云端；<b>下载</b>＝云端 → 本机（按修改时间合并，不覆盖本机较新的数据）；拿不准就点<b>双向同步</b>。③ 本机<b>删掉</b>的题库/题目，上传时云端也会删掉；之后下载不会再把它拉回来。④ 换设备 / 清了浏览器数据：在新的设备上填<b>找回码</b>即可回到同一身份（含与小程序打通的状态）。</p>
           <p v-if="syncNicknameMsg" class="hint warn">{{ syncNicknameMsg }}</p>
           <p v-if="cloudStatusText" class="hint" :class="{ warn: cloudError }">{{ cloudStatusText }}</p>
 
-          <!-- 与小程序打通（自定义登录，替代匿名身份） -->
+          <!-- 跨设备找回 / 与小程序打通（2026-10-04：同一输入框吃 8 位找回码与小程序 6/16 位码） -->
           <div class="bind-box">
-            <div class="bind-title">🔗 与小程序打通{{ bound ? '（已绑定）' : '' }}</div>
+            <div class="bind-title">🔗 跨设备找回 · 与小程序打通{{ bound ? '（已绑定）' : '' }}</div>
             <p class="hint">
-              网页版默认匿名身份，换浏览器或清缓存会丢数据。在小程序「我的 → 与网页版打通」生成
-              <b>6 位临时码</b>（10 分钟内有效）或 <b>16 位长期身份码</b>（长期可重复使用，适合以后换设备）填在这里，
-              两端即共用同一账号，错题与进度自动互通。
+              <b>找回</b>：换设备 / 清了数据时，填你的 <b>8 位找回码</b>，数据与「已打通」状态一起回来。
+              <b>打通</b>：在小程序「我的 → 与网页版打通」生成 <b>6 位临时码</b>（10 分钟内有效）或 <b>16 位长期身份码</b>，
+              填在这里两端即共用同一账号，错题与进度自动互通。
             </p>
             <div v-if="!bound" class="bind-row">
-              <input v-model="bindCodeInput" class="bind-input" placeholder="6 位临时码 / 16 位长期码" maxlength="16" @input="bindCodeInput = bindCodeInput.toUpperCase()" />
-              <button class="data-btn" :disabled="binding || (bindCodeInput.trim().length !== 6 && bindCodeInput.trim().length !== 16)" @click="doBind">
-                {{ binding ? '绑定中...' : '绑定' }}
+              <input v-model="bindCodeInput" class="bind-input" placeholder="找回码 8 位 / 绑定码 6 或 16 位" maxlength="16" @input="bindCodeInput = bindCodeInput.toUpperCase()" />
+              <button class="data-btn" :disabled="binding || !canSubmitCode" @click="doBind">
+                {{ binding ? '处理中...' : '找回 / 绑定' }}
               </button>
             </div>
             <div v-else class="bind-row">
@@ -701,9 +730,9 @@
           <li><b>备份</b>：点「💾 立即备份」→ 浏览器会下载一个 <code>小兔错题本备份_日期.json</code> 文件 → 把它保存到网盘 / 电脑 / 微信传输助手等安全位置（重要数据建议定期备份）</li>
           <li><b>恢复</b>：点「📥 导入恢复」→ 选择之前保存的 .json 备份 → 数据会<b>覆盖式</b>恢复（替换当前全部数据：题库、题目、进度、错题、收藏、设置）</li>
           <li><b>换设备迁移</b>：在新设备的浏览器打开小兔错题本 → 设置页点「导入恢复」选备份文件 → 题库、进度、错题、收藏等全部数据完整迁移（比云同步更全；出于安全，AI 密钥与自定义接口地址不写入备份、也不会被备份文件覆盖）</li>
-          <!-- 2026-09-25（rabbit 开放给团队后要求）：本机存储提醒。网页版数据全在浏览器里，
-               清缓存就没了；团队共用时「昵称＝云端身份」，各人必须用自己的昵称，别共用。 -->
-          <li>⚠️ <b>数据只在本机浏览器里</b>：清缓存、换浏览器、换电脑都会丢。给自己起个<b>同步昵称</b>并定期点一次「上传」最省事；<b>团队共用时每人用自己的昵称</b>（它就是云端身份，多人共用会互相覆盖数据）</li>
+          <!-- 2026-09-25（rabbit 开放给团队后要求）：本机存储提醒。网页版数据全在浏览器里，清缓存就没了。
+               2026-10-04：口径随「名字/找回码」拆分更新——兜底靠云同步＋找回码（名字不再承担身份）。 -->
+          <li>⚠️ <b>数据默认只在本机浏览器里</b>：清缓存、换浏览器、换电脑都会丢。开<b>云同步</b>并把<b>找回码</b>存好就稳了；也可以用这份备份文件兜底</li>
           <li>⚠️ 备份文件包含你的题库与学习数据，<b>不要发给别人</b>；恢复前建议先备份当前数据，避免被旧备份覆盖</li>
         </ol>
       </details>
@@ -869,14 +898,14 @@
 <script setup lang="ts">
 // P2-4 的 refreshBoundState 与 cloud.ts 的其余调用一样走**动态 import**（保持 SDK 不进主包），
 // 故此处不静态导入它——静态导入会多出一条 TS6133「已声明未使用」，也会把 cloud.ts 静态拉进本视图 chunk。
-import { redeemBindCode, unbindMiniProgram, isBoundToMiniProgram } from '../lib/cloud'
+import { redeemBindCode, unbindMiniProgram, isBoundToMiniProgram, ensureRecoverCode, getRecoverCode, isValidRecoverCodeInput, needsRecoverCodePrompt, markRecoverCodePrompted, pushNicknameSetting, recoverByIdentityCode } from '../lib/cloud'
 // 2026-09-15（用户裁定「挂上入口」）：意见反馈弹窗自 Initial commit 起就在仓库里却**没有任何调用点**
 // （全仓 grep 零引用），用户永远打不开它；P2-19 已把它的「附加最近 100 行运行日志」修成真的。
 // 现在从设置页「关于本项目」卡片挂一个入口进来。日志缓冲由该组件首次打开时自行安装（复审 MF-1）。
 import FeedbackDialog from '../components/FeedbackDialog.vue'
 import OnboardingTour from '../components/OnboardingTour.vue'
 import { isTrustedAiHost } from '../lib/ai'
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { api } from '../utils/api'
 import { toastSuccess, toastError, toast } from '../utils/toast'
 import { updateAppearanceCache } from '../lib/theme'
@@ -949,20 +978,36 @@ const bindMsg = ref('')
 const bindError = ref(false)
 
 async function doBind() {
-  const code = bindCodeInput.value.trim().toUpperCase()
-  // 2026-09-27：放开为 6（临时码）或 16（长期码）。原先只认 6 ⇒ 16 位长期码既让按钮变灰、
-  // 又在这里被静默丢弃，表现为「点绑定完全没反应、也不给任何提示」（rabbit 实测报障）。
-  // 现在长度不符时给出明确文案，不再静默 return。
-  if (code.length !== 6 && code.length !== 16) {
+  const raw = bindCodeInput.value.trim().toUpperCase()
+  // 2026-10-04：同一个输入框吃两类——8 位（可带「兔子_」前缀）＝找回码；6 / 16 位＝小程序绑定码。
+  const isRecover = isValidRecoverCodeInput(raw)
+  if (!isRecover && raw.length !== 6 && raw.length !== 16) {
     bindError.value = true
-    bindMsg.value = '绑定码应为 6 位临时码或 16 位长期身份码'
+    bindMsg.value = '填 8 位找回码，或小程序生成的 6 / 16 位绑定码'
     return
+  }
+  if (isRecover) {
+    if (!confirm('将切换到该找回码对应的账号，并把云端数据拉回本机（本机现有数据会合并保留）。继续？')) return
   }
   binding.value = true
   bindMsg.value = ''
   bindError.value = false
   try {
-    const r = await redeemBindCode(code)
+    if (isRecover) {
+      const r = await recoverByIdentityCode(raw)
+      if (r.ok) {
+        bindCodeInput.value = ''
+        bindMsg.value = '找回成功！正在刷新并自动拉取数据…'
+        toastSuccess('已找回账号')
+        setTimeout(() => location.reload(), 900)
+      } else {
+        bindError.value = true
+        bindMsg.value = r.msg || '找回失败'
+        toastError(r.msg || '找回失败')
+      }
+      return
+    }
+    const r = await redeemBindCode(raw)
     if (r.ok) {
       bound.value = true
       bindCodeInput.value = ''
@@ -979,7 +1024,7 @@ async function doBind() {
     }
   } catch (e: any) {
     bindError.value = true
-    bindMsg.value = '绑定失败：' + (e?.message || String(e))
+    bindMsg.value = '失败：' + (e?.message || String(e))
   } finally {
     binding.value = false
   }
@@ -993,26 +1038,78 @@ async function doUnbind() {
     bindMsg.value = '已解除绑定，刷新页面后使用匿名身份'
     bindError.value = false
     toastSuccess('已解除绑定')
+    // 2026-10-04：解绑后当前是新的匿名身份，为它领一枚新找回码（旧码仍指向小程序身份，留着「回去」的路）
+    void refreshRecoverCode(true, true)
   } else {
     toastError('解除失败')
   }
 }
 
-// 同步昵称（跨设备身份）：默认随机生成，可自定义
-// P1-12（T10b，2026-09-15）：setSyncKey 现在做写入侧校验并返回结果（旧实现返回 void，任何输入都静默写入，
-// 包括空串→随机重生成、超短/怪字符昵称→静默接受）。这里按结果如实提示，弱昵称给「碰撞风险」提示但不阻拦。
+// 名字（网名）：2026-10-04 与找回码拆分后只做底线校验（非空/长度/字符集），可重名。
 const syncNicknameMsg = ref('')
 function saveSyncNickname() {
   try {
     import('../lib/cloud').then(m => {
       const r = m.setSyncKey(syncNickname.value.trim())
-      syncNickname.value = r.key  // 校验失败时回显当前实际生效的昵称（未被改动）
-      syncNicknameMsg.value = r.ok ? (r.warn || '') : (r.msg || '同步昵称无效')
-      if (r.ok) toastSuccess('同步昵称已保存')
-      else toastError(r.msg || '同步昵称无效')
+      syncNickname.value = r.key  // 校验失败时回显当前实际生效的名字（未被改动）
+      syncNicknameMsg.value = r.ok ? '' : (r.msg || '名字无效')
+      if (r.ok) {
+        toastSuccess('名字已保存')
+        void pushNicknameSetting()   // 顺手推给云端（best-effort，失败静默）
+      } else {
+        toastError(r.msg || '名字无效')
+      }
     })
   } catch { /* ignore */ }
 }
+
+// ===== 2026-10-04：找回码 =====
+// 有云配置时自动登记（老用户「兔子_XXXXXXXX」的尾段由服务端自动转正）；码存本机，可复制/下载。
+// 码丢了找不回——所以「首次拿到码」弹一次保存提示（不做永久关闭；提示本身只出一次）。
+const recoverCode = ref(getRecoverCode())
+const recoverCodeHint = ref('连接云同步后自动生成')
+const showCodePrompt = ref(false)
+async function refreshRecoverCode(announce = false, force = false) {
+  try {
+    const r = await ensureRecoverCode(force)
+    if (r.ok && r.code) {
+      recoverCode.value = r.code
+      recoverCodeHint.value = ''
+      if (needsRecoverCodePrompt()) { showCodePrompt.value = true; markRecoverCodePrompted() }
+      if (announce && r.state === 'issued') toastSuccess('已生成你的找回码')
+      if (announce && r.state === 'adopted') toastSuccess('已把旧名字里的尾段转正为找回码')
+    } else if (r.ok && r.state === 'existing') {
+      recoverCode.value = ''
+      recoverCodeHint.value = '本机未存码：请用你此前保存过的那枚码在新设备找回'
+    } else if (announce && r.msg) {
+      toastError('找回码登记失败：' + r.msg)
+    }
+  } catch { /* 静默：不阻断设置页 */ }
+}
+async function copyRecoverCode() {
+  if (!recoverCode.value) return
+  try {
+    await navigator.clipboard.writeText(recoverCode.value)
+    toastSuccess('已复制找回码')
+  } catch {
+    toastError('复制失败，请手动选择复制')
+  }
+}
+function downloadRecoverCode() {
+  if (!recoverCode.value) return
+  const who = (syncNickname.value || '兔子').replace(/[\\/:*?"<>|\s]/g, '')
+  const text = `小兔错题本 · 我的找回码\n\n名字：${syncNickname.value}\n找回码：${recoverCode.value}\n\n用途：换设备或清除了浏览器数据后，在新的设备上填这枚码即可找回全部数据（题库、进度、错题、收藏，含与小程序打通的状态）。\n请妥善保存、不要发给他人；码丢了无法找回。\n导出日期：${new Date().toISOString().slice(0, 10)}\n`
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `小兔错题本找回码_${who}.txt`
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+const canSubmitCode = computed(() => {
+  const raw = bindCodeInput.value.trim().toUpperCase()
+  return isValidRecoverCodeInput(raw) || raw.length === 6 || raw.length === 16
+})
 
 function formatSize(b: number): string {
   if (b < 1024) return `${b} B`
@@ -1043,10 +1140,16 @@ onMounted(async () => {
     currentVersion.value = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev'
     // 读取云同步配置
     loadCloudConfig()
-    // 读取同步昵称
+    // 读取名字（网名）
     try {
       const m = await import('../lib/cloud')
       syncNickname.value = m.getSyncKey()
+    } catch { /* ignore */ }
+    // 2026-10-04：有云配置则自动登记找回码（老用户尾段自动转正；失败静默、不阻断设置页）
+    try {
+      const cfgRaw = localStorage.getItem('cloudbase_config')
+      const cfg = cfgRaw ? JSON.parse(cfgRaw) : null
+      if (cfg && cfg.enabled && cfg.envId) void refreshRecoverCode(false)
     } catch { /* ignore */ }
     // P2-4（T10b）：用真实登录态校正「与小程序打通」的绑定显示——
     // 只读 localStorage 标记时，换浏览器（标记没了）或会话已换回匿名（标记还在）都会显示错。
@@ -1143,6 +1246,7 @@ async function saveCloudConfig() {
     if (st.authed && !st.error) {
       cloudStatusText.value = `✓ 已连接云端 · 推送 ${res.pushed} 条 · 拉取 ${res.pulled} 条${truncTip}${skipTip}${ledgerTip}`
       toastSuccess('云同步配置已保存')
+      void refreshRecoverCode(true)   // 2026-10-04：连接成功顺手登记找回码，首次拿到会弹保存提示
     } else {
       cloudStatusText.value = st.error || '未连接云端'
       toastSuccess('云同步配置已保存')
@@ -1767,6 +1871,13 @@ input, select { padding: 6px; border: 1px solid var(--color-border); border-radi
 .bind-input { flex: 0 0 140px; padding: 8px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); font-size: 18px; letter-spacing: 3px; text-align: center; font-family: monospace; background: var(--color-card); color: var(--color-text); }
 .bind-ok { font-size: 14px; color: var(--color-success, #16a34a); font-weight: 500; }
 .cloud-tip { margin-top: 8px; line-height: 1.6; color: var(--color-info-strong); }
+/* 2026-10-04：找回码展示与首次保存提示（视觉对齐 bind-box 口径） */
+.recover-code-box { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.recover-code { font-family: monospace; font-size: 18px; letter-spacing: 3px; font-weight: 700; padding: 6px 10px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-card); color: var(--color-text); }
+.data-btn.slim { padding: 6px 10px; font-size: 13px; }
+.code-prompt { margin-top: 10px; padding: 12px 14px; border: 1px dashed var(--color-warning, #d48806); border-radius: var(--radius-md); background: var(--color-card); }
+.code-prompt p { margin: 0 0 8px; font-size: 13px; line-height: 1.6; color: var(--color-text); }
+.code-prompt-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .hint.warn { color: var(--color-danger); }
 .hint.warn { color: var(--color-warning); }
 .hint.success { color: var(--color-success); }

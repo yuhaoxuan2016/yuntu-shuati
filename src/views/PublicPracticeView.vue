@@ -73,7 +73,7 @@
       <!-- 09-24 rabbit 口径：公共练习「保存进度」但**不进错题本/统计**。
            所以只写本机 localStorage，且明说清楚——不然用户以为它在统计里记着。 -->
       <div v-if="restoredAt" class="prog-tip">
-        已恢复上次进度（{{ current + 1 }}/{{ order.length }}）· 只记在本机浏览器，不进错题本与统计
+        已恢复上次进度（{{ current + 1 }}/{{ order.length }}）· 进度会随云同步备份，不进错题本与统计
       </div>
 
       <!-- 题目卡片 -->

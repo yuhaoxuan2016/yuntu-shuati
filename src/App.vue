@@ -213,9 +213,13 @@ onMounted(() => {
 
 // 2026-10-03：启动后静默拉一次云端（≥10 分钟节流、可在设置里关）——
 // 「单位手机练 / 另一台电脑练 → 回家开这台电脑直接继续」。
+// 2026-10-04：先消费「找回后待拉」标记（强制拉、不吃节流）——凭码找回刷新后本机是空的。
 onMounted(() => {
   window.setTimeout(() => {
-    import('./lib/cloud').then(m => m.maybeAutoSyncOnOpen()).catch(() => {})
+    import('./lib/cloud').then(async m => {
+      await m.consumeRecoverPendingPull()
+      await m.maybeAutoSyncOnOpen()
+    }).catch(() => {})
   }, 4000)
 })
 

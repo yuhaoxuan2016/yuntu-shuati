@@ -133,7 +133,9 @@ async function PAGE_FLOW (fixtureText) {
       b.click(); await sleep(900)
     }
     let s0 = await read('恢复后')
-    check(s0.current_id === ids[795] && s0.nStates === 795, `恢复位：current=${s0.current_id} states=${s0.nStates}`)
+    // 2026-10-04：计时器改「首帧即落 0」（防题目出现后突然换行）⇒ 当前题在加载瞬间就会物化一条
+    // 状态；恢复后 nStates = 795（快照早于计时器物化）或 796（已物化当前题）都属预期。
+    check(s0.current_id === ids[795] && (s0.nStates === 795 || s0.nStates === 796), `恢复位：current=${s0.current_id} states=${s0.nStates}`)
     let prev = s0
     const stepCheck = (snap, msg) => {
       check(snap && snap.nStates === prev.nStates + 1 && snap.saved_at !== prev.saved_at, msg + `（${prev.nStates}→${snap && snap.nStates}，${prev.saved_at}→${snap && snap.saved_at}）`)
