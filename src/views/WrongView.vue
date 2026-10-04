@@ -47,6 +47,12 @@
             {{ type.label }} ({{ type.count }})
           </button>
         </div>
+        <!-- 2026-10-03：顽固筛选——用户要能定位「错得多的题」 -->
+        <div class="filter-tags stubborn-row">
+          <button :class="{ active: stubbornOnly }" @click="stubbornOnly = !stubbornOnly">
+            {{ stubbornOnly ? '✓ 只看顽固 · 再点取消' : '🔥 只看顽固（' + stubbornCount + '）' }}
+          </button>
+        </div>
       </div>
 
       <!-- 错题统计 -->
@@ -85,7 +91,7 @@
         <button class="master-btn" @click="markMastered(current.id)">标记已掌握</button>
       </div>
 
-      <div v-else-if="!wrongIds.length" class="empty">暂无错题，继续加油！</div>
+      <div v-else-if="!filteredWrongIds.length" class="empty">{{ emptyText }}</div>
 
       <!-- 错题列表 -->
       <ul v-else class="wrong-list">
@@ -151,6 +157,7 @@ import { toastError, toastSuccess, toastInfo } from '../utils/toast'
 import QuestionCard from '../components/QuestionCard.vue'
 import { classifyQuestionType } from '../lib/exam'
 import { groupRecords, loadQuestionsByBank, type BankGroup } from '../lib/records-aggregate'
+import { sortByWrongCountDesc, STUBBORN_MIN } from '../lib/wrong-order'
 
 const route = useRoute()
 // 2026-09-27 订阅模式：路由参数可能是本地库数字 id，也可能是公共题库 bankRef（字符串 _id）。
@@ -181,6 +188,9 @@ const current = ref<Question | null>(null)
 const tab = ref<'pending' | 'mastered'>('pending')
 const practiceMode = ref<'pending' | 'mastered'>('pending')  // 当前练习队列来源：待重练 / 已掌握重练
 const selectedType = ref<string>('all')  // 选中的题型筛选
+// 2026-10-03：只看顽固（错 STUBBORN_MIN 次以上）——让「错得最多的题」可直接定位
+const stubbornOnly = ref(false)
+const stubbornCount = computed(() => wrongIds.value.filter(id => (totalWrongMap.value.get(id) || 0) >= STUBBORN_MIN).length)
 
 // 计算题型分类
 // 2026-08-22 修复：此前用 q.type 判断——云端判断题存 type:'single' + ["正确","错误"]（历史格式），
@@ -218,15 +228,26 @@ const questionTypes = computed(() => {
   return types
 })
 
-// 筛选后的错题ID
+// 筛选后的错题ID：题型筛选 → 顽固筛选 → 按错次降序（同次数保持原序）
 const filteredWrongIds = computed(() => {
-  if (selectedType.value === 'all') {
-    return wrongIds.value
+  let ids = wrongIds.value
+  if (selectedType.value !== 'all') {
+    ids = ids.filter(id => {
+      const q = allQuestions.value.find(q => q.id === id)
+      return q && classifyQuestionType(q) === selectedType.value
+    })
   }
-  return wrongIds.value.filter(id => {
-    const q = allQuestions.value.find(q => q.id === id)
-    return q && classifyQuestionType(q) === selectedType.value
-  })
+  if (stubbornOnly.value) {
+    ids = ids.filter(id => (totalWrongMap.value.get(id) || 0) >= STUBBORN_MIN)
+  }
+  return sortByWrongCountDesc(ids, id => totalWrongMap.value.get(id) || 0)
+})
+
+// 筛选把列表清空时的提示要区分「本来就没错题」和「筛没了」
+const emptyText = computed(() => {
+  if (!wrongIds.value.length) return '暂无错题，继续加油！'
+  if (stubbornOnly.value) return `没有错 ${STUBBORN_MIN} 次以上的题`
+  return '当前筛选下没有题目'
 })
 
 // 掌握率
@@ -278,7 +299,9 @@ async function loadGlobal() {
     const keys = [...new Set([...wrongRecs, ...masteredRecs].map((r: any) => String(r.bank_id ?? '')).filter(Boolean))]
     // 订阅库的题在云端：按库取、限并发、单库失败只让那一组降级
     const qby = await loadQuestionsByBank(keys, (k) => api.listQuestions(resolveBankId(k)))
+    // 2026-10-03：聚合视图的待重练组内也按错次降序（与单库一致；已掌握组保持原序）
     groups.value = groupRecords(wrongRecs as any[], banks, qby)
+      .map(g => ({ ...g, items: sortByWrongCountDesc(g.items, it => it.totalWrong) }))
     masteredGroups.value = groupRecords(masteredRecs as any[], banks, qby)
   } catch (e) {
     toastError('加载错题失败：' + (e instanceof Error ? e.message : String(e)))
@@ -508,6 +531,8 @@ function getQuestionPreview(id: number): string {
 .filter-tags button { padding: 6px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-card); color: var(--color-text-secondary); font-size: 13px; cursor: pointer; transition: all 0.15s; }
 .filter-tags button:hover { border-color: var(--color-primary); color: var(--color-primary); }
 .filter-tags button.active { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
+/* 2026-10-03：只看顽固（按钮样式复用 .filter-tags button） */
+.stubborn-row { margin-top: 8px; }
 
 /* 错题统计 */
 .wrong-stats { display: flex; gap: 24px; margin-bottom: 20px; padding: 16px; background: var(--color-card); border: 1px solid var(--color-border-light); border-radius: var(--radius-lg); }

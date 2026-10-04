@@ -102,6 +102,12 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.71</span>
+          <ul>
+            <li>错题本更直观：列表按「做错次数」从多到少排列，错得最多的题自动排最前；新增「只看顽固」筛选，一点只显示错 3 次以上的题（手机端同步跟上：错 1 次也显示次数、已掌握页补「曾错 N 次」、顶部「顽固题」可点筛选）</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.70</span>
           <ul>
             <li>首页「今天已刷 N 题」加上练习时长（时:分:秒，按每题实际用时累加）；统计页新增「按天明细」逐日列出时长、题数与正确率，热力图悬停也能看到当天用时</li>
