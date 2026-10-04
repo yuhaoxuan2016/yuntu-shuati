@@ -584,7 +584,9 @@ async function dropLegacyDocId(collection: CloudCollection, legacyId: string): P
     const where: any = { _id: legacyId, _openid: authedUid }
     if (collection === 'quiz_banks' || collection === 'questions') where.visibility = db.command.neq('public')
     const res: any = await withTimeout(db.collection(collection).where(where).remove(), 20000, '清理旧形状行')
-    if (Number((res && res.stats && res.stats.removed) || 0) > 0) console.info(`[cloud] 已清旧形状行 ${legacyId}`)
+    // 2026-10-04：同 pushDoc 的判据修正 —— js-sdk 3.7.1 的 `where().remove()` 回执是 `{requestId, deleted}`，
+    // 没有 `stats.removed`；原写法读不到 ⇒ 这条日志从未打印过（删除本身照常执行，只是「静默」）。
+    if (Number((res && (res.deleted ?? (res.stats && res.stats.removed))) || 0) > 0) console.info(`[cloud] 已清旧形状行 ${legacyId}`)
   } catch (e: any) {
     console.warn(`[cloud] 清理旧形状行失败（不影响本次同步）${legacyId}：`, e?.message || e)
   }
@@ -648,7 +650,17 @@ async function pushDoc(collection: CloudCollection, doc: any): Promise<boolean> 
       const where: any = { _id: id, _openid: authedUid }
       if (NEED_VIS) where.visibility = db.command.neq('public')
       const updRes: any = await withTimeout(coll.where(where).update({ ...body, updated_at: now() }), 20000, '更新')
-      const updated = Number((updRes && updRes.stats && (updRes.stats.updated ?? updRes.stats.modified)) ?? 0)
+      // 2026-10-04：判据读错了字段 —— `@cloudbase/js-sdk` 3.7.1 的 `where().update()` 回执把命中数放在
+      // **顶层**（`{requestId, updated, upsertId}`，见 dist/index.cjs.js 的 `updated:e.data.updated`），
+      // **没有 `stats`**。原判据只读 `stats.updated` ⇒ 每一次**真实写入成功**都被判成「影响 0 行」。
+      // 实测（线上面板复现）：PATCH 返回 200、云端 updated_at 确实前进，界面仍报失败 —— 轻推 ok=0
+      // ⇒ 练习页常驻「同步失败·点重试」；全量推送则把 settings 行计成「跳过」。
+      // 保留 stats 分支：小程序端（wx 形态）与将来 SDK 版本可能仍是 `stats.updated/modified`。
+      const updated = Number(
+        (updRes?.stats && (updRes.stats.updated ?? updRes.stats.modified))
+        ?? (updRes?.updated ?? updRes?.upsertedId)
+        ?? 0,
+      )
       if (!updated) {
         console.warn(`[cloud] 更新 ${collection} 影响 0 行（_id=${id}）—— 行不存在或属主不匹配（authedUid=${String(authedUid).slice(0, 16)}）`)
         return false
