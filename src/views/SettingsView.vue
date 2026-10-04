@@ -102,6 +102,12 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.74</span>
+          <ul>
+            <li>修复进度被「空进度」顶掉：一端刚打开某个题库时生成的空进度，会把另一端已经答过的进度（含逐题对错）压成 0 —— 现在这类空进度**不许覆盖有实质作答的进度**；你自己点「清除本题库进度」这种**有意清空**照常生效</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.73</span>
           <ul>
             <li>修复「连续答题时进度上传不及时」：以前要等你**停手**才会把进度传上去，一直答就一直不传；现在最迟**一分钟**同步一次（本机存档一直都是安全的，只是云端跟得慢）</li>

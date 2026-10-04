@@ -57,6 +57,20 @@ export function submittedCount (prog: any): number {
 /** 「云端有实质进度」的判定下限（已提交答题数）。 */
 export const SUBSTANTIAL_MIN = 5
 
+/** **形状无关**的答题计数（只给「空档 vs 实质进度」这两条守卫用）。
+ *  为什么不能直接用 submittedCount：它只数 `submitted === true`，而**小程序经桥写进来的**条目形状是
+ *  `{picked, correct}`（没有 `submitted`）⇒ 会被数成 0、把实质进度误判成空档。
+ *  口径：answer_states 里「非空对象」的条数（空档是 `{}` ⇒ 0；答过的两条形状都 ≥1）。 */
+export function answeredCountLoose (prog: any): number {
+  const m = prog && prog.answer_states
+  if (!m || typeof m !== 'object') return 0
+  let n = 0
+  for (const v of Object.values(m)) {
+    if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v as any).length > 0) n++
+  }
+  return n
+}
+
 /** 进度内容与「本机已知题号」（题 id ∪ 源题号）的命中率（0~1）。
  *  无 order_ids 时返回 1（无据可判，不作无效处理）。用于「本机进度与题库对不上」的保护判定。 */
 export function orderHitRate (prog: any, knownIds: Set<number>): number {
@@ -96,6 +110,12 @@ export function mergeProgressForLocal(
   // 例外：本机带 `_reset` 标记（用户在练习页点过「重新开始」）⇒ 空是**故意的**，交常规取新规则。
   const substantial = submittedCount(cloudProg) >= SUBSTANTIAL_MIN && submittedCount(localProg) <= 1
     && !(localProg && localProg._reset)
+  // 2026-10-04（反向守卫，与上面那条对称）：云端**近乎空**、本机有**实质进度**，且云端那份**没有 `_reset`**
+  // ⇒ 不许云端顶掉本机。起因（rabbit 实测当晚 20:28）：小程序清空后新建的「0 答但时间戳更新」条目把
+  // 网页端 51 题压成 0，随后网页端一拉，本机也跟着归零。`_reset` 保留「有意清空」这条路。
+  const refuseEmptyCloud = answeredCountLoose(localProg) >= SUBSTANTIAL_MIN && answeredCountLoose(cloudProg) <= 1
+    && !(cloudProg && cloudProg._reset)
+  if (refuseEmptyCloud) return { write: false, value: null }
   const take = substantial || ct > lt || (ct === lt && !localIsMine)
   if (!take) return { write: false, value: null }
   // passthrough = 订阅库/公共库：进度里的题号是**云端稳定 id**（两端一致），跨端无需映射、也不能
@@ -126,6 +146,10 @@ export function mergeProgressMapForCloud(
     const lv = l[bid]
     if (!cv) { out[bid] = lv; continue }
     const guarded = submittedCount(cv) >= SUBSTANTIAL_MIN && submittedCount(lv) <= 1 && !(lv && lv._reset)
+    // 2026-10-04（反向守卫，与 mergeProgressForLocal 那条对称）：本机有实质进度、云端近乎空且无 `_reset`
+    // ⇒ 保留本机、不上传这个「空档」，否则一推就把云端（与其它设备）的实质进度抹掉。见那边注释的实测经过。
+    const refuseEmptyCloud = answeredCountLoose(lv) >= SUBSTANTIAL_MIN && answeredCountLoose(cv) <= 1 && !(cv && cv._reset)
+    if (refuseEmptyCloud) { out[bid] = lv; continue }
     if (guarded || progTs(lv) < progTs(cv)) { out[bid] = cv; tookCloud++ } else { out[bid] = lv }
   }
   return { map: out, tookCloud }

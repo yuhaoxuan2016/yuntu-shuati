@@ -1,7 +1,7 @@
 // 断言 sync-ids.ts 的纯函数（Node 24 直跑 TS：`node tests/sync-ids.test.ts`）
 // 覆盖：来源索引 / 单号映射 / 进度重映射 / 合并决策（他机·本机·自愈·库缺失）/ 设备指纹持久
 import {
-  buildSrcLocalIndex, mapSrcToLocal, remapProgress, mergeProgressForLocal, mergeProgressMapForCloud, getOrCreateDeviceId, orderHitRate, submittedCount,
+  buildSrcLocalIndex, mapSrcToLocal, remapProgress, mergeProgressForLocal, mergeProgressMapForCloud, getOrCreateDeviceId, orderHitRate, submittedCount, answeredCountLoose,
 } from '../src/lib/sync-ids.ts'
 
 let pass = 0, fail = 0
@@ -135,6 +135,38 @@ eq('坏输入不炸（null / 数组 / 字符串）', [
   Object.keys(mergeProgressMapForCloud([] as any, { k: 1 }).map).length,
   Object.keys(mergeProgressMapForCloud({ k: 1 }, 'x' as any).map).length,
 ], [0, 1, 1])
+
+// ── 反向守卫（2026-10-04）：**云端近乎空 + 本机有实质 + 云端无 `_reset` ⇒ 不许顶掉本机**
+//    实测经过：rabbit 在网页端答到 51 题的库，被小程序侧「刚打开该库生成、0 答但时间戳更新」的条目
+//    压成 0；随后网页端一拉，本机也跟着归零。守卫与 `_reset`（有意清空）成对。
+const bigStates = (n: number) => Object.fromEntries(
+  Array.from({ length: n }, (_, i) => [String(200 + i), { submitted: true, isCorrect: true }]))
+const localBig = JSON.stringify({ mode: 'order', order_ids: [101, 102], current_id: 101, answer_states: bigStates(20), saved_at: '2026-10-04T11:40:00Z', _src: { dev: ME, v: 3 } })
+const cloudEmptyNewer = { mode: 'order', order_ids: [5, 6], current_id: 5, answer_states: {}, saved_at: '2026-10-04T12:28:00Z' }
+eq('反向守卫（拉）：云端空档 + 本机 20 题 → 不落地，保住本机',
+  mergeProgressForLocal(cloudEmptyNewer, localBig, ME, idx).write, false)
+eq('反向守卫（拉）：云端空但带 _reset（对方有意清空）→ 放行',
+  mergeProgressForLocal({ ...cloudEmptyNewer, _reset: '2026-10-04T12:28:00Z' }, localBig, ME, idx).write, true)
+
+const localMapBig = { k: { answer_states: bigStates(20), saved_at: '2026-10-04T11:40:00Z' } }
+const cloudMapEmptyNewer = { k: { answer_states: {}, saved_at: '2026-10-04T12:28:00Z' } }
+eq('反向守卫（推）：云端空档不许盖掉本机实质',
+  mergeProgressMapForCloud(cloudMapEmptyNewer, localMapBig).map.k.saved_at, '2026-10-04T11:40:00Z')
+eq('反向守卫（推）：云端带 _reset 则放行',
+  mergeProgressMapForCloud({ k: { ...cloudMapEmptyNewer.k, _reset: 'x' } }, localMapBig).map.k.saved_at, '2026-10-04T12:28:00Z')
+
+// 形状无关计数：**小程序经桥写进来的**条目形状是 `{picked, correct}`（没有 `submitted`）——
+// 用只认 `submitted` 的旧计数会把它们数成 0、把实质进度误判成空档（这条守卫必须形状无关）。
+eq('answeredCountLoose：两种形状都数、空档/垃圾为 0', [
+  answeredCountLoose({ answer_states: { a: { submitted: true }, b: { picked: [1], correct: true }, c: {}, d: null } }),
+  answeredCountLoose({ answer_states: {} }),
+  answeredCountLoose(null),
+], [2, 0, 0])
+eq('反向对照：submittedCount 对桥形状数 0（＝必须换计数的理由）',
+  submittedCount({ answer_states: { a: { picked: [1], correct: true } } }), 0)
+const localMapBridgeShape = { k: { answer_states: Object.fromEntries(Array.from({ length: 20 }, (_, i) => [String(i), { picked: [0], correct: true }])), saved_at: '2026-10-04T11:40:00Z' } }
+eq('反向守卫：本机是桥形状（picked/correct）也认得出实质',
+  mergeProgressMapForCloud(cloudMapEmptyNewer, localMapBridgeShape).map.k.saved_at, '2026-10-04T11:40:00Z')
 
 // ── 设备指纹
 const mem: Record<string, string> = {}
