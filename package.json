@@ -1,13 +1,15 @@
 {
   "name": "shuati-bao-pwa",
   "private": true,
-  "version": "1.2.81",
+  "version": "1.2.82",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "type-check": "vue-tsc --noEmit",
+    "check-parity": "node tests/cross-end-parity.test.cjs",
+    "check-parity-all": "node tests/cross-end-parity.test.cjs && node tests/theme-parity.test.cjs && node tests/cross-end-type-parity.test.cjs",
     "deploy": "node scripts/deploy-server.mjs",
     "deploy:calc": "node scripts/deploy-server.mjs --calc"
   },

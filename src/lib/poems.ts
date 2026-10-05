@@ -1,6 +1,7 @@
 // 首页「每日一诗」数据源（公共领域古典诗词，均为前代名家作品，无版权问题）
 // 主题筛选：专注「劝学 / 惜时 / 坚韧 / 进取 / 悟理」，呼应「激励做题与学习」
 // 用法：import { poemOfTheDay, todayLabel } from '../lib/poems'
+// 本文件两端**逐字节相同**（改一端必须同步另一端），同 duration.ts 的约定。
 export interface Poem {
   title: string
   author: string

@@ -1,6 +1,7 @@
 // 题目解析器：从 Rust structure.rs 移植的核心正则逻辑
 // 支持：单选题/多选题/判断题/填空题/问答题 + 章节/小节 + 答案区 + 解析
 // 修复：BUG-001 判断题被误判为填空（RE_BLANK 优先级过高 + 判断答案未归一化）
+// 本文件两端**逐字节相同**（改一端必须同步另一端），同 duration.ts 的约定。
 
 export type QType = 'single' | 'multi' | 'judge' | 'blank' | 'qa'
 

@@ -81,7 +81,14 @@ export function classifyQuestionType(q: { type?: string | null; options?: string
   // 判断题：选项恰为「正确/错误」类二元组（P1-5 剥字母前缀 + 原值双查，见 isJudgeWord），或答案本身是判断词
   if (opts && opts.length === 2 && opts.every(o => isJudgeWord(o, JUDGE_WORDS))) return 'judge'
   const ans = String(q.answer ?? '').trim()
-  if (JUDGE_WORDS.has(ans)) return 'judge'
+  // 2026-10-05 对齐小程序端 quiz.ts:100-102 的**选项数门禁**：仅当「选项恰 2 个」或「一个选项都没有」
+  // 时才认答案里的判断词。原实现裸判 `JUDGE_WORDS.has(ans)`，于是「只有 1 个选项 + 答案是判断词」
+  // 这类畸形数据被判成判断题——界面只渲染 √/× 而真实选项丢失，无法作答（小程序端 P1-2 修过的同一个坑）。
+  // 0 个选项必须保留为 judge：此时页面本来就只有 √/× 一行可渲染（练习/考试页的 v-if="isJudge"），
+  // 归为 single 则该题连一个可点的选项都没有。`opts === null`（options 不是合法 JSON 数组）
+  // 与小程序端 optionsOf 返回 `[]` 等价，同走 0 选项分支。两端口径自此一致。
+  const optCount = opts ? opts.length : 0
+  if ((optCount === 2 || optCount === 0) && JUDGE_WORDS.has(ans)) return 'judge'
   const t = String(q.type ?? '').toLowerCase()
   if (t.includes('multi') || t === '多选') return 'multi'
   // 2026-09-14 修复(P1-4)：声明类型的判断必须**先于**兜底启发式。原顺序下填空题答案只要
@@ -689,6 +696,18 @@ export async function createExam(
   return { exam, shortfalls }
 }
 
+// 时间字段归一：把 ISO 串 / 毫秒数 / 其它可解析值统一成毫秒数，取不到给 0。
+// 2026-10-05：`created_at` 两端写入形态不同——网页版写 `new Date().toISOString()`（ISO 串）、
+// 小程序写 `Date.now()`（毫秒数）。云端 `orderBy` 遇到同一字段混存两种类型时**先按类型分组再排**，
+// 时间序因此被打乱（`quiz_banks` 实测 ISO 19 + 数字 33 + null 1 ⇒ 首页「公共题库」的
+// 「最新在前」当时就是错的）。故**不依赖云端排序**：统一按本函数归一后在本地排。
+// 与小程序端 `yuntu-mp/src/lib/cloud.ts` 的 `createdAtMs` 同口径（那边也是这个理由）。
+function createdAtMs(v: any): number {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0
+  const t = new Date(String(v ?? '')).getTime()
+  return Number.isFinite(t) ? t : 0
+}
+
 // T18-2d（2026-09-16）：考试流程的服务端闸门。
 // 为什么需要它：题目与答案同存于 `exams.questions[]`，而 exams 必须对 public 可读 ⇒ 任何考生都能在
 // 控制台直查拿到全部答案（生产实测）。CloudBase 规则是文档级的、无法只放行文档内某些字段，所以
@@ -739,12 +758,18 @@ export async function listExams(): Promise<Exam[]> {
     if (uid) {
       // 注意：uid 为 null 时 where({_openid:null}) 会返回 undefined data（实测），必须跳过
       try {
+        // 2026-10-05：去掉了 `.orderBy('created_at','desc')`。理由见 createdAtMs 上方注释
+        // （同一字段两端混存 ISO 串/毫秒数 ⇒ 云端先按类型分组、时间序错乱）。
+        // 改成「取全后在本地按归一后的时间倒序」——不再依赖云端排序语义。
+        // ⚠️ 必须同时把 limit 提到位的量级以上：orderBy+limit 是「先排后取」，
+        //    改成「先取后排」后若仍截断，排的就只是子集。实盘 17 场，2000 是充足余量。
         const mine = await cloudDb.collection('exams')
           .where({ _openid: uid })
-          .orderBy('created_at', 'desc')
-          .limit(500)
+          .limit(2000)
           .get()
-        const rows = Array.isArray(mine.data) ? mine.data : []
+        const rows = (Array.isArray(mine.data) ? mine.data : [])
+          .slice()
+          .sort((a: any, b: any) => createdAtMs(b.created_at) - createdAtMs(a.created_at))
         for (const r of rows) {
           const k = String(r._id ?? r.id)
           if (!seen.has(k)) { seen.add(k); all.push(r) }
@@ -851,8 +876,7 @@ export async function listPublicBanks(): Promise<any[]> {
     try {
       const res = await withTimeout<any>(cloudDb.collection('quiz_banks')
         .where({ visibility: 'public' })
-        .orderBy('created_at', 'desc')
-        .limit(100)
+        .limit(500)
         .get(), 15000, '读取公共题库')
       // 归档库（archived===true）从列表撤下——与 exams 归档同语义（数据保留、只是不占列表位）。
       // 2026-10-02：此前题库的 archived 标记**只写不读**，7 个已归档的旧库仍明晃晃挂在
@@ -860,7 +884,16 @@ export async function listPublicBanks(): Promise<any[]> {
       // 放在拉取后过滤而不是塞进 where：ACL 读规则是 `visibility=="public" || _openid==auth.openid`，
       // where 必须是它的**子集**，加 archived 条件虽合法但两端 SDK 的 neq 语义要各自验证；
       // 数据量只有十几个库，本地过滤零成本且不会因查询形状被拒。
-      const banks = (res.data || []).filter((b: any) => b?.archived !== true)
+      //
+      // 2026-10-05：去掉了 `.orderBy('created_at','desc')`——`quiz_banks` 的 created_at 实测
+      // 混存 ISO 19 + 毫秒数 33 + null 1，云端 orderBy 先按类型分组再排 ⇒ 这里此前**一直是错序的**
+      // （不是潜在风险，是活的缺陷；null 还会被挤到某一端）。改成取全后本地按 createdAtMs 归一倒序。
+      // limit 从 100 提到 500（实盘 53 个库）：orderBy+limit 是「先排后取」，改「先取后排」后
+      // 若仍截断，排的就只是子集。
+      const banks = (res.data || [])
+        .slice()
+        .sort((a: any, b: any) => createdAtMs(b.created_at) - createdAtMs(a.created_at))
+        .filter((b: any) => b?.archived !== true)
       // 加载优化档1（2026-09-23）：题库文档已有 question_count 就直接用，缺失的才回退 count 查询。
       // 实测原来每次进首页都会为 12 个库各发一次 count（12 次请求）；新库灌入时已写入该字段。
       await Promise.all(banks.map(async (b: any) => {
