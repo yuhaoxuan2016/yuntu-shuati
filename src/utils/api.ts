@@ -187,6 +187,19 @@ export const api = {
     return n
   },
   async updateQuestion(q: Question): Promise<void> {
+    // 2026-10-05（订阅库只读护栏）：`bank_id` 是字符串 ⇒ 这是订阅/公共库的题（bankRef 作身份，
+    //   题目在云端在线读、本地无行），**拒绝落库**。两道理由：
+    //   ① 落库是纯污染：写出的行 bank_id 是 bankRef 字符串，而 listAllQuestions 只遍历本地库
+    //      （idb.listBanks 的数字 id）⇒ 这行永远读不到、推不上云，改动实际丢失；
+    //   ② 会覆盖本地题：订阅题的 id 是云端 `_local_id`，而 questions store 的 keyPath 就是 id，
+    //      put 按 key 写 —— 旧包公共题 `_local_id` 落在 1~4746，与本地自增 id 同域，直接顶掉同号题
+    //      （题干连同归属一起丢，即 2026-08-16 writeLocal 已修、编辑路径未修的那类事故）。
+    //   入口侧已按 hideEdit 隐藏 ✎，这里是底层兜底：将来任何新路径把订阅题喂进来也不会写坏数据。
+    //   注：只在**明确是字符串**时拦（无 bank_id 的对象不拦，避免误伤非题库题目的调用方）。
+    if (typeof (q as any)?.bank_id === 'string') {
+      console.warn(`[api] 拒绝写入订阅库题目（bank_id=${String((q as any).bank_id)}）——公共题只读，改动无处安放`)
+      throw new Error('公共题库的题目不可编辑')
+    }
     // 2026-08-21：本地改动 → 清 synced_at（云同步增量标记），下次推送自动补推
     const { synced_at, ...rest } = q as any
     await idb.updateQuestion(rest)
