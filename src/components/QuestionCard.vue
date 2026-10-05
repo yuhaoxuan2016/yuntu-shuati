@@ -311,28 +311,49 @@ const selfEvalDone = ref(saved?.selfEvalDone ?? false)
 const judgeSelected = ref<boolean | null>(saved?.judgeSelected ?? null)
 
 // 单题计时（spec §5.2）
-const startTime = ref<number | null>(null)
+// 2026-10-05：只累计**页面可见**的时间——切标签页/切后台即冻结，回来续算。
+// 原实现取 `now - 开始时刻` 的墙钟差，后台那段照样计入 ⇒ 切出去接个电话回来，
+// 时长会跳一大截并影响 calculateAutoQuality（与小程序端 timing.ts 同一口径）。
+// 不做持久化：后台被系统回收则重新挂载，计时从 0 重记（rabbit 2026-10-05 定）。
 const elapsedSecs = ref<number | null>(saved?.elapsedSecs ?? null)
+let baseSecs = saved?.elapsedSecs ?? 0   // 已存秒数（返回上一题时不为 0）
+let accumulatedMs = 0                    // 已结算的可见时长
+let segStart = 0                         // 当前可见片段起点；0 = 不可见
 let timerId: number | null = null
 
+function visibleMs(): number {
+  return accumulatedMs + (segStart ? Date.now() - segStart : 0)
+}
 function startTimer() {
   if (timerId) return
-  startTime.value = Date.now()
-  const baseSecs = elapsedSecs.value ?? 0
   // 2026-10-04（rabbit 报：计时器在题目出现后才冒出来，导致题目突然换行、手快易点错）：
   // 立即落 0（或已存的秒数），让计时 span 在**首帧**就位——此前它等第一次 tick 才挂载，行宽突变。
   elapsedSecs.value = baseSecs
+  segStart = Date.now()
   timerId = window.setInterval(() => {
-    if (startTime.value) {
-      elapsedSecs.value = baseSecs + Math.floor((Date.now() - startTime.value) / 1000)
-    }
+    elapsedSecs.value = baseSecs + Math.floor(visibleMs() / 1000)
   }, 1000)
+}
+function pauseTimer() {
+  if (!segStart) return
+  accumulatedMs += Date.now() - segStart
+  segStart = 0
+}
+function resumeTimer() {
+  if (segStart) return
+  segStart = Date.now()
 }
 function stopTimer() {
   if (timerId) {
     window.clearInterval(timerId)
     timerId = null
   }
+  pauseTimer()   // 结算尾段，避免最后不足 1 秒的可见时间丢掉
+}
+function onVisibilityChange() {
+  if (!timerId) return   // 已提交（计时已停）的题不因切回前台而重新走动
+  if (document.visibilityState === 'hidden') pauseTimer()
+  else resumeTimer()
 }
 function formatTime(secs: number): string {
   const m = Math.floor(secs / 60)
@@ -343,8 +364,12 @@ function formatTime(secs: number): string {
 onMounted(() => {
   // 已提交的题不重启计时
   if (!submitted.value) startTimer()
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
-onBeforeUnmount(() => stopTimer())
+onBeforeUnmount(() => {
+  stopTimer()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+})
 
 // AI 解析相关
 const analyzing = ref(false)
@@ -527,7 +552,8 @@ function toRawIndex(displayIdx: number): number {
 }
 function getDurationMs(): number | null {
   if (elapsedSecs.value === null) return null
-  return elapsedSecs.value * 1000
+  // 2026-10-05：结算尾段后再取值——提交时刻到上一次 tick 之间的可见时间不该丢。
+  return Math.round((baseSecs * 1000 + visibleMs()))
 }
 function answerJudge(val: boolean) {
   judgeSelected.value = val

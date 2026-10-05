@@ -102,6 +102,12 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.77</span>
+          <ul>
+            <li>答题计时更准：切到别的页面、把窗口放到后台时，计时会自动暂停；切回来接着算。切题、跳着做题也一样——每道题各算各的，走开多久都不影响</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.76</span>
           <ul>
             <li>找回码支持<b>「🔄 换码」</b>：怀疑码被别人看到/记下时点一下，旧码立即作废、换发新码（记得重新复制或下载保存）。已登录的设备不受影响，只是旧码从此不能再用来登录</li>
