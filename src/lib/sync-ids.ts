@@ -60,13 +60,41 @@ export const SUBSTANTIAL_MIN = 5
 /** **形状无关**的答题计数（只给「空档 vs 实质进度」这两条守卫用）。
  *  为什么不能直接用 submittedCount：它只数 `submitted === true`，而**小程序经桥写进来的**条目形状是
  *  `{picked, correct}`（没有 `submitted`）⇒ 会被数成 0、把实质进度误判成空档。
- *  口径：answer_states 里「非空对象」的条数（空档是 `{}` ⇒ 0；答过的两条形状都 ≥1）。 */
+ *  口径：answer_states 里「非空对象」的条数（空档是 `{}` ⇒ 0；答过的两条形状都 ≥1）。
+ *  ⚠️ 边界（2026-10-05 实测发现）：**「刚打开题库未作答」的条目也是非空对象** ——
+ *  `{selected:[],blankAnswer:'',submitted:false,isCorrect:false,...}` 有 8 个字段 ⇒ 本函数返回 **1 而非 0**。
+ *  所以它**分不出「答过 1 题」与「打开过 1 题」**：用作守卫阈值时，`<=1` 恰好吃住这个空档（这是它能工作的原因），
+ *  但任何需要精确区分的地方都必须改用 `trulyAnsweredCount`。 */
 export function answeredCountLoose (prog: any): number {
   const m = prog && prog.answer_states
   if (!m || typeof m !== 'object') return 0
   let n = 0
   for (const v of Object.values(m)) {
     if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v as any).length > 0) n++
+  }
+  return n
+}
+
+/** **严格**已答计数：只数「确实作答过」的条目，把「打开过但没答」排除在外。
+ *  判据（依据 2026-10-05 对云端真实数据 99 条 answer_state 的形状普查）：
+ *    · 网页端形状 —— **以 `submitted` 为唯一判据**：`true` 即答过。
+ *      ⚠️ 不能再去要求「有选项/有填空/有 judgeSelected」：实测 82/99 条是判断题，
+ *      形状是 `{submitted:true, selected:[], blankAnswer:'', judgeSelected:false|true}` ——
+ *      「判断题答否」时 `judgeSelected:false`，而 `false` 与 `null` 极易被 `!== null` 之外的条件写错排除。
+ *    · 桥/小程序形状 `{picked, correct}` —— 有 `picked`（非 null）或 `correct` 为真即算答过。
+ *  ⚠️ 与 `answeredCountLoose` 的区别：本函数对「打开题库自动生成的那一条」返回 0。 */
+export function trulyAnsweredCount (prog: any): number {
+  const m = prog && prog.answer_states
+  if (!m || typeof m !== 'object') return 0
+  let n = 0
+  for (const v of Object.values(m)) {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) continue
+    const o = v as any
+    if ('submitted' in o) { if (o.submitted === true) n++ ; continue }   // 网页端形状：只看 submitted
+    if ('picked' in o || 'correct' in o) {                               // 桥/小程序形状
+      if (o.picked !== null && o.picked !== undefined) { n++; continue }
+      if (o.correct === true) n++
+    }
   }
   return n
 }
@@ -108,12 +136,17 @@ export function mergeProgressForLocal(
   // **即使本机 saved_at 更新也以云端为准** —— 防「打开练习页自动生成的新进度」（时间戳新、
   // 内容空）按「取新」规则永久顶掉云端真实进度。
   // 例外：本机带 `_reset` 标记（用户在练习页点过「重新开始」）⇒ 空是**故意的**，交常规取新规则。
-  const substantial = submittedCount(cloudProg) >= SUBSTANTIAL_MIN && submittedCount(localProg) <= 1
+  // 2026-10-05（修根因第 3 层）：判据由 `submittedCount` 换成 `trulyAnsweredCount`。
+  // 旧写法对数「小程序经桥写进来的 `{picked,correct}` 形状」恒为 0 ⇒ 云端实质进度会被判成空档，
+  // 「云端实质 vs 本机近乎空」这条守卫形同虚设（实测 10-05 rabbit 的 lquiz_banks_15 641 条就这样被顶掉）。
+  const substantial = trulyAnsweredCount(cloudProg) >= SUBSTANTIAL_MIN && trulyAnsweredCount(localProg) <= 1
     && !(localProg && localProg._reset)
   // 2026-10-04（反向守卫，与上面那条对称）：云端**近乎空**、本机有**实质进度**，且云端那份**没有 `_reset`**
   // ⇒ 不许云端顶掉本机。起因（rabbit 实测当晚 20:28）：小程序清空后新建的「0 答但时间戳更新」条目把
   // 网页端 51 题压成 0，随后网页端一拉，本机也跟着归零。`_reset` 保留「有意清空」这条路。
-  const refuseEmptyCloud = answeredCountLoose(localProg) >= SUBSTANTIAL_MIN && answeredCountLoose(cloudProg) <= 1
+  // 2026-10-05：同样换成 `trulyAnsweredCount`（`answeredCountLoose` 对「打开过未作答」的空档也返回 1，
+  // 会让「本机实质 vs 云端空档」这条反向守卫把 1 条空档误当实质；严格判据下空档恒为 0）。
+  const refuseEmptyCloud = trulyAnsweredCount(localProg) >= SUBSTANTIAL_MIN && trulyAnsweredCount(cloudProg) <= 1
     && !(cloudProg && cloudProg._reset)
   if (refuseEmptyCloud) return { write: false, value: null }
   const take = substantial || ct > lt || (ct === lt && !localIsMine)
@@ -145,10 +178,11 @@ export function mergeProgressMapForCloud(
     const cv = c[bid]
     const lv = l[bid]
     if (!cv) { out[bid] = lv; continue }
-    const guarded = submittedCount(cv) >= SUBSTANTIAL_MIN && submittedCount(lv) <= 1 && !(lv && lv._reset)
+    // 2026-10-05：与 mergeProgressForLocal 同批改用 `trulyAnsweredCount`（旧的 submittedCount 数不到桥形状）。
+    const guarded = trulyAnsweredCount(cv) >= SUBSTANTIAL_MIN && trulyAnsweredCount(lv) <= 1 && !(lv && lv._reset)
     // 2026-10-04（反向守卫，与 mergeProgressForLocal 那条对称）：本机有实质进度、云端近乎空且无 `_reset`
     // ⇒ 保留本机、不上传这个「空档」，否则一推就把云端（与其它设备）的实质进度抹掉。见那边注释的实测经过。
-    const refuseEmptyCloud = answeredCountLoose(lv) >= SUBSTANTIAL_MIN && answeredCountLoose(cv) <= 1 && !(cv && cv._reset)
+    const refuseEmptyCloud = trulyAnsweredCount(lv) >= SUBSTANTIAL_MIN && trulyAnsweredCount(cv) <= 1 && !(cv && cv._reset)
     if (refuseEmptyCloud) { out[bid] = lv; continue }
     if (guarded || progTs(lv) < progTs(cv)) { out[bid] = cv; tookCloud++ } else { out[bid] = lv }
   }
@@ -208,4 +242,73 @@ export function reshapeMpProgress(prog: any, idMap: Map<string, number>): any | 
     saved_at: prog.saved_at,
     _src: prog._src,
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 进度历史栈（2026-10-05）
+//
+// 起因：进度只有「当前值」一个槽位，一旦被空档覆盖（10-04 与 10-05 各实测一次：
+//   本机/云端任一端的「刚打开题库、0 答但 saved_at 更新」条目把实质进度顶掉）就**永久找不回**。
+//   守卫能拦住一部分，但守卫本身依赖形状判定，且拉取链上「本机进度被判无效」时守卫会失效。
+//   ⇒ 补一层与守卫**互相独立**的保险：每次实质变化都把旧版本压进历史栈，保留最近 N 版。
+//
+// 设计约束：
+//   · **只入栈实质版本**（answeredCountLoose >= 1），否则每次打开练习页生成的空档会把栈刷爆、
+//     把真版本挤出去 —— 那恰好帮了倒忙。
+//   · 内容相同（同一 saved_at）不重复入栈，避免防抖保存把栈塞满同一个版本。
+//   · 栈是**纯数据**，不参与任何合并决策 ⇒ 不可能让同步逻辑变复杂或引入新的覆盖路径。
+//   · 每库独立保留 HISTORY_MAX 版；超出淘汰最旧。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 每个库保留的历史版本数。5 版 × 单库最大约 25KB ≈ 125KB，CloudBase 单文档 16MB 上限内。 */
+export const HISTORY_MAX = 5
+
+export interface HistoryEntry {
+  saved_at: string
+  answered: number      // 入栈时的已答数（供 UI 展示「这一版答了多少题」）
+  current_id: number | string
+  finished: boolean
+  /** 点过「重新开始」的那一版 —— 回滚它等于接受「清空」，UI 需提示 */
+  marked?: string
+  prog: any             // 完整进度快照
+}
+
+/** 把一份进度压入历史栈（返回新栈）。非实质内容或与栈顶同版本时不改动。
+ *  「实质」用 `trulyAnsweredCount` 判 —— **必须**，不能用 answeredCountLoose：
+ *  后者对「打开题库自动生成的那一条」返回 1（条目有 8 个字段但都没答），
+ *  用它会让每次打开练习页都入一版空档，5 个槽位很快被空档占满、真版本全被挤出去。 */
+export function pushHistory(stack: HistoryEntry[] | null | undefined, prog: any): HistoryEntry[] {
+  const cur = Array.isArray(stack) ? stack.slice() : []
+  if (!prog || typeof prog !== 'object') return cur
+  const answered = trulyAnsweredCount(prog)
+  if (answered < 1) return cur                       // 空档不入栈
+  const savedAt = String(prog.saved_at || '')
+  if (!savedAt) return cur
+  if (cur.length && cur[0] && String(cur[0].saved_at || '') === savedAt) return cur  // 同版本去重
+  const entry: HistoryEntry = {
+    saved_at: savedAt,
+    answered,
+    current_id: prog.current_id,
+    finished: !!prog.finished,
+    marked: prog._reset ? String(prog._reset) : undefined,
+    prog: JSON.parse(JSON.stringify(prog)),          // 深拷：入栈后原对象还会被就地改写
+  }
+  const next = [entry, ...cur.filter((e) => String(e?.saved_at || '') !== savedAt)]
+  return next.slice(0, HISTORY_MAX)
+}
+
+/** 从历史栈取出某版进度（供回滚）。找不到返回 null。 */
+export function pickHistory(stack: HistoryEntry[] | null | undefined, savedAt: string): any | null {
+  const hit = (Array.isArray(stack) ? stack : []).find((e) => String(e?.saved_at || '') === String(savedAt))
+  return hit && hit.prog ? hit.prog : null
+}
+
+/** 回滚：把历史版本写回当前槽位。带上 `_reset` 语义 —— 否则同步守卫会用别处的旧版本把它顶回去。
+ *  `_src` 必须重打为本机标记（内容此刻已是本机口径，不应再被重映射）。 */
+export function makeRollbackValue(prog: any, myDev: string, nowIso: string): any {
+  const out = JSON.parse(JSON.stringify(prog || {}))
+  out.saved_at = nowIso                              // 回滚视为一次「新的写入」，时间戳必须更新
+  out._src = { dev: myDev, v: PROG_SCHEMA_V }
+  delete out._reset                                  // 回滚本身不是「有意清空」，别留下这个标记
+  return out
 }

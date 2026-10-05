@@ -16,7 +16,7 @@ import {
   type LedgerIndex,
   type LedgerKV,
 } from './sync-ledger'
-import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal, mergeProgressMapForCloud, orderHitRate, PROG_SCHEMA_V, reshapeMpProgress } from './sync-ids'
+import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal, mergeProgressMapForCloud, orderHitRate, PROG_SCHEMA_V, reshapeMpProgress, pushHistory, pickHistory, makeRollbackValue, HISTORY_MAX } from './sync-ids'
 import { decideDeletedMark, nextTries, type RemoveResult } from './deleted-marks'
 import type { SyncDetail } from './sync-format'
 
@@ -1319,7 +1319,16 @@ async function pushProgressLight(force = false): Promise<void> {
     if (!force && !(await getAutoSyncEnabled())) { setWebSyncStatus('idle'); return }
     const rows: any[] = []
     const progRow = await collectPracticeProgressRow()
-    if (progRow) rows.push(progRow)
+    if (progRow) {
+      rows.push(progRow)
+      // 2026-10-05：顺手把这一版压进历史栈（只入栈真答过的版本），并随轻推一起上云。
+      try {
+        const map = JSON.parse(String(progRow.value || '{}'))
+        await recordProgressHistory(map)
+        const hv = await idb.getSetting(PRACTICE_HISTORY_KEY)
+        if (hv) rows.push({ _id: settingsDocId(PRACTICE_HISTORY_KEY), key: PRACTICE_HISTORY_KEY, value: hv })
+      } catch { /* 历史栈失败不阻断进度推送 */ }
+    }
     for (const k of ['daily_records', 'last_practice']) {
       const v = await idb.getSetting(k)
       if (v == null || v === '') continue
@@ -1675,6 +1684,35 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
       // 2026-09-27：续练位置是「打包成一个 map」上来的，落地时要**逐库拆回** `practice_progress_<bankId>`。
       // 合并口径：同一题库两边都有 ⇒ 比 `saved_at`，**取较新的一份**（避免把本机更新的进度用云端旧值覆盖）；
       // 不同题库互不影响。云端 / 本机的坏值都跳过，不影响其余库。
+      if (doc.key === PRACTICE_HISTORY_KEY) {
+        // 2026-10-05：历史栈落地 —— 与云端**取并集**（本机可能就是靠云端这份救命的，
+        // 不能被本机较少的版本顶掉），按 saved_at 去重后保留最近的 HISTORY_MAX 版。
+        // 两边都没有的库不出现在结果里；任一边坏值都跳过，不影响其余库。
+        try {
+          const incoming = JSON.parse(String(doc.value || '{}')) as Record<string, any>
+          const cur = await readLocalHistory()
+          const out: Record<string, any[]> = {}
+          for (const bid of new Set([...Object.keys(cur), ...Object.keys(incoming || {})])) {
+            const a = Array.isArray(cur[bid]) ? cur[bid] : []
+            const b = Array.isArray(incoming?.[bid]) ? incoming[bid] : []
+            const byAt = new Map<string, any>()
+            for (const e of [...a, ...b]) {
+              const at = String((e && e.saved_at) || '')
+              if (!at || !e || typeof e !== 'object') continue
+              if (!byAt.has(at)) byAt.set(at, e)   // 同版本以本机那份为准（内容等价，省一次覆盖）
+            }
+            if (byAt.size) {
+              out[bid] = [...byAt.values()]
+                .sort((x, y) => String(y.saved_at).localeCompare(String(x.saved_at)))
+                .slice(0, HISTORY_MAX)
+            }
+          }
+          if (Object.keys(out).length) {
+            await idb.bulkPut('settings', [{ key: PRACTICE_HISTORY_KEY, value: JSON.stringify(out), synced_at: now() }])
+          }
+        } catch (e) { console.warn('[cloud] 进度历史栈合并失败（不阻断）', e) }
+        return 'skipped'
+      }
       if (doc.key === 'practice_progress') {
         // 2026-09-28（跨设备映射）：进度里的题号引用（order_ids/current_id/answer_states）没有全局意义，
         // 采用云端版本时必须按「来源题号 → 本机题号」重映射；「本机最终形态」（带本机 `_src` 标记）原样保留。
@@ -1916,6 +1954,70 @@ async function collectPracticeProgressRow(): Promise<any | null> {
   }
 }
 
+// ===== 2026-10-05：进度历史栈（每库保留最近 HISTORY_MAX 版，可回滚）=====
+// 起因：进度只有「当前值」一个槽位，被空档覆盖就永久找不回（10-04、10-05 各一次）。
+// 与守卫互相独立 —— 守卫依赖形状判定且拉取链上可能失效，历史栈是纯数据兜底。
+// 存储：本机 IndexedDB 与云端各一份（同一键 `practice_history`，map: bankRef → HistoryEntry[]）。
+export const PRACTICE_HISTORY_KEY = 'practice_history'
+
+/** 读本机历史栈（坏值一律当空，不阻断保存链）。 */
+async function readLocalHistory(): Promise<Record<string, any[]>> {
+  try {
+    const raw = await idb.getSetting(PRACTICE_HISTORY_KEY)
+    if (!raw) return {}
+    const m = JSON.parse(raw)
+    return (m && typeof m === 'object' && !Array.isArray(m)) ? m : {}
+  } catch { return {} }
+}
+
+/** 把「当前进度 map」里的每份实质进度压入历史栈（本机先落，随后由轻推带上云）。
+ *  ⚠️ 只入栈「真答过」的版本（pushHistory 内部判），空档不入 —— 否则打开题库就会挤掉真版本。 */
+export async function recordProgressHistory(progMap: Record<string, any>): Promise<number> {
+  try {
+    const hist = await readLocalHistory()
+    let changed = 0
+    for (const [bid, prog] of Object.entries(progMap || {})) {
+      const before = hist[bid]
+      const after = pushHistory(Array.isArray(before) ? before : [], prog)
+      if (after !== before && JSON.stringify(after) !== JSON.stringify(before || [])) {
+        hist[bid] = after
+        changed++
+      }
+    }
+    if (changed) await idb.setSetting(PRACTICE_HISTORY_KEY, JSON.stringify(hist))
+    return changed
+  } catch (e) {
+    console.warn('[cloud] 记录进度历史失败（不阻断）', e)
+    return 0
+  }
+}
+
+/** 读某库的历史版本（供 UI 列出）。 */
+export async function listProgressHistory(bankRef: string): Promise<any[]> {
+  const hist = await readLocalHistory()
+  const arr = hist[String(bankRef)]
+  return Array.isArray(arr) ? arr : []
+}
+
+/** 回滚到某一版：写回本机 `practice_progress_<ref>`（练习页读的就是这个键）并立即轻推上云。
+ *  回滚值带 `_src`（本机标记）与刷新后的 saved_at —— 否则同步守卫会用别处旧版本把它顶回去。
+ *  ⚠️ 只写 `<ref>` 后缀键，**不要**去动无后缀的 `practice_progress` —— 那是「所有库的打包 map」，
+ *  用单库覆盖它会抹掉其余库的进度（上传侧 collectPracticeProgressRow 会重新打包，无需手工维护）。 */
+export async function rollbackProgress(bankRef: string, savedAt: string): Promise<boolean> {
+  try {
+    const hist = await readLocalHistory()
+    const prog = pickHistory(hist[String(bankRef)] || [], savedAt)
+    if (!prog) return false
+    const value = makeRollbackValue(prog, deviceId(), new Date().toISOString())
+    await idb.setSetting('practice_progress_' + bankRef, JSON.stringify(value))
+    await pushProgressLight(true)   // 显式动作：不等防抖、不受自动开关闸门
+    return true
+  } catch (e) {
+    console.warn('[cloud] 回滚进度失败', e)
+    return false
+  }
+}
+
 async function listAllSettings(): Promise<any[]> {
   // 读取已知 key（从设置页用到的）
   // 注意：ai_api_key（AI 密钥）不参与云同步，仅保存在本地浏览器，避免泄露到云端
@@ -1959,6 +2061,21 @@ async function listAllSettings(): Promise<any[]> {
   // 2026-10-04：昵称（纯网名）随设置行上云——小程序「我的」显示它、两端双向（后写者胜）。
   // 值直接取本机 localStorage（昵称不存 idb），体积 ≤32 字符，无需体积守卫。
   out.push({ _id: settingsDocId('nickname'), key: 'nickname', value: getSyncKey() })
+  // 2026-10-05：进度历史栈随全量推送一起上云（换设备/清缓存后仍能回滚）。
+  // 体积：每库 5 版、单库约 8–25KB ⇒ 十几个库约 100–300KB，**超过下面的 64KB 单键上限**。
+  // 故这里走独立上限（512KB）：它是「最后的保险」，被跳过就等于没有，宁可放宽也不要静默丢。
+  try {
+    const hv = await idb.getSetting(PRACTICE_HISTORY_KEY)
+    if (hv != null) {
+      const size = typeof hv === 'string' ? hv.length : JSON.stringify(hv).length
+      const MAX_HISTORY_BYTES = 512 * 1024
+      if (size > MAX_HISTORY_BYTES) {
+        console.warn(`[cloud] 进度历史栈体积 ${(size / 1024).toFixed(1)}KB 超过上限 ${MAX_HISTORY_BYTES / 1024}KB，已跳过上传`)
+      } else {
+        out.push({ _id: settingsDocId(PRACTICE_HISTORY_KEY), key: PRACTICE_HISTORY_KEY, value: hv })
+      }
+    }
+  } catch { /* 历史栈缺失不阻断设置同步 */ }
   return out
 }
 

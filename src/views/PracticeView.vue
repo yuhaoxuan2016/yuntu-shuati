@@ -51,6 +51,11 @@
         🔀 选项乱序
       </label>
       <button class="restart-btn" @click="restart">重新开始</button>
+      <!-- 2026-10-05：进度历史回滚入口。进度只留「当前值」时，被空档覆盖即永久丢失
+           （10-04、10-05 各实测一次）⇒ 每库留最近 5 版可回滚。按钮仅在有历史时出现。 -->
+      <button v-if="historyList.length" class="restart-btn history-btn" @click="showHistory = true">
+        🕘 历史版本（{{ historyList.length }}）
+      </button>
       <!-- 2026-10-03：同步状态（断网/失败可见，可点重试） -->
       <span class="sync-chip" :class="{ ok: syncStat.state === 'ok', fail: syncStat.state === 'fail' }" :title="syncStat.msg || ''" @click="onSyncChipTap">{{ syncChipText }}</span>
     </div>
@@ -110,6 +115,28 @@
       {{ syncBanner }}
       <button class="close-btn" @click="syncBanner = ''">×</button>
     </div>
+
+    <!-- 2026-10-05：进度历史面板（回滚入口）。滚动快照按时间倒序列出，
+         每行显示「时间 + 已答数」；点回滚后重新加载本页进度。 -->
+    <Teleport to="body">
+      <div v-if="showHistory" class="hist-mask" @click.self="showHistory = false">
+        <div class="hist-panel">
+          <div class="hist-head">
+            <span>进度历史版本</span>
+            <button class="close-btn" @click="showHistory = false">×</button>
+          </div>
+          <p class="hist-tip">每次实质作答都会自动留一版，最多保留最近 {{ HISTORY_MAX }} 版。若进度被意外清空，可从这里恢复到先前版本。</p>
+          <div v-for="h in historyList" :key="h.saved_at" class="hist-row">
+            <div class="hist-info">
+              <div class="hist-time">{{ fmtHistTime(h.saved_at) }}</div>
+              <div class="hist-meta">已答 {{ h.answered }} 题<template v-if="h.finished"> · 已完成</template><template v-if="h.marked"> · 含「重新开始」标记</template></div>
+            </div>
+            <button class="hist-btn2" :disabled="rollingBack" @click="onRollback(h)">恢复此版本</button>
+          </div>
+          <div v-if="!historyList.length" class="hist-empty">暂无历史版本（答过题后会自动记录）</div>
+        </div>
+      </div>
+    </Teleport>
 
     <div v-if="!loaded" class="loading">加载中...</div>
     <div v-else-if="finished" class="finished">
@@ -206,7 +233,8 @@ import QuestionCard, { type QuestionState } from '../components/QuestionCard.vue
 import { classifyQuestionType, TYPE_LABELS, groupQuestionsByCategory } from '../lib/exam'
 import { calculateAutoQuality, calculateNextReview, qualityLabel, labelToQuality, formatDate, computeNextReviewTs, toReviewTs, type QualityLabel } from '../lib/spaced-repetition'
 import { formatSyncDetail } from '../lib/sync-format'
-import { getWebSyncStatus, retryProgressSync } from '../lib/cloud'
+import { getWebSyncStatus, retryProgressSync, listProgressHistory, rollbackProgress } from '../lib/cloud'
+import { HISTORY_MAX } from '../lib/sync-ids'
 import { msToSecs } from '../lib/duration'
 
 interface SavedProgress {
@@ -295,6 +323,44 @@ const restoredBanner = ref(false)
 const reloadKey = ref(0)
 // 「重新开始」标记（随进度落盘，同步守卫读它；云端版本一旦覆盖本机，标记自然消失）
 const resetMarked = ref<string | null>(null)
+
+// 2026-10-05：进度历史（回滚）。listProgressHistory 读本机/云端并集，
+// 由保存链与同步拉取两侧共同维护（见 cloud.ts 的 recordProgressHistory / PRACTICE_HISTORY_KEY）。
+// ⚠️ bankRef 必须从 progressKey 推导（= 云端 cloud_id 优先的那套标尺）：
+//   直接用页面参数 bankId 会在本地库上写出 `practice_progress_1` 这种本机号，
+//   而练习页读的是 cloud_id 键 ⇒ 回滚看似成功、实则写到了没人读的键上（正是本页历史上踩过的坑）。
+const historyBankRef = computed(() => String(progressKey.value).replace(/^practice_progress_/, ''))
+const showHistory = ref(false)
+const historyList = ref<any[]>([])
+const rollingBack = ref(false)
+async function refreshHistory () {
+  try { historyList.value = await listProgressHistory(historyBankRef.value) } catch { historyList.value = [] }
+}
+function fmtHistTime (iso: string): string {
+  const t = Date.parse(String(iso || ''))
+  if (!Number.isFinite(t)) return String(iso || '')
+  const d = new Date(t)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getMonth() + 1}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+async function onRollback (h: any) {
+  if (rollingBack.value) return
+  const okToGo = window.confirm(`恢复到 ${fmtHistTime(h.saved_at)} 的版本（已答 ${h.answered} 题）？\n\n当前进度会被这一版替换。`)
+  if (!okToGo) return
+  rollingBack.value = true
+  try {
+    const done = await rollbackProgress(historyBankRef.value, h.saved_at)
+    if (!done) { toastError('恢复失败：该版本已不在历史里'); return }
+    showHistory.value = false
+    toastSuccess('已恢复该版本进度')
+    await restoreProgress()      // 就地重载，用户立刻看到题号回退
+    await refreshHistory()
+  } catch (e: any) {
+    toastError('恢复失败：' + String((e && e.message) || e))
+  } finally {
+    rollingBack.value = false
+  }
+}
 
 // 搜索相关
 const searchQuery = ref('')
@@ -430,6 +496,7 @@ onMounted(async () => {
     if (!isPlanMode) {
       // 计划模式不恢复普通练习进度（避免计划队列污染/被污染）
       await restoreProgress()
+      await refreshHistory()   // 2026-10-05：同时载入历史版本（按钮仅在非空时出现）
     }
   } catch (e) {
     toastError('加载题目失败：' + (e instanceof Error ? e.message : String(e)))
@@ -1177,6 +1244,21 @@ async function restart() {
 .sync-chip.ok { opacity: 0.75; }
 .sync-chip.fail { color: var(--color-danger-deep); font-weight: 600; cursor: pointer; }
 .restart-btn:hover { background: var(--color-border-light); }
+
+/* 2026-10-05：进度历史入口与面板（回滚）。样式沿用既有 token，无硬编码色值。 */
+.history-btn { color: var(--color-primary); border-color: var(--color-primary); }
+.hist-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); display: flex; align-items: center; justify-content: center; z-index: 3000; padding: 20px; }
+.hist-panel { background: var(--color-card); border-radius: var(--radius-lg, 12px); padding: 18px 20px; width: 100%; max-width: 480px; max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2); }
+.hist-head { display: flex; justify-content: space-between; align-items: center; font-size: 15px; font-weight: 600; color: var(--color-text); margin-bottom: 8px; }
+.hist-head .close-btn { background: none; border: none; font-size: 20px; cursor: pointer; color: var(--color-text-secondary); padding: 0 4px; line-height: 1; }
+.hist-tip { font-size: 12px; color: var(--color-text-secondary); line-height: 1.6; margin: 0 0 14px; }
+.hist-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--color-border-light); }
+.hist-time { font-size: 14px; color: var(--color-text); }
+.hist-meta { font-size: 12px; color: var(--color-text-secondary); margin-top: 2px; }
+.hist-btn2 { padding: 5px 12px; border: 1px solid var(--color-primary); border-radius: var(--radius-md); background: var(--color-card); color: var(--color-primary); cursor: pointer; font-size: 12px; white-space: nowrap; }
+.hist-btn2:hover:not(:disabled) { background: var(--color-primary-light); }
+.hist-btn2:disabled { opacity: 0.5; cursor: not-allowed; }
+.hist-empty { font-size: 13px; color: var(--color-text-secondary); padding: 12px 0; }
 
 .search-result-banner { background: var(--color-info-light); color: var(--color-info); padding: 8px 16px; border-radius: var(--radius-md); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
 .search-result-banner b { color: var(--color-primary); font-weight: 600; }

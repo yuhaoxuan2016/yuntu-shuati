@@ -1,7 +1,7 @@
 // 断言 sync-ids.ts 的纯函数（Node 24 直跑 TS：`node tests/sync-ids.test.ts`）
 // 覆盖：来源索引 / 单号映射 / 进度重映射 / 合并决策（他机·本机·自愈·库缺失）/ 设备指纹持久
 import {
-  buildSrcLocalIndex, mapSrcToLocal, remapProgress, mergeProgressForLocal, mergeProgressMapForCloud, getOrCreateDeviceId, orderHitRate, submittedCount, answeredCountLoose,
+  buildSrcLocalIndex, mapSrcToLocal, remapProgress, mergeProgressForLocal, mergeProgressMapForCloud, getOrCreateDeviceId, orderHitRate, submittedCount, answeredCountLoose, trulyAnsweredCount,
 } from '../src/lib/sync-ids.ts'
 
 let pass = 0, fail = 0
@@ -167,6 +167,26 @@ eq('反向对照：submittedCount 对桥形状数 0（＝必须换计数的理�
 const localMapBridgeShape = { k: { answer_states: Object.fromEntries(Array.from({ length: 20 }, (_, i) => [String(i), { picked: [0], correct: true }])), saved_at: '2026-10-04T11:40:00Z' } }
 eq('反向守卫：本机是桥形状（picked/correct）也认得出实质',
   mergeProgressMapForCloud(cloudMapEmptyNewer, localMapBridgeShape).map.k.saved_at, '2026-10-04T11:40:00Z')
+
+// ── 2026-10-05 根因第 3 层：守卫判据统一为 trulyAnsweredCount
+// 现场（rabbit 的 lquiz_banks_15）：云端有 641 条实质、本机是「刚打开」的空档（1 条 submitted:false）。
+// 旧写法用 submittedCount 数云端 —— 若云端那份是桥形状（{picked,correct}）就恒为 0 ⇒ 守卫失效、空档反压。
+const bridgeSubstantial = { answer_states: Object.fromEntries(Array.from({ length: 641 }, (_, i) => [String(i), { picked: [0], correct: i % 3 === 0 }])), saved_at: '2026-10-04T03:49:01.100Z' }
+const webEmptyNewer = { answer_states: { '500002': { selected: [], blankAnswer: '', submitted: false, isCorrect: false, selfEvalDone: false, judgeSelected: null, elapsedSecs: 3 } }, saved_at: '2026-10-05T12:51:21.855Z' }
+eq('根因3（拉）：云端是桥形状的 641 条实质 → 即使本机时间戳更新也必须采用云端',
+  mergeProgressForLocal(bridgeSubstantial, JSON.stringify(webEmptyNewer), 'dev', new Map(), true).write, true)
+eq('根因3（拉）：反向对照 —— 旧 submittedCount 对桥形状数 0（正是守卫失效的原因）',
+  submittedCount(bridgeSubstantial), 0)
+eq('根因3（拉）：本机空档带 _reset（有意重置）时不触发守卫 → 按时间戳取本机',
+  mergeProgressForLocal(bridgeSubstantial, JSON.stringify({ ...webEmptyNewer, _reset: 'x' }), 'dev', new Map(), true).write, false)
+// 「打开过未作答」的条目在 answeredCountLoose 下返回 1 —— 反向守卫的 `<=1` 恰好吃住它，
+// 但换成 trulyAnsweredCount 后语义更准（空档恒为 0），不会把 1 条空档误当实质。
+const localOneGap = { answer_states: { g: { selected: [], blankAnswer: '', submitted: false, isCorrect: false } }, saved_at: '2026-10-05T12:51:21.855Z' }
+eq('根因3（推）：本机只有 1 条空档时不算「实质」→ 不会被反向守卫拦住（正常走时间戳）',
+  mergeProgressMapForCloud({ k: bridgeSubstantial }, { k: localOneGap }).map.k.saved_at, '2026-10-04T03:49:01.100Z')
+eq('根因3：严格计数把空档判 0（answeredCountLoose 会判 1）', [
+  trulyAnsweredCount(localOneGap), answeredCountLoose(localOneGap),
+], [0, 1])
 
 // ── 设备指纹
 const mem: Record<string, string> = {}
