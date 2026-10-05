@@ -50,6 +50,7 @@
       :question="current"
       :index="idx"
       :favorited="true"
+      :hide-edit="hideEdit"
       @answered="onAnswered"
       @next="next"
       @toggle-favorite="onToggleFavorite"
@@ -73,6 +74,10 @@ const route = useRoute()
 // 2026-09-29：**不带参数＝跨库聚合视图**（订阅库的收藏不会因为取消订阅而看不见）。
 const bankId = route.params.bankId ? resolveBankId(route.params.bankId) : null
 const isGlobal = bankId === null
+// 2026-10-05：订阅库（bankRef 字符串，题目在线读、本地无行）不显示 ✎ 编辑入口。
+//   保存会无条件 put 到本地 questions 表，订阅题 id 是云端 `_local_id`，与本地自增 id 同域时会覆盖
+//   本地同号题；且写出的行 listAllQuestions 遍历不到 ⇒ 改动推不上云。本地库行为不变。
+const hideEdit = typeof bankId === 'string'
 const allQuestions = ref<Question[]>([])
 const favoriteIds = ref<number[]>([])
 const favGroups = ref<BankGroup[]>([])

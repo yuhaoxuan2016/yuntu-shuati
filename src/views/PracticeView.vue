@@ -169,6 +169,7 @@
         :saved-state="answerStates.get(currentQuestion.id) || null"
         :favorited="favoriteIds.has(currentQuestion.id)"
         :shuffle-options="shuffleOptions"
+        :hide-edit="isSubscribedBank"
         @answered="onAnswered"
         @state-change="onStateChange"
         @next="next"
@@ -268,6 +269,14 @@ const planQueueReady = ref(false)
 // 订阅记录存 settings（`api.listSubscriptions`），与进度同机制，跨端一致。
 const subscribedRef = ref(false)
 const canTrack = computed(() => typeof bankId === 'number' || subscribedRef.value)
+// 2026-10-05：订阅库（bankId 是字符串 bankRef，题目在云端在线读、本地无行）隐藏 ✎ 编辑入口。
+//   原因：保存走 api.updateQuestion → idb.updateQuestion 无条件 put，而订阅题 id 是云端 `_local_id`，
+//   与本地自增 id 同域时（旧包 1~4746）会覆盖本地同号题；且写出的行 `bank_id` 是 bankRef 字符串，
+//   listAllQuestions 遍历不到 ⇒ 改动永远推不上云，纯属污染。本地库（数字 bankId）行为不变。
+//   与小程序端对齐（其 `canEdit` = `_id && visibility !== 'public'`，见 P2-57）；网页端的订阅题对象
+//   经 PUBLIC_Q_FIELDS 裁剪后**不带 visibility**，故只能按路由形态判 —— 这也是 api.resolveBankId
+//   唯一承认的判据（数字=本地库 / 其它=公共 bankRef）。
+const isSubscribedBank = computed(() => typeof bankId === 'string')
 if (typeof bankId === 'string') {
   api.listSubscriptions().then(list => { subscribedRef.value = list.indexOf(bankId) >= 0 }).catch(() => { /* 读失败按未订阅处理 */ })
 }

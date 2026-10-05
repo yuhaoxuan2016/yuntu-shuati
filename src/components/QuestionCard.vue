@@ -19,7 +19,11 @@
         <button class="tool-btn" :class="{ active: favorited }" :title="favorited ? '取消收藏' : '收藏本题'" @click="$emit('toggle-favorite')">
           {{ favorited ? '★' : '☆' }}
         </button>
-        <button class="tool-btn" title="编辑本题" @click="showEdit = true">✎</button>
+        <!-- 2026-10-05：订阅库（题目在云端在线读、本地无行）不显示编辑入口。
+             保存会走 api.updateQuestion 无条件 put 到本地 questions 表 —— 订阅题 id 是云端
+             `_local_id`，与本地自增 id 同域时（旧包 1~4746）会覆盖本地同号题，且改动本就无处安放
+             （孤儿行读不到 ⇒ 推不上云）。本地库（数字 bankId）不受影响，照常可编辑。 -->
+        <button v-if="!hideEdit" class="tool-btn" title="编辑本题" @click="showEdit = true">✎</button>
         <button class="tool-btn ai" :disabled="analyzing" :title="analyzing ? 'AI 解析中…' : 'AI 详细解析'" @click="analyze">🤖</button>
       </div>
     </div>
@@ -234,6 +238,7 @@ const props = defineProps<{
   shuffleOptions?: boolean   // 选项乱序：打乱选项展示顺序，判分/答案高亮随映射自动对齐
   deferSubmit?: boolean      // 2026-08-20：考试模式交卷前不锁定答案（点选只高亮，交卷统一判分，可随时修改）
   readOnly?: boolean         // 2026-08-20：只读回顾（交卷后回看，隐藏工具栏与操作按钮）
+  hideEdit?: boolean         // 2026-10-05：隐藏 ✎ 编辑入口（订阅库用；改动无处安放，且可能覆盖本地同号题）
 }>()
 const emit = defineEmits<{
   (e: 'answered', payload: { correct: boolean; answer: string; duration_ms: number | null }): void

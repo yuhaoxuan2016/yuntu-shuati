@@ -82,6 +82,7 @@
         :question="current"
         :index="idx"
         :favorited="favoriteIds.has(current.id)"
+        :hide-edit="hideEdit"
         @answered="onAnswered"
         @next="next"
         @toggle-favorite="onToggleFavorite"
@@ -126,6 +127,7 @@
           :question="current"
           :index="idx"
           :favorited="favoriteIds.has(current.id)"
+          :hide-edit="hideEdit"
           @answered="onAnswered"
           @next="next"
           @toggle-favorite="onToggleFavorite"
@@ -164,6 +166,10 @@ const route = useRoute()
 // 2026-09-29：**不带参数＝跨库聚合视图**（按库分组）。单库分支的行为逐字不变。
 const bankId = route.params.bankId ? resolveBankId(route.params.bankId) : null
 const isGlobal = bankId === null
+// 2026-10-05：订阅库（bankRef 字符串，题目在线读、本地无行）不显示 ✎ 编辑入口。
+//   保存会无条件 put 到本地 questions 表，订阅题 id 是云端 `_local_id`，与本地自增 id 同域时会覆盖
+//   本地同号题；且写出的行 listAllQuestions 遍历不到 ⇒ 改动推不上云。本地库行为不变。
+const hideEdit = typeof bankId === 'string'
 // 下面这些单库路径（重练/答后落库/标记掌握/删除/取消收藏）只在**带 :bankId** 时可达：
 // 聚合分支的模板里不给它们入口，行内操作走 gMarkMastered/gRemove/gRestore（库号从每一行取）。
 // 将来若给聚合态加「跨库重练」，这些 bankId! 必须改成按行取库号，否则会把记录写进错误的库。
