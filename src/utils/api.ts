@@ -485,6 +485,8 @@ export async function restoreBackup(data: any, onProgress?: (msg: string) => voi
   if (!data || typeof data !== 'object') throw new Error('备份文件格式无效')
   const db = await import('../lib/db')
   const m = (db as any).idb
+  // 注意：settings 不在此表内 —— 它走下面的**合并式**恢复（既因导出侧给的是对象格式，
+  // 也因设置项不宜覆盖式清空，见下方处理段的注释）。
   const storeMap: Record<string, string> = {
     banks: 'quiz_banks',
     questions: 'questions',
@@ -495,10 +497,10 @@ export async function restoreBackup(data: any, onProgress?: (msg: string) => voi
     compose_records: 'compose_records',
     study_plans: 'study_plans',       // 2026-08-22：学习计划加入恢复
     review_records: 'review_records', // 2026-08-22：复习记录加入恢复
-    settings: 'settings',
   }
   const keys = Object.keys(storeMap).filter(k => Array.isArray(data[k]))
-  if (keys.length === 0) throw new Error('备份文件未包含任何可恢复的数据（题库/题目等）')
+  const hasSettings = !!(data.settings && (Array.isArray(data.settings) ? data.settings.length : Object.keys(data.settings).length))
+  if (keys.length === 0 && !hasSettings) throw new Error('备份文件未包含任何可恢复的数据（题库/题目等）')
   // P1-10 / P1-11：备份文件不得覆盖本机的 BYOK 凭据/端点设置（ai_api_key / ai_base_url /
   // ai_base_url_ack）。先取本机现值，恢复 settings 时剔除这些键，最后原样写回。
   // 做「不覆盖」而非「确认后覆盖」：恢复入口（设置页选择文件）没有可分辨的凭据语义，
@@ -521,19 +523,40 @@ export async function restoreBackup(data: any, onProgress?: (msg: string) => voi
     // ⇒ 恢复出来的数据被永久判定为已上云，此后再也不会推送（用户以为恢复完就同步好了）。
     // 现在保持原样：缺 synced_at 的行继续缺，用户下一次手动同步会把它们正常推上去。
     // 代价只是「恢复后首次同步会多推一些记录」，那是应有的行为，不是需要修的重复。
-    if (store === 'settings') {
-      const before = rows.length
-      rows = rows.filter(r => r && typeof r === 'object' && !BACKUP_PROTECTED_SETTING_KEYS.includes(String(r.key)))
-      skippedSensitive += before - rows.length
-      // 备份里的 settings 全是敏感项：不清空本机设置，否则会连主题等本地设置一起丢掉
-      if (rows.length === 0) continue
-    }
     await m.clearStore(store)
     if (rows.length) await m.bulkPut(store, rows)
+  }
+  // settings 单独处理：**合并式**恢复，不走上面的「清空后写回」。
+  // 2026-10-05 修复两个问题：
+  //   ① 导出侧（exportAll → filterBackupSettings）给的是**对象** `{key: value}`，
+  //      而上面 `keys` 的判据是 `Array.isArray(data[k])` ⇒ settings 从来进不了这个循环，
+  //      备份里的设置**一条都不会被恢复**（静默跳过，从项目第一版起就存在）。
+  //   ② 即便按数组处理，也不能对 settings 做覆盖式清空：其中混着「只能由本机交互写入」的键
+  //      （见 BACKUP_PROTECTED_SETTING_KEYS）与设备相关键，清空会连带丢掉本机设置。
+  // 故改为逐键 put（merge）：备份里有则写入、敏感键跳过、本机独有键**保留不动**。
+  const bSettings = data.settings
+  const settingsEntries: Array<{ key: string; value: string }> = []
+  if (Array.isArray(bSettings)) {
+    // 兼容老备份：早期形态可能是 [{key, value}]
+    for (const r of bSettings) {
+      if (r && typeof r === 'object' && r.key != null) settingsEntries.push({ key: String(r.key), value: r.value })
+    }
+  } else if (bSettings && typeof bSettings === 'object') {
+    for (const k of Object.keys(bSettings)) settingsEntries.push({ key: k, value: (bSettings as any)[k] })
+  }
+  let restoredSettings = 0
+  for (const { key, value } of settingsEntries) {
+    if (BACKUP_PROTECTED_SETTING_KEYS.includes(key)) { skippedSensitive++; continue }
+    if (typeof value !== 'string') continue
+    await m.setSetting(key, value)
+    restoredSettings++
   }
   // 写回本机凭据/端点（若本机原本没有则不写入，保持默认值）
   for (const k of BACKUP_PROTECTED_SETTING_KEYS) {
     if (preservedSettings[k] != null) await m.setSetting(k, preservedSettings[k])
+  }
+  if (restoredSettings > 0) {
+    onProgress?.(`已恢复 ${restoredSettings} 项设置`)
   }
   if (skippedSensitive > 0) {
     onProgress?.(`已忽略备份中的 ${skippedSensitive} 条敏感设置（API Key / 端点由本机保留，未被文件覆盖）`)

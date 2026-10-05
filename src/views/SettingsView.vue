@@ -102,6 +102,12 @@
       <div v-if="showUpdateLog" class="update-log">
         <h4>更新日志</h4>
         <div class="log-entry">
+          <span class="log-version">v1.2.78</span>
+          <ul>
+            <li>修复<b>导入备份时设置项恢复不了</b>的老问题：以前导入备份，题库、错题、收藏、练习记录都能回来，唯独主题、字号、每日目标这些设置一条都不会恢复（这个毛病从第一版起就存在）。现在会正常恢复，并且<b>只补齐备份里有的设置</b>——本机的 API Key、接口地址等私人设置不会被文件覆盖</li>
+          </ul>
+        </div>
+        <div class="log-entry">
           <span class="log-version">v1.2.77</span>
           <ul>
             <li>答题计时更准：切到别的页面、把窗口放到后台时，计时会自动暂停；切回来接着算。切题、跳着做题也一样——每道题各算各的，走开多久都不影响</li>
@@ -1623,7 +1629,7 @@ async function onRestoreFile(e: Event) {
   try {
     const text = await file.text()
     const data = JSON.parse(text)
-    if (!confirm('导入恢复将覆盖当前本地数据（题库 / 题目 / 错题 / 收藏 / 练习记录 / 设置），确定继续？')) {
+    if (!confirm('导入恢复将覆盖当前本地数据（题库 / 题目 / 错题 / 收藏 / 练习记录），设置项按备份内容补齐。确定继续？')) {
       restoreStatus.value = '已取消恢复'
       return
     }
