@@ -53,8 +53,10 @@
       <button class="restart-btn" @click="restart">重新开始</button>
       <!-- 2026-10-05：进度历史回滚入口。进度只留「当前值」时，被空档覆盖即永久丢失
            （10-04、10-05 各实测一次）⇒ 每库留最近 5 版可回滚。按钮仅在有历史时出现。 -->
-      <button v-if="historyList.length" class="restart-btn history-btn" @click="showHistory = true">
-        🕘 历史版本（{{ historyList.length }}）
+      <!-- 2026-10-07：显示条件必须**两套数据取或** —— 历史栈走云端参与（关同步/没配云时为空），
+           硬存档纯本机（正是那批用户唯一能救命的东西）。只挂历史栈 ⇒ 存档存了却没入口。 -->
+      <button v-if="historyList.length || archiveList.length" class="restart-btn history-btn" @click="openHistory">
+        🕘 历史版本（{{ historyList.length + archiveList.length }}）
       </button>
       <!-- 2026-10-03：同步状态（断网/失败可见，可点重试）；2026-10-07 晚图标分态 + 动效（同步中 ↻ 转、完成 ✓ 轻弹） -->
       <span class="sync-chip" :class="{ syncing: syncStat.state === 'syncing', ok: syncStat.state === 'ok', fail: syncStat.state === 'fail', pop: justSynced }" :title="syncStat.msg || ''" @click="onSyncChipTap"><span class="sc-ico">☁</span><span class="sc-mark">{{ syncChipMark }}</span>{{ syncChipText }}</span>
@@ -364,9 +366,18 @@ const showHistory = ref(false)
 const historyList = ref<any[]>([])
 const rollingBack = ref(false)
 const archiveList = ref<any[]>([])
+// 硬存档单独刷：答题落盘后只重读这一份（历史栈那份可能带云端读，不跟着每次保存跑）
+async function refreshArchive () {
+  try { archiveList.value = await listLocalArchive(historyBankRef.value) } catch { archiveList.value = [] }
+}
 async function refreshHistory () {
   try { historyList.value = await listProgressHistory(historyBankRef.value) } catch { historyList.value = [] }
-  try { archiveList.value = await listLocalArchive(historyBankRef.value) } catch { archiveList.value = [] }
+  await refreshArchive()
+}
+// 打开面板前必须现读一次：否则用户答完题打开，看到的还是进页那一刻的旧列表（可能还是空的）
+async function openHistory () {
+  await refreshHistory()
+  showHistory.value = true
 }
 // 硬存档恢复：只写本机进度槽位 + 新时间戳，随下次同步自然上行（不主动推云，保持「纯本机」口径）
 async function onRestoreArchive (h: any) {
@@ -838,7 +849,10 @@ async function saveProgressInner() {
     dirtySince.value = 0
     saveWarn.value = ''
     // 2026-10-07：本机硬存档——落盘成功才写，与网络/同步开关彻底解耦（云端路径不读不写它）
-    void recordLocalArchive(historyBankRef.value, progress).catch(() => {})
+    // 2026-10-07：只有真的入栈了才刷新列表（存档变化 ⇒ 面板计数与按钮可见性要跟上）
+    void recordLocalArchive(historyBankRef.value, progress)
+      .then((changed) => { if (changed) void refreshArchive() })
+      .catch(() => {})
     // 2026-10-03：落盘成功后防抖轻推（只推进度/当天统计/续练指针三条设置行；可在设置里关）
     void import('../lib/cloud').then(m => m.scheduleProgressPush()).catch(() => {})
   } catch (e) {
