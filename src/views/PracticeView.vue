@@ -256,6 +256,7 @@ import { classifyQuestionType, TYPE_LABELS, groupQuestionsByCategory } from '../
 import { calculateAutoQuality, calculateNextReview, qualityLabel, labelToQuality, formatDate, computeNextReviewTs, toReviewTs, type QualityLabel } from '../lib/spaced-repetition'
 import { formatSyncDetail } from '../lib/sync-format'
 import { getWebSyncStatus, retryProgressSync, listProgressHistory, rollbackProgress } from '../lib/cloud'
+import { shouldWarnOnEnter } from '../lib/sync-notice'
 // 2026-10-07：本机硬存档——独立于云端的最后一道保险（关掉同步、没配云也照记）
 import { recordLocalArchive, listLocalArchive, restoreLocalArchive, ARCHIVE_MAX } from '../lib/local-archive'
 import { HISTORY_MAX, buildProgressRefMaps, resolveProgressRef } from '../lib/sync-ids'
@@ -732,9 +733,29 @@ const syncChipMark = computed(() => {
   if (s.state === 'ok') return '✓'
   return ''
 })
-// 2026-10-07：只要同步还在跑就挂横幅（不弹框、不拦截——"轻提示不拦"是既定语）。
-// 状态每 3s 随页面已有的轮询刷新 ⇒ 同步完成即自动消失，无需额外定时器。
-const syncingHint = computed(() => syncStat.value.state === 'syncing')
+// 2026-10-07：进库横幅 —— 判据改成「本机可能还没有云端最新进度」（见 lib/sync-notice.ts）。
+// 原先判 `state === 'syncing'`，而进页面时同步不启动 ⇒ 那条件几乎凑不出来，横幅一次都没出现过。
+// 口径（rabbit 2026-10-07 纠正）：**首次进入练习页时提示一次**，不是每次同步都跳；
+// 同一次停留期间后台又同步完/又失败都不重新弹（noticeOnce 闸门），下次进页面重新判。
+const noticeOnce = ref(false)
+const noticeShouldShow = ref(false)
+function evaluateNotice () {
+  if (noticeOnce.value) return                     // 本次进页面已提示过 ⇒ 不再重复
+  const st = syncStat.value
+  const ok = st.state === 'ok'
+  const warn = shouldWarnOnEnter({
+    synced: ok,
+    lastOkAt: ok ? Number(st.at) || 0 : 0,
+    lastFail: st.state === 'fail',
+    busy: st.state === 'syncing',
+    now: Date.now(),
+  })
+  if (warn) {
+    noticeShouldShow.value = true
+    noticeOnce.value = true                        // 一旦提示过，本次停留不再弹
+  }
+}
+const syncingHint = computed(() => noticeShouldShow.value)
 const syncChipText = computed(() => {
   const s = syncStat.value
   if (s.state === 'syncing') return '同步中…'
@@ -759,6 +780,7 @@ function refreshSyncStat () {
   const next = getWebSyncStatus()
   syncStat.value = next
   if (prevState !== 'ok' && next.state === 'ok') markJustSynced()
+  evaluateNotice()   // 首次评估在首次 refreshSyncStat（进页面那一刻），之后由闸门挡住不重复
 }
 async function onSyncChipTap () {
   if (syncStat.value.state === 'syncing') return
@@ -770,6 +792,9 @@ async function onSyncChipTap () {
 onMounted(() => {
   saveWatchTimer = setInterval(checkSaveHealth, 45000)
   document.addEventListener('visibilitychange', onVisibilityChange)
+  // 本次进页面重新判一次（上次看过的提示不该阻止这次提示）：复位闸门 → 立即评估一次
+  noticeOnce.value = false
+  noticeShouldShow.value = false
   refreshSyncStat()
   syncStatTimer = window.setInterval(refreshSyncStat, 3000)
 })

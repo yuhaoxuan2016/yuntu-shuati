@@ -355,6 +355,7 @@ import { formatDate } from '../lib/spaced-repetition'
 import OnboardingTour from '../components/OnboardingTour.vue'
 import { findSourceBank, isPublicCopy } from '../lib/bank-provenance'
 import { formatDuration, hasDuration } from '../lib/duration'
+import { shouldWarnOnEnter } from '../lib/sync-notice'
 
 interface LastPractice {
   bank_id: number
@@ -620,10 +621,25 @@ function pollHomeSync() {
     }
   }).catch(() => { /* cloud 模块加载失败：保持原状态 */ })
 }
-// 同步进行中进库：改成明确警示（2026-10-07 02:10 事故——恢复未就绪时进库会把续练位写退到第 1 题）。
-// 仍不拦（进度守卫 + 未就绪闸门兜底），但必须让人知道「现在进去可能读不到上次进度」。
+// 可能读不到上次进度时进库：给一句明确警示（2026-10-07 02:10 事故——恢复未就绪时进库会把续练位写退到第 1 题）。
+// 仍不拦（进度守卫 + 未就绪闸门兜底），但必须让人知道。
+// 2026-10-07：判据与练习页横幅统一（shouldWarnOnEnter）——原先只看 `state === 'syncing'`，
+// 而点题库那一刻同步早已跑完或压根没跑 ⇒ **这条 toast 从来没弹过**。现在改成「本机可能不是最新的」。
+// 另加本次进页面只提示一次，避免每次点题库都冒一句。
+let enterToastOnce = false
 function guardEnterPractice(url: string) {
-  if (homeSync.value.state === 'syncing') toastInfo('云同步还没完成：现在进去可能读不到上次进度，建议稍等几秒再进')
+  const st = homeSync.value
+  const ok = st.state === 'ok'
+  if (!enterToastOnce && shouldWarnOnEnter({
+    synced: ok,
+    lastOkAt: ok ? Number(st.at) || 0 : 0,
+    lastFail: st.state === 'fail',
+    busy: st.state === 'syncing',
+    now: Date.now(),
+  })) {
+    enterToastOnce = true
+    toastInfo('云同步还没完成：现在进去可能读不到上次进度，建议稍等几秒再进')
+  }
   router.push(url)
 }
 

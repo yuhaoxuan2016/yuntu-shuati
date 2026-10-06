@@ -19,6 +19,7 @@ import {
 import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal, mergeProgressMapForCloud, orderHitRate, PROG_SCHEMA_V, reshapeMpProgress, pushHistory, pickHistory, makeRollbackValue, HISTORY_MAX, resolvePushedRows, shouldPushLastPractice, PROGRESS_ROW_KEY } from './sync-ids'
 import { decideDeletedMark, nextTries, type RemoveResult } from './deleted-marks'
 import type { SyncDetail } from './sync-format'
+import { runExclusive, isSyncBusy, onSyncBusyChange } from './sync-mutex'
 
 // P2-7（T10a，2026-09-15）引入的时间戳归一化 helper 原本定义在本文件；
 // T10b（2026-09-15）把它**搬到 `db.ts` 并在此重新导出**，原因：5 处 `last_review` 比较里有两处在
@@ -64,6 +65,11 @@ export const cloudState = {
   lastSyncAt: null as string | null,
   error: null as string | null,
 }
+
+// 2026-10-07：`syncing` 的**唯一真相来源**＝全局锁（sync-mutex）。
+// 此前 pushToCloud 与 syncFromCloud 各自手写 true/false ⇒ 并发时先结束的那个会把还在跑的
+// 那一轮标成「已完成」，状态显示骗人。现在只在锁状态切换时由锁驱动回写一次。
+onSyncBusyChange((busy) => { cloudState.syncing = busy })
 
 function getConfig(): CloudConfig | null {
   try {
@@ -958,10 +964,13 @@ async function cleanupDanglingRecords(): Promise<number> {
 // 所以不写 cloudState.error（那会让状态行显示成失败），只如实向上返回，由设置页附加提示。
 // 2026-09-24：返回值加 suppressed —— 命中**删除账本**（本机删过的云端文档）而主动跳过的条数。
 //   这与 truncated 一样属于「如实告知、不是失败」：用户删过的东西不再回来，是预期行为。
-export async function syncFromCloud(): Promise<{ pulled: number; truncated: boolean; suppressed: number; cleaned: number; detail: SyncDetail }> {
+export function syncFromCloud(): Promise<{ pulled: number; truncated: boolean; suppressed: number; cleaned: number; detail: SyncDetail }> {
+  return runExclusive('syncFromCloud', syncFromCloudInner)
+}
+
+async function syncFromCloudInner(): Promise<{ pulled: number; truncated: boolean; suppressed: number; cleaned: number; detail: SyncDetail }> {
   if (!(await ensureApp())) return { pulled: 0, truncated: false, suppressed: 0, cleaned: 0, detail: {} }
   if (!isAuthed()) return { pulled: 0, truncated: false, suppressed: 0, cleaned: 0, detail: {} }
-  cloudState.syncing = true
   cloudState.error = null
   try {
     let pulled = 0
@@ -1019,7 +1028,7 @@ export async function syncFromCloud(): Promise<{ pulled: number; truncated: bool
     console.warn('syncFromCloud 失败：', e)
     return { pulled: 0, truncated: false, suppressed: 0, cleaned: 0, detail: {} }
   } finally {
-    cloudState.syncing = false
+    cloudState.syncing = isSyncBusy()
   }
 }
 
@@ -1033,10 +1042,14 @@ export async function syncFromCloud(): Promise<{ pulled: number; truncated: bool
 // #36（T10b，2026-09-15）：返回值补 failed —— 推送侧的部分失败数要能被 syncAll 汇总。
 // 原先只有 `cloudState.error` 一条通道，而它会被紧随其后的 `syncFromCloud` 首句 `cloudState.error = null`
 // 抹掉（见 syncAll 内注释），导致「推送部分失败」回到设置页时变成「同步完成」。
-export async function pushToCloud(): Promise<{ pushed: number; failed: number; skipped: number; detail: SyncDetail }> {
+export function pushToCloud(): Promise<{ pushed: number; failed: number; skipped: number; detail: SyncDetail }> {
+  // 2026-10-07：与 syncAll / syncFromCloud 共用同一把全局锁（sync-mutex）。
+  return runExclusive('pushToCloud', pushToCloudInner)
+}
+
+async function pushToCloudInner(): Promise<{ pushed: number; failed: number; skipped: number; detail: SyncDetail }> {
   if (!(await ensureApp())) return { pushed: 0, failed: 0, skipped: 0, detail: {} }
   if (!isAuthed()) return { pushed: 0, failed: 0, skipped: 0, detail: {} }
-  cloudState.syncing = true
   cloudState.error = null
   const syncKey = getSyncKey()
   const PUSH_CONCURRENCY = 6 // 并发上限（腾讯云数据库 API 限流安全值）
@@ -1102,7 +1115,7 @@ export async function pushToCloud(): Promise<{ pushed: number; failed: number; s
     // 整轮中断，具体失败条数未知（失败原因由 cloudState.error 承载）
     return { pushed: 0, failed: 0, skipped: 0, detail: {} }
   } finally {
-    cloudState.syncing = false
+    cloudState.syncing = isSyncBusy()
   }
 }
 
@@ -1192,7 +1205,13 @@ async function stampSyncedByKey(coll: 'wrong_questions' | 'mastered_questions' |
 //   修法：进入拉取前先记下推送侧的 error，拉取结束后若拉取侧没有写出新的 error，就把它放回 cloudState；
 //   并把 failed / truncated / error 一并返回给调用方，让提示按两侧的真实结果分流。
 // 2026-09-24：把拉取侧的 suppressed（命中删除账本、主动跳过的条数）一并上抛，设置页如实告知。
-export async function syncAll(): Promise<{ pulled: number; pushed: number; failed: number; skipped: number; truncated: boolean; suppressed: number; cleaned: number; pushDetail: SyncDetail; pullDetail: SyncDetail; error: string | null }> {
+export function syncAll(): Promise<{ pulled: number; pushed: number; failed: number; skipped: number; truncated: boolean; suppressed: number; cleaned: number; pushDetail: SyncDetail; pullDetail: SyncDetail; error: string | null }> {
+  // 2026-10-07：全局互斥 —— 跨入口（首页胶囊/练习页/设置页/轻推）此前可并发跑两轮，
+  // 同身份并发推拉最坏两份进度互相覆盖。已有同步在跑就复用它那一轮的 Promise，不再开第二轮。
+  return runExclusive('syncAll', syncAllInner)
+}
+
+async function syncAllInner(): Promise<{ pulled: number; pushed: number; failed: number; skipped: number; truncated: boolean; suppressed: number; cleaned: number; pushDetail: SyncDetail; pullDetail: SyncDetail; error: string | null }> {
   // 2026-10-07：全量同步此前不写同步状态 ⇒ 首页/练习页芯片会「刚同步过仍显示未同步」。按统一口径回写。
   setWebSyncStatus('syncing')
   const pushRes = await pushToCloud()
@@ -1225,6 +1244,10 @@ export function scheduleAutoPush(): void {
 // ===== 2026-10-03 准实时（打开即拉 + 答题后轻推）=====
 // rabbit 场景：「单位手机练 → 回家开电脑直接继续」（网页↔网页同理）。自动动作静默、失败走状态提示。
 const AUTO_PULL_KEY = 'cloud_auto_pull_at'
+// 2026-10-07（rabbit 裁定）：保持 10 分钟节流。打开网页时的启动钩子本来就带延迟，
+// 那是**故意留的**——首屏要先自渲染/切新版，同步挤在关键路径上会拖慢可见首屏；
+// 且"一个页面开一次同步一次"已经够用（页面内导航不触发同步，唯一自动入口在 App.vue）。
+// 参数与"滞后窗口"解耦：STALE_PULL_MS 只回答"横幅该不该说可能不最新"，不决定拉取频率。
 const AUTO_PULL_INTERVAL_MS = 10 * 60 * 1000
 const AUTO_PUSH_DEBOUNCE_MS = 8000
 const AUTO_PUSH_MIN_INTERVAL_MS = 30 * 1000   // 轻推最小间隔（防密集作答把大进度包连发）
@@ -1262,7 +1285,11 @@ export function getWebSyncStatus (): { state: WebSyncState; at: number; msg: str
 }
 
 // 打开网页时静默拉一次（≥10 分钟节流；开关关闭或云未启用时不跑）。结果落状态（失败可见）。
-export async function maybeAutoSyncOnOpen(): Promise<void> {
+export function maybeAutoSyncOnOpen(): Promise<void> {
+  return runExclusive('auto-pull', maybeAutoSyncOnOpenInner)
+}
+
+async function maybeAutoSyncOnOpenInner(): Promise<void> {
   try {
     if (!isCloudEnabled()) return
     if (!(await getAutoSyncEnabled())) return
@@ -1319,7 +1346,13 @@ export async function retryProgressSync(): Promise<boolean> {
   return webSyncStatus.state === 'ok'
 }
 
-async function pushProgressLight(force = false): Promise<void> {
+function pushProgressLight(force = false): Promise<void> {
+  // 2026-10-07：同样上全局锁 —— 轻推与全量同步并发会各推一份进度包，是互相覆盖的另一条路径。
+  // 防抖/最小间隔仍在内层判（那两个是"频率"问题，与"并发"正交）。
+  return runExclusive('progress-light', () => pushProgressLightInner(force))
+}
+
+async function pushProgressLightInner(force = false): Promise<void> {
   if (!force && Date.now() - lastLightPushAt < AUTO_PUSH_MIN_INTERVAL_MS) return
   setWebSyncStatus('syncing')
   try {
