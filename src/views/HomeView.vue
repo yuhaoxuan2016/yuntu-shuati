@@ -8,6 +8,13 @@
           <b>{{ totalQuestions }}</b> 道题 ·
           已掌握 <b>{{ totalMastered }}</b> 道
         </div>
+        <!-- 2026-10-07：同步状态胶囊（四态；未配云 = 灰显「未开启」，点击去设置） -->
+        <button
+          class="sync-chip"
+          :class="'ss-' + (syncEnabled ? homeSync.state : 'off')"
+          :title="syncEnabled ? (homeSync.msg || '点一下立即全量同步（上传 + 下载）') : '去设置里开启云同步'"
+          @click="doHomeSync"
+        >{{ homeSyncText }}</button>
       </div>
       <div class="header-btns">
         <button class="exam-btn" @click="$router.push('/exams')"><img class="btn-icon" src="/icons/exam.gif" alt="考试" /> 考试</button>
@@ -165,7 +172,7 @@
             </div>
           </div>
           <div class="actions">
-            <button class="primary-btn" @click="$router.push(b.mode === 'recite' ? `/recite/${b._id}?name=${encodeURIComponent(b.name)}` : `/practice/${b._id}?name=${encodeURIComponent(b.name)}`)">{{ b.mode === 'recite' ? '开始背题' : '开始刷题' }}</button>
+            <button class="primary-btn" @click="guardEnterPractice(b.mode === 'recite' ? `/recite/${b._id}?name=${encodeURIComponent(b.name)}` : `/practice/${b._id}?name=${encodeURIComponent(b.name)}`)">{{ b.mode === 'recite' ? '开始背题' : '开始刷题' }}</button>
             <div class="pub-actions-row">
               <button class="import-btn" @click.stop="$router.push(`/wrong/${b._id}`)">📕 错题本</button>
               <button class="import-btn" @click.stop="$router.push(`/favorites/${b._id}`)">⭐ 收藏</button>
@@ -209,7 +216,7 @@
                    · 添加到本地 = 复制一份到本机，离线可用
                  ⚠️ 不再显示「✓ 已添加到我的题库」这类独立标记（会与订阅状态堆叠、语义打架）；
                     已导入状态改为由按钮自身文案表达。 -->
-            <button class="primary-btn" @click="$router.push(b.mode === 'recite' ? `/recite/${b._id}?name=${encodeURIComponent(b.name)}` : `/practice/${b._id}?name=${encodeURIComponent(b.name)}`)">{{ b.mode === 'recite' ? '开始背题' : '开始刷题' }}</button>
+            <button class="primary-btn" @click="guardEnterPractice(b.mode === 'recite' ? `/recite/${b._id}?name=${encodeURIComponent(b.name)}` : `/practice/${b._id}?name=${encodeURIComponent(b.name)}`)">{{ b.mode === 'recite' ? '开始背题' : '开始刷题' }}</button>
             <!-- 2026-09-27：**背题库（计算题）不显示订阅与添加到本地** —— 计算题没有「对错」概念，
                  既不存在错题也没什么可订阅；整库内容只走在线读取（与下方提示一致）。 -->
             <div v-if="b.mode !== 'recite'" class="pub-actions-row">
@@ -268,7 +275,7 @@
         </div>
 
         <div class="actions">
-          <button class="primary-btn" @click="$router.push(`/practice/${b.id}`)">开始刷题</button>
+          <button class="primary-btn" @click="guardEnterPractice(`/practice/${b.id}`)">开始刷题</button>
         </div>
 
         <!-- 2026-09-25（rabbit）：「导入的副本能从公共题库更新」这件事原先只藏在 ⋯ 菜单里，很多人不知道 ⇒
@@ -339,7 +346,7 @@ import { useRouter } from 'vue-router'
 import { useBankStore } from '../stores/bank'
 import { api, toLocalDateStr, addDays } from '../utils/api'
 import { listPublicBanks, listExams, listPublicBankQuestions, classifyQuestionType, judgeAnswerBool, type Exam } from '../lib/exam'
-import { toastSuccess, toastError } from '../utils/toast'
+import { toastSuccess, toastError, toastInfo } from '../utils/toast'
 import { recordVisit, getVisitStats } from '../lib/visit'
 import { poemOfTheDay, todayLabel, type Poem } from '../lib/poems'
 import { idb, normalizeTs } from '../lib/db'
@@ -503,6 +510,100 @@ async function loadRecordCounts () {
   } catch { /* 计数拿不到不影响首页 */ }
 }
 loadRecordCounts()
+
+// 2026-10-07（rabbit）：首页**同步状态胶囊**。此前首次打开页面时云同步静默启动（App.vue 挂载后 4 秒），
+// 用户看不到任何信号就点进题库开答——拉取还没回来时页面数据可能是旧的；同步完成后首页也不会更新
+// （数据只在 onMounted 装载一次），表现为「必须手动刷新或切页才显示同步后的信息」。
+// 现在：四态胶囊（未同步/同步中/已同步 HH:MM/失败可点重试）+ 3 秒轮询内存态；
+// 捕捉「同步中→已完成」转变 → 自动重跑首页数据；点胶囊 = 立即全量双向同步（syncAll）。
+type HomeSyncState = { state: 'idle' | 'syncing' | 'ok' | 'fail'; at: number; msg?: string }
+const syncEnabled = ref(cloudConfigured())
+const homeSync = ref<HomeSyncState>({ state: 'idle', at: 0 })
+const homeSyncText = computed(() => {
+  if (!syncEnabled.value) return '☁ 云同步未开启'
+  const s = homeSync.value
+  if (s.state === 'syncing') return '☁ 同步中…'
+  if (s.state === 'fail') return '☁ 同步失败 · 点重试'
+  if (s.state === 'ok') {
+    const d = new Date(s.at || Date.now())
+    const p2 = (n: number) => String(n).padStart(2, '0')
+    return `☁ 已同步 ${p2(d.getHours())}:${p2(d.getMinutes())}`
+  }
+  return '☁ 未同步 · 点同步'
+})
+// 动态 import（首页 chunk 刻意不静态引 cloud.ts，见上方 cloudConfigured 注释）；只取一次，与 App.vue 那份同一实例
+let homeCloudMod: Promise<typeof import('../lib/cloud')> | null = null
+function getHomeCloudMod() {
+  if (!homeCloudMod) homeCloudMod = import('../lib/cloud')
+  return homeCloudMod
+}
+// 同步完成后的数据重跑：只重跑「会被云同步改变」的面；**不**重跑 recordVisit（防重复计数）/
+// 每日一诗 / 新手指引 / 空公共壳清理（后者是破坏性动作，只留在 onMounted 首次装载）。
+let refreshAfterSyncBusy = false
+async function refreshAfterSync() {
+  if (refreshAfterSyncBusy) return
+  refreshAfterSyncBusy = true
+  try {
+    await Promise.allSettled([
+      loadPublicData(),
+      loadStudyPlan(),
+      loadMemoryReviewStats(),
+      loadSubs(),
+      loadRecordCounts(),
+      bankStore.load().then(() => loadBankStatsAndTip()),
+    ])
+    await loadTodayAndLast()
+  } finally { refreshAfterSyncBusy = false }
+}
+let homeSyncBusy = false
+async function doHomeSync() {
+  if (!syncEnabled.value) { router.push('/settings'); return }
+  if (homeSyncBusy) return
+  homeSyncBusy = true
+  try {
+    const m = await getHomeCloudMod()
+    // 已有一轮在跑（如 App.vue 打开自动同步）：不叠加请求，只提示等待，完成时轮询会接住转变
+    if (m.getWebSyncStatus().state === 'syncing') { toastInfo('云同步正在进行，稍等几秒'); return }
+    homeSync.value = { state: 'syncing', at: Date.now() }
+    await m.syncAll()
+    const st = m.getWebSyncStatus()
+    if (st.state === 'fail') {
+      homeSync.value = { state: 'fail', at: st.at || Date.now(), msg: st.msg }
+      toastError('同步失败：' + (st.msg || '网络或云端异常') + '，可点胶囊重试')
+    } else {
+      homeSync.value = { state: 'ok', at: st.at || Date.now() }
+      lastSyncedAt = homeSync.value.at // 这笔重跑已由本函数负责，避免轮询再触发一次
+      toastSuccess('云同步完成')
+      await refreshAfterSync()
+    }
+  } catch (e: any) {
+    homeSync.value = { state: 'fail', at: Date.now(), msg: (e && e.message) || String(e) }
+    toastError('同步失败：' + homeSync.value.msg)
+  } finally { homeSyncBusy = false }
+}
+// 3 秒轮询：刷新四态；捕捉「同步完成」的转变 → 自动重跑首页数据（覆盖 App.vue 那次打开自动同步）。
+// 转变判定看 `at`（每次状态变更都会被改写）而不是上一态——同步可能在两次轮询之间整段完成，
+// 只看 prev==='syncing' 会漏。完成时间早于本次进页面的，数据刚装载过 ⇒ 只记基线不重跑。
+const homeMountedAt = Date.now()
+let lastSyncedAt = 0
+let syncPollTimer: number | null = null
+function pollHomeSync() {
+  syncEnabled.value = cloudConfigured()
+  getHomeCloudMod().then(m => {
+    const s = m.getWebSyncStatus()
+    homeSync.value = { state: s.state, at: s.at, msg: s.msg }
+    if (s.state === 'ok' && s.at && s.at !== lastSyncedAt) {
+      lastSyncedAt = s.at
+      if (s.at >= homeMountedAt && !homeSyncBusy) void refreshAfterSync()
+    }
+  }).catch(() => { /* cloud 模块加载失败：保持原状态 */ })
+}
+// 同步进行中进库：一句轻提示（不拦，进度守卫兜底；同步完成后首页自动刷新）
+function guardEnterPractice(url: string) {
+  if (homeSync.value.state === 'syncing') toastInfo('云同步进行中，可以先进去答题（完成后首页自动刷新）')
+  router.push(url)
+}
+
 async function onToggleSub (b: any) {
   const bankRef = String((b && b._id) || '')
   if (!bankRef) return
@@ -672,69 +773,24 @@ async function loadMemoryReviewStats() {
   }
 }
 
-onMounted(async () => {
-  document.addEventListener('click', onDocClick)
-  document.addEventListener('touchstart', onDocClick, { passive: true })
-  // 并行加载：本地题库 + 云端公共数据 + 学习计划（公共部分失败不影响本地使用）
-  await Promise.allSettled([
-    loadPublicData(),
-    loadStudyPlan(),
-    loadMemoryReviewStats(),
-    bankStore.load().then(async () => {
-      // 2026-09-28：新手指引——新用户（无标记 + 没题库 + 没配云同步）首开弹一次
-      if (!localStorage.getItem('shuati-tour-done-v1') && bankStore.banks.length === 0 && !cloudConfigured()) {
-        setTimeout(() => { showTour.value = true }, 600)
-      }
-      // 加载每个题库统计
-      // 2026-09-15 修复(P2-13)：新增 statsOk 集合——只有统计**确实成功**的库才可能被判空壳
-      const statsOk = new Set<number>()
-      await Promise.all(bankStore.banks.map(async b => {
-        try {
-          const s = await api.bankStats(b.id)
-          bankStatsMap.value.set(b.id, { ...s, accuracy: s.practiced > 0 ? Math.min(100, Math.round((s.correct / s.practiced) * 100)) : 0 })
-          statsOk.add(b.id)
-        } catch { /* ignore */ }
-      }))
-      // 2026-08-23：清理「我的题库」里的空公共壳（cloud_shared=true 且 0 题）。
-      // 这类题库是早期同步误拉进来的公共题库空壳（公共题目不进本地缓存），仅占位无内容，
-      // 且公共题库现在是云端直读（listPublicBanks），本地无需保留。删除仅限本地，不影响云端公共数据。
-      // 2026-09-15 修复(P2-13)：原实现把「统计失败」当「统计为 0」——bankStats 抛错时该库不在
-      // map 里，`?? 0` 判空成立 ⇒ 一次统计读取失败就能让有数据的 cloud_shared 题库在每次访问
-      // 首页时被无确认删除。破坏性决定不能由可能缺失的证据驱动：只删「统计确实成功且为 0」的库，
-      // 且删除前再用 idb 直接数一次。
-      // ⚠️ 两处措辞由复审 MF-3 更正（原先写错了，别照抄回去）：
-      //   ① 不是「网络抖动」——`api.bankStats` 全链路只读本地 IndexedDB
-      //      （`src/utils/api.ts:203` → `src/lib/db.ts:594` 的 listQuestions + practice_records 索引），
-      //      不触网。能抛的是 IDB 自身的问题（事务错误、配额、库被关闭/版本升级中）。
-      //   ② 复核**不是**「另一个更可信的数据源」：`total` 本来就等于 `listQuestions(bankId).length`
-      //      （`db.ts:595` + `:616`），与被调的 listQuestions 同源。复核的实际价值只有两条——
-      //      在**执行删除的那一刻**重新读一次（防 bankStatsMap 是本轮早先算的、期间题目被加回来了），
-      //      以及绕开 `bankStatsMap` 这层缓存。复审据此指出：只有「统计与删除之间发生了写入」
-      //      这一种情形能被它拦住，同源失真它拦不住。
-      //
-      // 2026-09-24（**随「删掉别再回来」一起收口**）：判据补 `visibility === 'public'`。
-      //   这段清理的原文承诺是「删除仅限本地，不影响云端公共数据」，可 `cloud_shared` 这个代用判据
-      //   对**私人题库也是 true**（writeLocal 拉下来的每一行都标 cloud_shared）⇒ 它其实会删掉
-      //   「自己建的、还没加题的私人题库」。此前删了也就本地少一行（云端那份还在，下次同步再拉回来）；
-      //   现在删除会随上传落到云端 + 进删除账本，等于把一次静默的本地清理升级成**永久删云端**。
-      //   口径回到它原本要清的「空公共壳」：只有 visibility=public 的才算（那类文档客户端本就无权删，
-      //   云端删除会被 ACL 拒掉，账本也不影响——公共题库的拉取本来就被 pullCollection 跳过）。
-      const emptyPublicShells = bankStore.banks.filter(b => b.cloud_shared && b.visibility === 'public' && statsOk.has(b.id) && bankStatsMap.value.get(b.id)?.total === 0)
-      for (const shell of emptyPublicShells) {
-        try {
-          const localCount = (await idb.listQuestions(shell.id)).length
-          if (localCount > 0) {
-            console.warn('[云同步] 跳过清理：本地仍有', localCount, '道题，统计口径可能失真：', shell.name)
-            continue
-          }
-          await bankStore.remove(shell.id)
-          console.info('[云同步] 已清理空公共题库壳：', shell.name)
-        } catch (e) { console.warn('清理空公共题库壳失败：', shell.name, e) }
-      }
-      // 题库加载完才知道「有没有数据可丢」——本机存储提醒在这里判一次
-      updateCacheTip()
-    }),
-  ])
+// 题库统计 + 本机存储提醒（onMounted 与同步完成后的自动刷新共用）。
+// 返回 statsOk：只有统计**确实成功**的库才可能被判空壳（2026-09-15 修复 P2-13）。
+async function loadBankStatsAndTip(): Promise<Set<number>> {
+  const statsOk = new Set<number>()
+  await Promise.all(bankStore.banks.map(async b => {
+    try {
+      const s = await api.bankStats(b.id)
+      bankStatsMap.value.set(b.id, { ...s, accuracy: s.practiced > 0 ? Math.min(100, Math.round((s.correct / s.practiced) * 100)) : 0 })
+      statsOk.add(b.id)
+    } catch { /* ignore */ }
+  }))
+  // 题库加载完才知道「有没有数据可丢」——本机存储提醒在这里判一次
+  updateCacheTip()
+  return statsOk
+}
+
+// 今日统计 / 连续天数 / 最近练习（onMounted 与同步完成后的自动刷新共用）
+async function loadTodayAndLast() {
   // 计算今日统计 & 连续天数
   try {
     const raw = await api.getSetting('daily_records')
@@ -773,6 +829,64 @@ onMounted(async () => {
       }
     }
   } catch (e) { console.error('加载最近练习记录失败：', e) }
+}
+
+onMounted(async () => {
+  document.addEventListener('click', onDocClick)
+  document.addEventListener('touchstart', onDocClick, { passive: true })
+  // 2026-10-07：同步胶囊 3 秒轮询（转换检测 + 自动重跑，见 pollHomeSync）
+  syncPollTimer = window.setInterval(pollHomeSync, 3000)
+  // 并行加载：本地题库 + 云端公共数据 + 学习计划（公共部分失败不影响本地使用）
+  await Promise.allSettled([
+    loadPublicData(),
+    loadStudyPlan(),
+    loadMemoryReviewStats(),
+    bankStore.load().then(async () => {
+      // 2026-09-28：新手指引——新用户（无标记 + 没题库 + 没配云同步）首开弹一次
+      if (!localStorage.getItem('shuati-tour-done-v1') && bankStore.banks.length === 0 && !cloudConfigured()) {
+        setTimeout(() => { showTour.value = true }, 600)
+      }
+      // 加载每个题库统计（提取成函数：同步完成后的自动刷新也走它）
+      const statsOk = await loadBankStatsAndTip()
+      // 2026-08-23：清理「我的题库」里的空公共壳（cloud_shared=true 且 0 题）。
+      // 这类题库是早期同步误拉进来的公共题库空壳（公共题目不进本地缓存），仅占位无内容，
+      // 且公共题库现在是云端直读（listPublicBanks），本地无需保留。删除仅限本地，不影响云端公共数据。
+      // 2026-09-15 修复(P2-13)：原实现把「统计失败」当「统计为 0」——bankStats 抛错时该库不在
+      // map 里，`?? 0` 判空成立 ⇒ 一次统计读取失败就能让有数据的 cloud_shared 题库在每次访问
+      // 首页时被无确认删除。破坏性决定不能由可能缺失的证据驱动：只删「统计确实成功且为 0」的库，
+      // 且删除前再用 idb 直接数一次。
+      // ⚠️ 两处措辞由复审 MF-3 更正（原先写错了，别照抄回去）：
+      //   ① 不是「网络抖动」——`api.bankStats` 全链路只读本地 IndexedDB
+      //      （`src/utils/api.ts:203` → `src/lib/db.ts:594` 的 listQuestions + practice_records 索引），
+      //      不触网。能抛的是 IDB 自身的问题（事务错误、配额、库被关闭/版本升级中）。
+      //   ② 复核**不是**「另一个更可信的数据源」：`total` 本来就等于 `listQuestions(bankId).length`
+      //      （`db.ts:595` + `:616`），与被调的 listQuestions 同源。复核的实际价值只有两条——
+      //      在**执行删除的那一刻**重新读一次（防 bankStatsMap 是本轮早先算的、期间题目被加回来了），
+      //      以及绕开 `bankStatsMap` 这层缓存。复审据此指出：只有「统计与删除之间发生了写入」
+      //      这一种情形能被它拦住，同源失真它拦不住。
+      //
+      // 2026-09-24（**随「删掉别再回来」一起收口**）：判据补 `visibility === 'public'`。
+      //   这段清理的原文承诺是「删除仅限本地，不影响云端公共数据」，可 `cloud_shared` 这个代用判据
+      //   对**私人题库也是 true**（writeLocal 拉下来的每一行都标 cloud_shared）⇒ 它其实会删掉
+      //   「自己建的、还没加题的私人题库」。此前删了也就本地少一行（云端那份还在，下次同步再拉回来）；
+      //   现在删除会随上传落到云端 + 进删除账本，等于把一次静默的本地清理升级成**永久删云端**。
+      //   口径回到它原本要清的「空公共壳」：只有 visibility=public 的才算（那类文档客户端本就无权删，
+      //   云端删除会被 ACL 拒掉，账本也不影响——公共题库的拉取本来就被 pullCollection 跳过）。
+      const emptyPublicShells = bankStore.banks.filter(b => b.cloud_shared && b.visibility === 'public' && statsOk.has(b.id) && bankStatsMap.value.get(b.id)?.total === 0)
+      for (const shell of emptyPublicShells) {
+        try {
+          const localCount = (await idb.listQuestions(shell.id)).length
+          if (localCount > 0) {
+            console.warn('[云同步] 跳过清理：本地仍有', localCount, '道题，统计口径可能失真：', shell.name)
+            continue
+          }
+          await bankStore.remove(shell.id)
+          console.info('[云同步] 已清理空公共题库壳：', shell.name)
+        } catch (e) { console.warn('清理空公共题库壳失败：', shell.name, e) }
+      }
+    }),
+  ])
+  await loadTodayAndLast()
   // 访问统计（累计/今日）；失败静默，不影响首页
   try {
     await recordVisit()
@@ -813,7 +927,7 @@ async function loadPublicData() {
 }
 
 function resumePractice() {
-  if (lastPractice.value) router.push(`/practice/${lastPractice.value.bank_id}`)
+  if (lastPractice.value) guardEnterPractice(`/practice/${lastPractice.value.bank_id}`)
 }
 
 // 判据本体搬去 lib/bank-provenance.ts（纯函数、可离线直测，见 tests/bank-provenance.test.cjs）：
@@ -1040,7 +1154,11 @@ async function submitForReview(b: { id: number; name: string }) {
   }
 }
 
-onBeforeUnmount(() => { document.removeEventListener('click', onDocClick); document.removeEventListener('touchstart', onDocClick) })
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocClick)
+  document.removeEventListener('touchstart', onDocClick)
+  if (syncPollTimer !== null) { window.clearInterval(syncPollTimer); syncPollTimer = null }
+})
 </script>
 
 <style scoped>
@@ -1048,6 +1166,19 @@ onBeforeUnmount(() => { document.removeEventListener('click', onDocClick); docum
 .header h2 { margin: 0 0 4px 0; font-size: 24px; }
 .header-sub { font-size: 13px; color: var(--color-text-secondary); }
 .header-sub b { color: var(--color-primary); font-weight: 600; }
+
+/* 2026-10-07：同步状态胶囊（四态 + 未开启灰显；点击 = 立即全量同步；未开启 = 去设置） */
+.sync-chip {
+  display: inline-block; margin-top: 8px; padding: 3px 12px;
+  border-radius: 999px; border: 1px solid var(--color-border, #e3e6eb);
+  background: var(--color-card, #fff); font-size: 12px;
+  color: var(--color-text-secondary); cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.sync-chip.ss-syncing { color: var(--color-primary); border-color: var(--color-primary); }
+.sync-chip.ss-ok { color: var(--color-success-strong); border-color: var(--color-success-strong); }
+.sync-chip.ss-fail { color: var(--color-danger-deep); border-color: var(--color-danger-deep); font-weight: 600; }
+.sync-chip.ss-off { opacity: .6; }
 
 /* 访问统计条 */
 .visit-bar { margin-bottom: 16px; font-size: 13px; color: var(--color-text-secondary); padding: 8px 14px; background: var(--color-surface, #f7f8fa); border: 1px solid var(--color-border, #eee); border-radius: var(--radius-md); }

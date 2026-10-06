@@ -305,8 +305,13 @@ export async function consumeRecoverPendingPull(): Promise<void> {
   try {
     if (!isCloudEnabled()) return
     if (!(await ensureApp())) return
+    // 2026-10-07：此前零状态写入（完全静默）⇒ 芯片读不到这次拉取。补上与打开自动拉同一口径。
+    setWebSyncStatus('syncing')
     await syncFromCloud()
-  } catch (e) {
+    if (cloudState.error) setWebSyncStatus('fail', cloudState.error)
+    else setWebSyncStatus('ok')
+  } catch (e: any) {
+    setWebSyncStatus('fail', (e && e.message) || String(e))
     console.warn('[cloud] 找回后自动拉取失败（静默）', e)
   }
 }
@@ -1188,10 +1193,14 @@ async function stampSyncedByKey(coll: 'wrong_questions' | 'mastered_questions' |
 //   并把 failed / truncated / error 一并返回给调用方，让提示按两侧的真实结果分流。
 // 2026-09-24：把拉取侧的 suppressed（命中删除账本、主动跳过的条数）一并上抛，设置页如实告知。
 export async function syncAll(): Promise<{ pulled: number; pushed: number; failed: number; skipped: number; truncated: boolean; suppressed: number; cleaned: number; pushDetail: SyncDetail; pullDetail: SyncDetail; error: string | null }> {
+  // 2026-10-07：全量同步此前不写同步状态 ⇒ 首页/练习页芯片会「刚同步过仍显示未同步」。按统一口径回写。
+  setWebSyncStatus('syncing')
   const pushRes = await pushToCloud()
   const pushError = cloudState.error // 拉取会把 error 清空，先抓在手里
   const pullRes = await syncFromCloud()
   if (!cloudState.error && pushError) cloudState.error = pushError
+  if (cloudState.error) setWebSyncStatus('fail', cloudState.error)
+  else setWebSyncStatus('ok')
   return {
     pulled: pullRes.pulled,
     pushed: pushRes.pushed,
