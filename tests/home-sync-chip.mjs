@@ -1,7 +1,8 @@
 // 首页「同步状态胶囊」冒烟（2026-10-07）：一把守两件事——
 //   ① 首页能挂载：TDZ 白屏历史撞过三次（Vue watch 注册即求值 source），本批 HomeView 新增了
 //      响应式 + 轮询代码，属高危回归点；白屏时本探针第一项就失败。
-//   ② 「同步状态胶囊」存在于 DOM：状态类 ∈ ss-{off,idle,syncing,ok,fail}、文案含 ☁、元素是 button。
+//   ② 「同步状态胶囊」存在于 DOM：状态类 ∈ ss-{off,idle,syncing,ok,fail}、图标节点 .sc-ico 字形
+//      ∈ {☁,↻,✓,!}（2026-10-07 晚四态动效批：图标从文案前缀挪进 .sc-ico）、元素是 button。
 //      四态由真实同步状态驱动，本探针只验「存在且形态合法」，不赌具体态（新建 profile 无数据，
 //      可能停在 off/idle，也可能已跑完自动同步变 ok/fail——都以正则放行）。
 //   ③ 点击接线：off 态点胶囊应跳设置页（syncEnabled=false 分支，零网络副作用）；
@@ -50,17 +51,20 @@ async function PAGE_FLOW () {
     await sleep(300)
     const cls = chip.className || ''
     const state = (cls.match(/ss-(off|idle|syncing|ok|fail)/) || [])[1] || ''
+    // 2026-10-07 晚：图标从文案前缀挪进 .sc-ico 节点（四态动效批）——改按节点取字形
+    const icoEl = chip.querySelector('.sc-ico')
+    const ico = icoEl ? (icoEl.textContent || '').trim() : ''
     const text = (chip.textContent || '').trim()
     const h2 = ((document.querySelector('.header h2') || {}).textContent || '').trim()
     const appChildren = ((document.querySelector('#app') || {}).children || []).length
     return {
       ok: true,
-      tagName: chip.tagName, cls, state, text,
+      tagName: chip.tagName, cls, state, ico, text,
       title: chip.getAttribute('title') || '',
       h2, appChildren,
       bodyHead: document.body.innerText.slice(0, 200),
       pass: Boolean(
-        state && text.includes('☁') && chip.tagName === 'BUTTON' &&
+        state && ['☁', '↻', '✓', '!'].includes(ico) && chip.tagName === 'BUTTON' &&
         h2 === '我的题库' && appChildren > 0
       ),
     }
@@ -167,7 +171,7 @@ async function main () {
   cleanup()
   const clickOk = !click || click.ok || click.skipped
   if (!result) process.exit(2)
-  if (result.pass && clickOk) { console.log('✅ 通过：首页挂载正常，同步胶囊在 DOM（四态类 + ☁ 文案 + button' + (click && click.ok ? '，off 态点击跳设置页' : '') + '）'); process.exit(0) }
+  if (result.pass && clickOk) { console.log('✅ 通过：首页挂载正常，同步胶囊在 DOM（四态类 + .sc-ico 图标 + button' + (click && click.ok ? '，off 态点击跳设置页' : '') + '）'); process.exit(0) }
   console.error('✗ 未通过')
   process.exit(1)
 }

@@ -8,13 +8,14 @@
           <b>{{ totalQuestions }}</b> 道题 ·
           已掌握 <b>{{ totalMastered }}</b> 道
         </div>
-        <!-- 2026-10-07：同步状态胶囊（四态；未配云 = 灰显「未开启」，点击去设置） -->
+        <!-- 2026-10-07：同步状态胶囊（四态；未配云 = 灰显「未开启」，点击去设置）
+             2026-10-07 晚：图标分态 + 动效（↻ 转=同步中、✓ 落定轻弹），☁ 前缀不再写进文字 -->
         <button
           class="sync-chip"
-          :class="'ss-' + (syncEnabled ? homeSync.state : 'off')"
+          :class="['ss-' + (syncEnabled ? homeSync.state : 'off'), { 'ss-pop': justSynced }]"
           :title="syncEnabled ? (homeSync.msg || '点一下立即全量同步（上传 + 下载）') : '去设置里开启云同步'"
           @click="doHomeSync"
-        >{{ homeSyncText }}</button>
+        ><span class="sc-ico">{{ homeSyncIco }}</span>{{ homeSyncText }}</button>
       </div>
       <div class="header-btns">
         <button class="exam-btn" @click="$router.push('/exams')"><img class="btn-icon" src="/icons/exam.gif" alt="考试" /> 考试</button>
@@ -519,17 +520,34 @@ loadRecordCounts()
 type HomeSyncState = { state: 'idle' | 'syncing' | 'ok' | 'fail'; at: number; msg?: string }
 const syncEnabled = ref(cloudConfigured())
 const homeSync = ref<HomeSyncState>({ state: 'idle', at: 0 })
-const homeSyncText = computed(() => {
-  if (!syncEnabled.value) return '☁ 云同步未开启'
+// 图标分态（2026-10-07）：☁ 未开启 / ↻ 待同步或同步中（靠转动区分）/ ✓ 已同步 / ! 失败
+const homeSyncIco = computed(() => {
+  if (!syncEnabled.value) return '☁'
   const s = homeSync.value
-  if (s.state === 'syncing') return '☁ 同步中…'
-  if (s.state === 'fail') return '☁ 同步失败 · 点重试'
+  if (s.state === 'syncing') return '↻'
+  if (s.state === 'fail') return '!'
+  if (s.state === 'ok') return '✓'
+  return '↻'
+})
+// 完成轻弹：只在「转变为 ok」那一刻挂 500ms（首次装载时已是 ok 不弹）
+const justSynced = ref(false)
+let justSyncedTimer: number | null = null
+function markJustSynced() {
+  justSynced.value = true
+  if (justSyncedTimer) window.clearTimeout(justSyncedTimer)
+  justSyncedTimer = window.setTimeout(() => { justSynced.value = false }, 500)
+}
+const homeSyncText = computed(() => {
+  if (!syncEnabled.value) return '云同步未开启'
+  const s = homeSync.value
+  if (s.state === 'syncing') return '同步中…'
+  if (s.state === 'fail') return '同步失败 · 点重试'
   if (s.state === 'ok') {
     const d = new Date(s.at || Date.now())
     const p2 = (n: number) => String(n).padStart(2, '0')
-    return `☁ 已同步 ${p2(d.getHours())}:${p2(d.getMinutes())}`
+    return `已同步 ${p2(d.getHours())}:${p2(d.getMinutes())}`
   }
-  return '☁ 未同步 · 点同步'
+  return '未同步 · 点一下同步'
 })
 // 动态 import（首页 chunk 刻意不静态引 cloud.ts，见上方 cloudConfigured 注释）；只取一次，与 App.vue 那份同一实例
 let homeCloudMod: Promise<typeof import('../lib/cloud')> | null = null
@@ -572,6 +590,7 @@ async function doHomeSync() {
       toastError('同步失败：' + (st.msg || '网络或云端异常') + '，可点胶囊重试')
     } else {
       homeSync.value = { state: 'ok', at: st.at || Date.now() }
+      markJustSynced()
       lastSyncedAt = homeSync.value.at // 这笔重跑已由本函数负责，避免轮询再触发一次
       toastSuccess('云同步完成')
       await refreshAfterSync()
@@ -591,7 +610,9 @@ function pollHomeSync() {
   syncEnabled.value = cloudConfigured()
   getHomeCloudMod().then(m => {
     const s = m.getWebSyncStatus()
+    const prevState = homeSync.value.state
     homeSync.value = { state: s.state, at: s.at, msg: s.msg }
+    if (prevState !== 'ok' && s.state === 'ok') markJustSynced()
     if (s.state === 'ok' && s.at && s.at !== lastSyncedAt) {
       lastSyncedAt = s.at
       if (s.at >= homeMountedAt && !homeSyncBusy) void refreshAfterSync()
@@ -1167,7 +1188,9 @@ onBeforeUnmount(() => {
 .header-sub { font-size: 13px; color: var(--color-text-secondary); }
 .header-sub b { color: var(--color-primary); font-weight: 600; }
 
-/* 2026-10-07：同步状态胶囊（四态 + 未开启灰显；点击 = 立即全量同步；未开启 = 去设置） */
+/* 2026-10-07：同步状态胶囊（四态 + 未开启灰显；点击 = 立即全量同步；未开启 = 去设置）
+   2026-10-07 晚：图标分态 + 动效——同步中 ↻ 持续旋转；完成 ✓ 轻弹（justSynced 500ms 闸门，
+   只在转变为 ok 那一刻挂 ss-pop）；待同步接主题色（原先与未开启同为灰，最易混） */
 .sync-chip {
   display: inline-block; margin-top: 8px; padding: 3px 12px;
   border-radius: 999px; border: 1px solid var(--color-border, #e3e6eb);
@@ -1175,8 +1198,14 @@ onBeforeUnmount(() => {
   color: var(--color-text-secondary); cursor: pointer;
   transition: color .15s, border-color .15s;
 }
+.sync-chip .sc-ico { display: inline-block; }
+@keyframes sync-spin { to { transform: rotate(360deg); } }
+@keyframes sync-pop { 0% { transform: scale(1); } 50% { transform: scale(1.35); } 100% { transform: scale(1); } }
+.sync-chip.ss-idle { color: var(--color-primary); border-color: var(--color-primary); }
 .sync-chip.ss-syncing { color: var(--color-primary); border-color: var(--color-primary); }
+.sync-chip.ss-syncing .sc-ico { animation: sync-spin 1s linear infinite; }
 .sync-chip.ss-ok { color: var(--color-success-strong); border-color: var(--color-success-strong); }
+.sync-chip.ss-ok.ss-pop .sc-ico { animation: sync-pop .3s ease; }
 .sync-chip.ss-fail { color: var(--color-danger-deep); border-color: var(--color-danger-deep); font-weight: 600; }
 .sync-chip.ss-off { opacity: .6; }
 

@@ -56,8 +56,8 @@
       <button v-if="historyList.length" class="restart-btn history-btn" @click="showHistory = true">
         🕘 历史版本（{{ historyList.length }}）
       </button>
-      <!-- 2026-10-03：同步状态（断网/失败可见，可点重试） -->
-      <span class="sync-chip" :class="{ ok: syncStat.state === 'ok', fail: syncStat.state === 'fail' }" :title="syncStat.msg || ''" @click="onSyncChipTap">{{ syncChipText }}</span>
+      <!-- 2026-10-03：同步状态（断网/失败可见，可点重试）；2026-10-07 晚图标分态 + 动效（同步中 ↻ 转、完成 ✓ 轻弹） -->
+      <span class="sync-chip" :class="{ syncing: syncStat.state === 'syncing', ok: syncStat.state === 'ok', fail: syncStat.state === 'fail', pop: justSynced }" :title="syncStat.msg || ''" @click="onSyncChipTap"><span class="sc-ico">{{ syncChipIco }}</span>{{ syncChipText }}</span>
     </div>
 
     <!-- 2026-10-03：存档守望的可见出口（写不进去/落盘校验不过时出现，点一下补存）＋计划模式提示 -->
@@ -670,6 +670,14 @@ function retrySave() { void saveProgress() }
 // 2026-10-03：顶栏同步状态（断网/失败可见、可点重试）——只读云同步模块的内存状态，每 3s 刷一次
 const syncStat = ref(getWebSyncStatus())
 let syncStatTimer: number | null = null
+// 图标分态（2026-10-07）：↻ 待同步或同步中（靠转动区分）/ ✓ 已同步 / ! 失败
+const syncChipIco = computed(() => {
+  const s = syncStat.value
+  if (s.state === 'syncing') return '↻'
+  if (s.state === 'fail') return '!'
+  if (s.state === 'ok') return '✓'
+  return '↻'
+})
 const syncChipText = computed(() => {
   const s = syncStat.value
   if (s.state === 'syncing') return '同步中…'
@@ -681,7 +689,20 @@ const syncChipText = computed(() => {
   }
   return '未同步'
 })
-function refreshSyncStat () { syncStat.value = getWebSyncStatus() }
+// 完成轻弹：只在「转变为 ok」那一刻挂 500ms（页面刚打开时已是 ok 不弹）
+const justSynced = ref(false)
+let justSyncedTimer: number | null = null
+function markJustSynced() {
+  justSynced.value = true
+  if (justSyncedTimer) window.clearTimeout(justSyncedTimer)
+  justSyncedTimer = window.setTimeout(() => { justSynced.value = false }, 500)
+}
+function refreshSyncStat () {
+  const prevState = syncStat.value.state
+  const next = getWebSyncStatus()
+  syncStat.value = next
+  if (prevState !== 'ok' && next.state === 'ok') markJustSynced()
+}
 async function onSyncChipTap () {
   if (syncStat.value.state === 'syncing') return
   refreshSyncStat()
@@ -1249,8 +1270,16 @@ async function restart() {
 
 .restart-btn { padding: 5px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-card); cursor: pointer; font-size: 13px; color: var(--color-text); }
 /* 2026-10-03：同步状态小片（顶栏第二排） */
+/* 2026-10-07 晚：图标分态 + 动效——「同步中」此前没有任何样式（最分不清的一处），现接主题色 + ↻ 旋转；
+   完成轻弹由 pop（justSynced 500ms 闸门）控制；已同步 ✓ 接成功色 */
 .sync-chip { padding: 4px 10px; border-radius: 999px; font-size: 12px; color: var(--color-text-secondary); }
-.sync-chip.ok { opacity: 0.75; }
+.sync-chip .sc-ico { display: inline-block; }
+@keyframes sync-spin { to { transform: rotate(360deg); } }
+@keyframes sync-pop { 0% { transform: scale(1); } 50% { transform: scale(1.35); } 100% { transform: scale(1); } }
+.sync-chip.syncing { color: var(--color-primary); }
+.sync-chip.syncing .sc-ico { animation: sync-spin 1s linear infinite; }
+.sync-chip.ok { color: var(--color-success-strong); }
+.sync-chip.pop .sc-ico { animation: sync-pop .3s ease; }
 .sync-chip.fail { color: var(--color-danger-deep); font-weight: 600; cursor: pointer; }
 .restart-btn:hover { background: var(--color-border-light); }
 
