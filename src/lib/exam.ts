@@ -236,6 +236,9 @@ export interface ExamQuestion {
   // 2026-09-25：题面被校对修订过时带上的记录（{at, why, edits[]}）。
   // 目的：读者一眼能看出「改过什么、答案没动」，不是谁偷偷改题。
   face_revised?: { at?: string; why?: string; edits?: Array<{ field?: string; old?: string; new?: string }> } | null
+  // 2026-10-07：云题文档 _id（仅公共库经 mapPublicQuestion 下发的题目携带；本地库题为空）。
+  // 用途：把小程序进度引用（qid 形如 `bankRef::id:<_id>`）解析成本机题号，见 sync-ids 的 resolveProgressRef。
+  cloud_qid?: string | null
 }
 
 export interface Exam {
@@ -917,8 +920,11 @@ export async function listPublicBanks(): Promise<any[]> {
 // 读取云端公共题库的题目（用于抽题出卷；按题库云端 _id / bank_ref 关联）
 // 注意：云端题目可能超过 500 道（如合集 2951 题），必须分页拉全量，不能 limit(500) 截断
 // 公共题字段裁剪（加载优化档1，2026-09-23）：实测整库原始 624KB，前端实际只用其中 386KB，
-// 这里把不用的 name/_openid/visibility/bank_ref/_id 排除掉，由服务端裁剪后再下发。
+// 这里把不用的 name/_openid/visibility/bank_ref 排除掉，由服务端裁剪后再下发。
 const PUBLIC_Q_FIELDS = {
+  // 2026-10-07：补 _id —— 跨端进度（小程序 qid 形如 `bankRef::id:<云题 _id>`）在网页端恢复时
+  // 需要「云题文档 _id → 本机题号」映射；mapPublicQuestion 把它带成 cloud_qid（见该函数注释）。
+  _id: true,
   _local_id: true, _local_bank_id: true, bank_id: true, stem: true,
   type: true, options: true, answer: true, analysis: true, source_index: true,
   images: true, answer_derived: true, answer_conflict: true, answer_conflict_note: true,
@@ -933,7 +939,9 @@ const PUBLIC_Q_CACHE_TTL = 24 * 3600 * 1000
 // 2026-09-27：由 2 抬到 3，与小程序端（yuntu-mp/src/lib/cloud.ts 的 PUB_CACHE_SCHEMA）**对齐**。
 // 两端字段口径本来就一致（都含 face_revised），版本号却各走各的（2 vs 3）⇒ 以后加字段时容易只改一端。
 // 抬到同值后，两端「字段口径版本」语义一致；本地缓存介质不同、互不影响，仅作对齐与可读性。
-const PUBLIC_Q_CACHE_SCHEMA = 3
+// 2026-10-07：由 3 抬到 4 —— 补下发 _id（映射为 cloud_qid，跨端进度恢复解析用）。小程序端字段未变、
+// 无需跟抬；「两端同值对齐」的约定自本条起按需各自推进（对齐是为了防漏改，不是为了强绑）。
+const PUBLIC_Q_CACHE_SCHEMA = 4
 
 function mapPublicQuestion(q: any): ExamQuestion {
   // 2026-09-15 加固(评审 Important #1，根因侧)：补 `?? q._id` 兜底。
@@ -959,6 +967,8 @@ function mapPublicQuestion(q: any): ExamQuestion {
     difficulty: q.difficulty || '',
     difficulty_why: q.difficulty_why || null,
     face_revised: q.face_revised || null,
+    // 2026-10-07：带出云题文档 _id（PUBLIC_Q_FIELDS 已含 _id）——跨端进度恢复的映射依据
+    cloud_qid: q._id != null ? String(q._id) : null,
   }
 }
 

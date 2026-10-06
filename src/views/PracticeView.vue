@@ -57,7 +57,7 @@
         🕘 历史版本（{{ historyList.length }}）
       </button>
       <!-- 2026-10-03：同步状态（断网/失败可见，可点重试）；2026-10-07 晚图标分态 + 动效（同步中 ↻ 转、完成 ✓ 轻弹） -->
-      <span class="sync-chip" :class="{ syncing: syncStat.state === 'syncing', ok: syncStat.state === 'ok', fail: syncStat.state === 'fail', pop: justSynced }" :title="syncStat.msg || ''" @click="onSyncChipTap"><span class="sc-ico">{{ syncChipIco }}</span>{{ syncChipText }}</span>
+      <span class="sync-chip" :class="{ syncing: syncStat.state === 'syncing', ok: syncStat.state === 'ok', fail: syncStat.state === 'fail', pop: justSynced }" :title="syncStat.msg || ''" @click="onSyncChipTap"><span class="sc-ico">☁</span><span class="sc-mark">{{ syncChipMark }}</span>{{ syncChipText }}</span>
     </div>
 
     <!-- 2026-10-03：存档守望的可见出口（写不进去/落盘校验不过时出现，点一下补存）＋计划模式提示 -->
@@ -235,7 +235,7 @@ import { classifyQuestionType, TYPE_LABELS, groupQuestionsByCategory } from '../
 import { calculateAutoQuality, calculateNextReview, qualityLabel, labelToQuality, formatDate, computeNextReviewTs, toReviewTs, type QualityLabel } from '../lib/spaced-repetition'
 import { formatSyncDetail } from '../lib/sync-format'
 import { getWebSyncStatus, retryProgressSync, listProgressHistory, rollbackProgress } from '../lib/cloud'
-import { HISTORY_MAX } from '../lib/sync-ids'
+import { HISTORY_MAX, buildProgressRefMaps, resolveProgressRef } from '../lib/sync-ids'
 import { msToSecs } from '../lib/duration'
 
 interface SavedProgress {
@@ -516,6 +516,11 @@ onMounted(async () => {
   }
 })
 
+// 2026-10-07：恢复未就绪闸门。有过进度但没能恢复上时（引用解析不出来），禁止把「空进度/第 1 题」
+// 写回存储与续练指针——事故：网页版恢复被静默放弃后，首存把 last_practice 写成 position=1 上行，
+// 把两端「继续刷题」位置顶掉（02:10 实测）。用户真答了题或按「重新开始」即解除。
+const restoreUnsettled = ref(false)
+
 // 从后端恢复上次进度
 async function restoreProgress() {
   const saved = await api.getSetting(progressKey.value)
@@ -526,7 +531,7 @@ async function restoreProgress() {
   } catch {
     return
   }
-  if (!progress || typeof progress.current_id !== 'number') return
+  if (!progress || progress.current_id == null) return
   if (!questions.value.length) return
 
   // 沿用落盘的「重新开始」标记（云端版本覆盖本机后此处自然读不到）
@@ -541,16 +546,11 @@ async function restoreProgress() {
       mode.value = progress.mode
     }
 
-    // 构建 题目id → 当前索引 的映射（题目列表可能已变化）
-    // 2026-09-28：同时建「来源题号(q.src_local_id) → 索引」索引 —— 未完成换算的跨设备进度
-    // （内容里还是源设备题号）也能直接恢复；两种题号都命中不了才算这份进度无效。
-    const idToIndex = new Map(questions.value.map((q, i) => [q.id, i]))
-    const srcToIndex = new Map<number, number>()
-    questions.value.forEach((q: any, i) => {
-      const s = Number(q && q.src_local_id)
-      if (Number.isFinite(s) && s > 0) srcToIndex.set(s, i)
-    })
-    const idxOf = (id: number): number | undefined => idToIndex.get(id) ?? srcToIndex.get(id)
+    // 2026-10-07：引用解析统一走 resolveProgressRef —— 数字本机 id / src_local_id /
+    // 小程序 qid 字符串（`bankRef::id:<云题 _id>`，订阅库经桥推来的进度就是这一形态）。
+    // 此前只认数字两个来源 ⇒ 小程序推来的进度被静默放弃（02:10 事故根因之一）。
+    const refMaps = buildProgressRefMaps(questions.value as any[])
+    const idxOf = (ref: unknown): number | undefined => resolveProgressRef(ref, refMaps)
 
     // 恢复题目顺序
     if (progress.order_ids && progress.order_ids.length === questions.value.length) {
@@ -571,20 +571,21 @@ async function restoreProgress() {
       order.value = shuffle(questions.value.map((_, i) => i))
     }
 
-    // 恢复当前题号（按题目 id 定位，避免题目列表变化导致错位）
-    const currentOrderIdx = order.value.findIndex(i => {
-      const q: any = questions.value[i]
-      if (!q) return false
-      return q.id === progress.current_id || Number(q.src_local_id) === progress.current_id
-    })
+    // 恢复当前题号（按题目引用定位，避免题目列表变化导致错位）
+    const curIdx = idxOf(progress.current_id)
+    if (curIdx === undefined) {
+      // 有进度却解析不出当前位置 ⇒ 不装作恢复成功；挂闸门，直到用户真答题/重新开始
+      restoreUnsettled.value = true
+      return
+    }
+    const currentOrderIdx = order.value.findIndex(i => i === curIdx)
     current.value = currentOrderIdx >= 0 ? currentOrderIdx : 0
 
     // 恢复各题答题状态
     if (progress.answer_states) {
       const map = new Map<number, QuestionState>()
-      for (const [idStr, state] of Object.entries(progress.answer_states)) {
-        const id = Number(idStr)
-        const idx = idxOf(id)
+      for (const [idRef, state] of Object.entries(progress.answer_states)) {
+        const idx = idxOf(idRef)
         if (idx !== undefined) {
           // 统一按「本机题号」落 map（消费方按 currentQuestion.id 读）
           const localId = Number((questions.value[idx] as any)?.id)
@@ -670,13 +671,13 @@ function retrySave() { void saveProgress() }
 // 2026-10-03：顶栏同步状态（断网/失败可见、可点重试）——只读云同步模块的内存状态，每 3s 刷一次
 const syncStat = ref(getWebSyncStatus())
 let syncStatTimer: number | null = null
-// 图标分态（2026-10-07）：↻ 待同步或同步中（靠转动区分）/ ✓ 已同步 / ! 失败
-const syncChipIco = computed(() => {
+// 状态符（2026-10-07 晚）：☁ 常驻（与首页胶囊同一套）；同步中 ↻ 转、完成 ✓ 轻弹、失败 !、待同步只有云
+const syncChipMark = computed(() => {
   const s = syncStat.value
   if (s.state === 'syncing') return '↻'
   if (s.state === 'fail') return '!'
   if (s.state === 'ok') return '✓'
-  return '↻'
+  return ''
 })
 const syncChipText = computed(() => {
   const s = syncStat.value
@@ -739,6 +740,12 @@ let saveInFlight = false
 async function saveProgressInner() {
   const cur = order.value[current.value]
   if (cur === undefined) return
+  // 2026-10-07：未就绪闸门 —— 恢复没上、用户也还没答题时不落任何盘（见 restoreUnsettled 注释）。
+  // 答出第一题即解除；「重新开始」也在 restart() 里显式解除。
+  if (restoreUnsettled.value) {
+    if (answerStates.value.size === 0) { dirtySince.value = 0; return }
+    restoreUnsettled.value = false
+  }
   const progress: SavedProgress = {
     mode: mode.value,
     order_ids: order.value
@@ -1165,6 +1172,8 @@ async function restart() {
   if (!finished.value && !confirm('确定要重新开始吗？当前进度将被清除。')) return
   // 打标：这是**故意的**重置，同步时不把它当成「异常空进度」用云端旧值顶回来
   resetMarked.value = new Date().toISOString()
+  // 2026-10-07：用户明确要求重来 ⇒ 解除未就绪闸门（允许随后的保存落盘与指针更新）
+  restoreUnsettled.value = false
   restoring.value = true
   current.value = 0
   mode.value = 'order'
@@ -1270,16 +1279,16 @@ async function restart() {
 
 .restart-btn { padding: 5px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-card); cursor: pointer; font-size: 13px; color: var(--color-text); }
 /* 2026-10-03：同步状态小片（顶栏第二排） */
-/* 2026-10-07 晚：图标分态 + 动效——「同步中」此前没有任何样式（最分不清的一处），现接主题色 + ↻ 旋转；
+/* 2026-10-07 晚：☁ 常驻 + 状态随行符（.sc-mark）——「同步中」接主题色 + ↻ 旋转；
    完成轻弹由 pop（justSynced 500ms 闸门）控制；已同步 ✓ 接成功色 */
 .sync-chip { padding: 4px 10px; border-radius: 999px; font-size: 12px; color: var(--color-text-secondary); }
-.sync-chip .sc-ico { display: inline-block; }
+.sync-chip .sc-ico, .sync-chip .sc-mark { display: inline-block; }
 @keyframes sync-spin { to { transform: rotate(360deg); } }
 @keyframes sync-pop { 0% { transform: scale(1); } 50% { transform: scale(1.35); } 100% { transform: scale(1); } }
 .sync-chip.syncing { color: var(--color-primary); }
-.sync-chip.syncing .sc-ico { animation: sync-spin 1s linear infinite; }
+.sync-chip.syncing .sc-mark { animation: sync-spin 1s linear infinite; }
 .sync-chip.ok { color: var(--color-success-strong); }
-.sync-chip.pop .sc-ico { animation: sync-pop .3s ease; }
+.sync-chip.pop .sc-mark { animation: sync-pop .3s ease; }
 .sync-chip.fail { color: var(--color-danger-deep); font-weight: 600; cursor: pointer; }
 .restart-btn:hover { background: var(--color-border-light); }
 

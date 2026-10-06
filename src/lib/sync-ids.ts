@@ -245,6 +245,47 @@ export function reshapeMpProgress(prog: any, idMap: Map<string, number>): any | 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 进度题号引用解析（2026-10-07）
+//
+// 起因：小程序推上云的进度条目用 qid 字符串（`bankRef::id:<云题 _id>`）；网页版拉取时对
+// 「本地没有的库」（订阅库）走「直通不映射」分支原样存下 ⇒ 练习页恢复只认数字 current_id
+// ⇒ 静默放弃恢复、从第 1 题开始，首存还把 last_practice 指针改写成 position=1 并上行
+//（2026-10-07 02:10 实测事故）。本模块把三类引用统一解析成本机索引，供恢复链使用。
+//
+// 三类引用：数字本机 id（网页版自产）/ src_local_id（跨设备来源号）/ qid 字符串
+//（`::id:<云题 _id>`，需题目对象带 cloud_qid —— 订阅题目经 mapPublicQuestion 携带）。
+// 解析不了返回 undefined —— **绝不猜**（防挂错号，宁可走「未恢复」保守路径）。
+// ─────────────────────────────────────────────────────────────────────────────
+export interface ProgressRefMaps {
+  byId: Map<number, number>
+  byDocId: Map<string, number>
+}
+
+export function buildProgressRefMaps(questions: any[]): ProgressRefMaps {
+  const byId = new Map<number, number>()
+  const byDocId = new Map<string, number>()
+  ;(questions || []).forEach((q: any, i: number) => {
+    if (!q) return
+    if (typeof q.id === 'number') byId.set(q.id, i)
+    const s = Number(q.src_local_id)
+    if (Number.isFinite(s) && s > 0) byId.set(s, i)
+    const d = q.cloud_qid
+    if (typeof d === 'string' && d) byDocId.set(d, i)
+  })
+  return { byId, byDocId }
+}
+
+export function resolveProgressRef(ref: unknown, maps: ProgressRefMaps): number | undefined {
+  if (typeof ref === 'number') return Number.isFinite(ref) ? maps.byId.get(ref) : undefined
+  const s = String(ref == null ? '' : ref).trim()
+  if (!s) return undefined
+  if (/^\d+$/.test(s)) return maps.byId.get(Number(s))
+  const at = s.lastIndexOf('::id:')
+  if (at >= 0) return maps.byDocId.get(s.slice(at + 5))
+  return maps.byDocId.get(s)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 进度历史栈（2026-10-05）
 //
 // 起因：进度只有「当前值」一个槽位，一旦被空档覆盖（10-04 与 10-05 各实测一次：

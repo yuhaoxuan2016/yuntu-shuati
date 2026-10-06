@@ -26,21 +26,24 @@ const PROFILE = path.join(os.tmpdir(), 'sync-states-shot-' + Date.now())
 // 页面内（字符串化注入）：强制某态并回报 computed 证据。动画名可能被 scoped 加后缀 ⇒ 用 includes 判。
 // ⚠️ .sync-chip 有 150ms 颜色过渡：注入类后必须等过渡落定（320ms）再读，否则读到的是中间色
 //    （2026-10-07 实测：不等会把 fail 读成绿、idle 读成红——全是过渡插值）。
-async function FORCE_STATE (cls, glyph) {
+// 2026-10-07 晚二版：☁ 常驻（.sc-ico 固定）+ 状态随行符（.sc-mark）——强制态时改的是 .sc-mark。
+async function FORCE_STATE (cls, mark) {
   const chip = document.querySelector('.sync-chip')
   if (!chip) return { ok: false, error: '胶囊不在 DOM' }
   chip.className = 'sync-chip ' + cls
   const ico = chip.querySelector('.sc-ico')
-  if (!ico) return { ok: false, error: '.sc-ico 不在 DOM' }
-  ico.textContent = glyph
+  const markEl = chip.querySelector('.sc-mark')
+  if (!ico || !markEl) return { ok: false, error: '.sc-ico/.sc-mark 不在 DOM' }
+  ico.textContent = '☁'
+  markEl.textContent = mark
   await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
   await new Promise(r => setTimeout(r, 320))
-  const csIco = getComputedStyle(ico)
+  const csMark = getComputedStyle(markEl)
   const csChip = getComputedStyle(chip)
   const r = chip.getBoundingClientRect()
   return {
     ok: true,
-    anim: csIco.animationName, animDur: csIco.animationDuration,
+    anim: csMark.animationName, animDur: csMark.animationDuration,
     color: csChip.color, border: csChip.borderColor, opacity: csChip.opacity,
     rect: { x: Math.floor(r.x) - 6, y: Math.floor(r.y) - 6, width: Math.ceil(r.width) + 12, height: Math.ceil(r.height) + 12 },
   }
@@ -50,6 +53,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 const fail = []
 
 async function main () {
+  fs.mkdirSync(OUT, { recursive: true })
   const child = spawn(EDGE, [
     '--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${PROFILE}`,
     '--no-first-run', '--no-default-browser-check', '--disable-gpu',
@@ -97,8 +101,8 @@ async function main () {
     ['syncing', 'ss-syncing', '↻', r => r.anim.includes('spin')],
     ['ok', 'ss-ok ss-pop', '✓', r => r.anim.includes('pop')],
     ['fail', 'ss-fail', '!', r => true],
-    ['idle', 'ss-idle', '↻', r => r.anim === 'none'],
-    ['off', 'ss-off', '☁', r => r.opacity === '0.6'],
+    ['idle', 'ss-idle', '', r => r.anim === 'none'],
+    ['off', 'ss-off', '', r => r.opacity === '0.6'],
   ]
   const seen = { color: [], border: [] }
   for (const [name, cls, glyph, check] of STATES) {

@@ -9,13 +9,13 @@
           已掌握 <b>{{ totalMastered }}</b> 道
         </div>
         <!-- 2026-10-07：同步状态胶囊（四态；未配云 = 灰显「未开启」，点击去设置）
-             2026-10-07 晚：图标分态 + 动效（↻ 转=同步中、✓ 落定轻弹），☁ 前缀不再写进文字 -->
+             2026-10-07 晚：☁ 常驻 + 状态随行符（↻ 转=同步中、✓ 落定轻弹），动效在 .sc-mark 上 -->
         <button
           class="sync-chip"
           :class="['ss-' + (syncEnabled ? homeSync.state : 'off'), { 'ss-pop': justSynced }]"
           :title="syncEnabled ? (homeSync.msg || '点一下立即全量同步（上传 + 下载）') : '去设置里开启云同步'"
           @click="doHomeSync"
-        ><span class="sc-ico">{{ homeSyncIco }}</span>{{ homeSyncText }}</button>
+        ><span class="sc-ico">☁</span><span class="sc-mark">{{ homeSyncMark }}</span>{{ homeSyncText }}</button>
       </div>
       <div class="header-btns">
         <button class="exam-btn" @click="$router.push('/exams')"><img class="btn-icon" src="/icons/exam.gif" alt="考试" /> 考试</button>
@@ -520,14 +520,15 @@ loadRecordCounts()
 type HomeSyncState = { state: 'idle' | 'syncing' | 'ok' | 'fail'; at: number; msg?: string }
 const syncEnabled = ref(cloudConfigured())
 const homeSync = ref<HomeSyncState>({ state: 'idle', at: 0 })
-// 图标分态（2026-10-07）：☁ 未开启 / ↻ 待同步或同步中（靠转动区分）/ ✓ 已同步 / ! 失败
-const homeSyncIco = computed(() => {
-  if (!syncEnabled.value) return '☁'
+// 状态符（2026-10-07 晚，rabbit：「云哪去了，是不是不能加原来的云」）：☁ 常驻在场，
+// 状态用随行小符 + 动效表达——同步中 ↻ 转、完成 ✓ 轻弹、失败 !、未开启/待同步只有云（靠颜色区分）
+const homeSyncMark = computed(() => {
+  if (!syncEnabled.value) return ''
   const s = homeSync.value
   if (s.state === 'syncing') return '↻'
   if (s.state === 'fail') return '!'
   if (s.state === 'ok') return '✓'
-  return '↻'
+  return ''
 })
 // 完成轻弹：只在「转变为 ok」那一刻挂 500ms（首次装载时已是 ok 不弹）
 const justSynced = ref(false)
@@ -619,9 +620,10 @@ function pollHomeSync() {
     }
   }).catch(() => { /* cloud 模块加载失败：保持原状态 */ })
 }
-// 同步进行中进库：一句轻提示（不拦，进度守卫兜底；同步完成后首页自动刷新）
+// 同步进行中进库：改成明确警示（2026-10-07 02:10 事故——恢复未就绪时进库会把续练位写退到第 1 题）。
+// 仍不拦（进度守卫 + 未就绪闸门兜底），但必须让人知道「现在进去可能读不到上次进度」。
 function guardEnterPractice(url: string) {
-  if (homeSync.value.state === 'syncing') toastInfo('云同步进行中，可以先进去答题（完成后首页自动刷新）')
+  if (homeSync.value.state === 'syncing') toastInfo('云同步还没完成：现在进去可能读不到上次进度，建议稍等几秒再进')
   router.push(url)
 }
 
@@ -1189,8 +1191,8 @@ onBeforeUnmount(() => {
 .header-sub b { color: var(--color-primary); font-weight: 600; }
 
 /* 2026-10-07：同步状态胶囊（四态 + 未开启灰显；点击 = 立即全量同步；未开启 = 去设置）
-   2026-10-07 晚：图标分态 + 动效——同步中 ↻ 持续旋转；完成 ✓ 轻弹（justSynced 500ms 闸门，
-   只在转变为 ok 那一刻挂 ss-pop）；待同步接主题色（原先与未开启同为灰，最易混） */
+   2026-10-07 晚：☁ 常驻在场（rabbit：云哪去了）+ 状态随行符挂动效——同步中 ↻ 持续旋转；
+   完成 ✓ 轻弹（justSynced 500ms 闸门，只在转变为 ok 那一刻挂 ss-pop）；待同步接主题色 */
 .sync-chip {
   display: inline-block; margin-top: 8px; padding: 3px 12px;
   border-radius: 999px; border: 1px solid var(--color-border, #e3e6eb);
@@ -1198,14 +1200,14 @@ onBeforeUnmount(() => {
   color: var(--color-text-secondary); cursor: pointer;
   transition: color .15s, border-color .15s;
 }
-.sync-chip .sc-ico { display: inline-block; }
+.sync-chip .sc-ico, .sync-chip .sc-mark { display: inline-block; }
 @keyframes sync-spin { to { transform: rotate(360deg); } }
 @keyframes sync-pop { 0% { transform: scale(1); } 50% { transform: scale(1.35); } 100% { transform: scale(1); } }
 .sync-chip.ss-idle { color: var(--color-primary); border-color: var(--color-primary); }
 .sync-chip.ss-syncing { color: var(--color-primary); border-color: var(--color-primary); }
-.sync-chip.ss-syncing .sc-ico { animation: sync-spin 1s linear infinite; }
+.sync-chip.ss-syncing .sc-mark { animation: sync-spin 1s linear infinite; }
 .sync-chip.ss-ok { color: var(--color-success-strong); border-color: var(--color-success-strong); }
-.sync-chip.ss-ok.ss-pop .sc-ico { animation: sync-pop .3s ease; }
+.sync-chip.ss-ok.ss-pop .sc-mark { animation: sync-pop .3s ease; }
 .sync-chip.ss-fail { color: var(--color-danger-deep); border-color: var(--color-danger-deep); font-weight: 600; }
 .sync-chip.ss-off { opacity: .6; }
 
