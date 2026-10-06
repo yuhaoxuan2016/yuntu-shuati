@@ -16,7 +16,7 @@ import {
   type LedgerIndex,
   type LedgerKV,
 } from './sync-ledger'
-import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal, mergeProgressMapForCloud, orderHitRate, PROG_SCHEMA_V, reshapeMpProgress, pushHistory, pickHistory, makeRollbackValue, HISTORY_MAX } from './sync-ids'
+import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal, mergeProgressMapForCloud, orderHitRate, PROG_SCHEMA_V, reshapeMpProgress, pushHistory, pickHistory, makeRollbackValue, HISTORY_MAX, resolvePushedRows, shouldPushLastPractice, PROGRESS_ROW_KEY } from './sync-ids'
 import { decideDeletedMark, nextTries, type RemoveResult } from './deleted-marks'
 import type { SyncDetail } from './sync-format'
 
@@ -1054,8 +1054,8 @@ export async function pushToCloud(): Promise<{ pushed: number; failed: number; s
       let dirty = coll === 'settings' ? localRows : localRows.filter(r => !r.synced_at)
       // 进度 map 是全量打包上传的，必须逐键合并后再推（见 mergeProgressMapWithCloud 注释）
       if (coll === 'settings') {
-        const merged = await mergeProgressMapWithCloud(dirty)
-        if (merged) dirty = merged
+        const m = await mergeProgressMapWithCloud(dirty)
+        dirty = resolvePushedRows(dirty, m ? m.rows : null, !!m?.readFailed)
       }
       // 2026-08-23 推送侧去重（防本地重复题反复上传）：
       // 题目若因历史叠加在本地产生同 bank_ref + stem 的多份副本（都无 synced_at），
@@ -1338,14 +1338,28 @@ async function pushProgressLight(force = false): Promise<void> {
         if (hv) rows.push({ _id: settingsDocId(PRACTICE_HISTORY_KEY), key: PRACTICE_HISTORY_KEY, value: hv })
       } catch { /* 历史栈失败不阻断进度推送 */ }
     }
-    for (const k of ['daily_records', 'last_practice']) {
+    for (const k of ['daily_records']) {
       const v = await idb.getSetting(k)
       if (v == null || v === '') continue
       rows.push({ _id: settingsDocId(k), key: k, value: v })
     }
+    // 2026-10-07：续练指针推送侧防倒退（02:10 与 03:44 两次事故都发生在这一步——
+    // 推送侧此前没有任何守卫，本机「第 1 题」能直接顶掉云端「第 464 题」）。
+    const lpRaw = await idb.getSetting('last_practice')
+    if (lpRaw != null && lpRaw !== '') {
+      let localLp: any = null
+      try { localLp = JSON.parse(String(lpRaw)) } catch { localLp = null }
+      const cloudLp = await readCloudLastPractice()
+      if (shouldPushLastPractice(localLp, cloudLp.value, { readFailed: cloudLp.readFailed })) {
+        rows.push({ _id: settingsDocId('last_practice'), key: 'last_practice', value: lpRaw })
+      } else {
+        console.warn(`[cloud] 续练指针疑似倒退，本次不推（云端第 ${cloudLp.value?.position} 题 vs 本机第 ${localLp?.position} 题）`)
+      }
+    }
     if (!rows.length) { setWebSyncStatus('ok'); return }
     // 进度包先与云端逐键合并（防止把别处设备较新的库进度顶掉）——与手动推送同一条口径
-    const merged = (await mergeProgressMapWithCloud(rows)) || rows
+    const m = await mergeProgressMapWithCloud(rows)
+    const merged = resolvePushedRows(rows, m ? m.rows : null, !!m?.readFailed)
     let ok = 0
     for (const r of merged) { if (await pushDoc('settings', r)) ok++ }
     if (ok) {
@@ -1913,28 +1927,47 @@ async function listAllFavorites(): Promise<any[]> {
 // 2026-09-28（上传侧逐键合并）：进度 map 上传前先与云端已有的 map 合并 ——
 // 原先整条覆盖 ⇒ 一台「本机还没有那些键」的设备（新电脑 / 清过缓存 / 手机端）一推就把别的设备
 // 写的键整条抹掉。合并口径在 sync-ids.ts 的 mergeProgressMapForCloud（纯函数，可离线直测）。
-// 这里只负责取云端现值和拼回行；取不到就保持旧行为（按本机推），不让同步直接失败。
-async function mergeProgressMapWithCloud(rows: any[]): Promise<any[] | null> {
-  const idx = rows.findIndex(r => r && r.key === 'practice_progress')
+// 这里只负责取云端现值和拼回行。
+// ⚠️ 2026-10-07：**取不到云端时不得退回「按本机推」** —— 那等于守卫一失效就敞开大门
+//    （03:44 事故：读云端超时 ⇒ `|| rows` 无守卫直推 ⇒ 本机 1 条空档顶掉云端 333 答）。
+//    现在把「读失败」作为显式状态交回调用方，由 `resolvePushedRows` 剔除进度行（宁可本次不推）。
+async function mergeProgressMapWithCloud(rows: any[]): Promise<{ rows: any[]; readFailed: boolean } | null> {
+  const idx = rows.findIndex(r => r && r.key === PROGRESS_ROW_KEY)
   if (idx < 0) return null
   let cloudMap: Record<string, any> | null = null
   try {
     const res: any = await withTimeout(
-      db.collection('settings').where({ _openid: authedUid, key: 'practice_progress' }).limit(1).get(),
+      db.collection('settings').where({ _openid: authedUid, key: PROGRESS_ROW_KEY }).limit(1).get(),
       20000, '读取云端进度')
     const row = ((res && res.data) || [])[0]
     cloudMap = row ? JSON.parse(String(row.value || '{}')) : null
   } catch (e) {
-    console.warn('[cloud] 读取云端进度 map 失败，本次按本机内容推送', e)
-    return null
+    console.warn('[cloud] 读取云端进度 map 失败，本次跳过进度行（不推）', e)
+    return { rows, readFailed: true }
   }
   let localMap: Record<string, any> | null = null
-  try { localMap = JSON.parse(String(rows[idx].value || '{}')) } catch { return null }
+  try { localMap = JSON.parse(String(rows[idx].value || '{}')) } catch { return { rows, readFailed: true } }
   const { map, tookCloud } = mergeProgressMapForCloud(cloudMap, localMap)
   if (tookCloud) console.info(`[cloud] 进度逐键合并：${tookCloud} 个库采用云端较新版本（本机不会覆盖它们）`)
   const next = rows.slice()
   next[idx] = { ...rows[idx], value: JSON.stringify(map) }
-  return next
+  return { rows: next, readFailed: false }
+}
+
+/** 读云端续练指针（供推送侧防倒退比对）。失败是显式状态 —— 与进度行同口径，宁可不推。 */
+async function readCloudLastPractice(): Promise<{ value: any | null; readFailed: boolean }> {
+  try {
+    const res: any = await withTimeout(
+      db.collection('settings').where({ _openid: authedUid, key: 'last_practice' }).limit(1).get(),
+      15000, '读取云端续练指针')
+    const row = ((res && res.data) || [])[0]
+    if (!row) return { value: null, readFailed: false }
+    try { return { value: JSON.parse(String(row.value || 'null')), readFailed: false } }
+    catch { return { value: null, readFailed: false } }
+  } catch (e) {
+    console.warn('[cloud] 读取云端续练指针失败，本次跳过指针推送', e)
+    return { value: null, readFailed: true }
+  }
 }
 
 // 2026-10-03：练习进度打包（手动全量推送与答题后轻推共用；轻推只发这一条 + 当天统计 + 续练指针）。

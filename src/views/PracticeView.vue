@@ -106,6 +106,12 @@
       </div>
     </Teleport>
 
+    <!-- 2026-10-07：进库提醒**下沉到练习页**——检查点放在「页面打开那一刻」，
+         任何入口进来都覆盖（首页那 4 个入口的 toast 保留，但不拦）。同步跑完自动消失。 -->
+    <div v-if="syncingHint" class="restored-banner syncing-warn">
+      ⚠ 云同步还没完成：现在可能读不到上次进度，建议退出等几秒重进
+    </div>
+
     <div v-if="restoredBanner" class="restored-banner">
       已从上次进度恢复，当前第 {{ current + 1 }} 题
       <button class="close-btn" @click="restoredBanner = false">×</button>
@@ -134,6 +140,19 @@
             <button class="hist-btn2" :disabled="rollingBack" @click="onRollback(h)">恢复此版本</button>
           </div>
           <div v-if="!historyList.length" class="hist-empty">暂无历史版本（答过题后会自动记录）</div>
+
+          <!-- 2026-10-07：本机硬存档 —— 与上面那组**数据独立**：它只在本机保存成功时写入，
+               云端拉取/上传/恢复都不碰它 ⇒ 云端被写坏时这里仍有可恢复的版本。 -->
+          <div class="hist-subhead">🛡 本机硬存档（最多 {{ ARCHIVE_MAX }} 版 · 不受云端影响）</div>
+          <p class="hist-tip">只在本地保存成功时写入，任何云端读写都不碰它——没配云、关掉同步也照记。</p>
+          <div v-for="h in archiveList" :key="'a-' + h.saved_at" class="hist-row">
+            <div class="hist-info">
+              <div class="hist-time">{{ fmtHistTime(h.saved_at) }}</div>
+              <div class="hist-meta">已答 {{ h.answered }} 题<template v-if="h.finished"> · 已完成</template><template v-if="h.marked"> · 含「重新开始」标记</template></div>
+            </div>
+            <button class="hist-btn2" :disabled="rollingBack" @click="onRestoreArchive(h)">恢复此版本</button>
+          </div>
+          <div v-if="!archiveList.length" class="hist-empty">暂无硬存档（答过题后会自动记录）</div>
         </div>
       </div>
     </Teleport>
@@ -235,6 +254,8 @@ import { classifyQuestionType, TYPE_LABELS, groupQuestionsByCategory } from '../
 import { calculateAutoQuality, calculateNextReview, qualityLabel, labelToQuality, formatDate, computeNextReviewTs, toReviewTs, type QualityLabel } from '../lib/spaced-repetition'
 import { formatSyncDetail } from '../lib/sync-format'
 import { getWebSyncStatus, retryProgressSync, listProgressHistory, rollbackProgress } from '../lib/cloud'
+// 2026-10-07：本机硬存档——独立于云端的最后一道保险（关掉同步、没配云也照记）
+import { recordLocalArchive, listLocalArchive, restoreLocalArchive, ARCHIVE_MAX } from '../lib/local-archive'
 import { HISTORY_MAX, buildProgressRefMaps, resolveProgressRef } from '../lib/sync-ids'
 import { msToSecs } from '../lib/duration'
 
@@ -342,8 +363,29 @@ const historyBankRef = computed(() => String(progressKey.value).replace(/^practi
 const showHistory = ref(false)
 const historyList = ref<any[]>([])
 const rollingBack = ref(false)
+const archiveList = ref<any[]>([])
 async function refreshHistory () {
   try { historyList.value = await listProgressHistory(historyBankRef.value) } catch { historyList.value = [] }
+  try { archiveList.value = await listLocalArchive(historyBankRef.value) } catch { archiveList.value = [] }
+}
+// 硬存档恢复：只写本机进度槽位 + 新时间戳，随下次同步自然上行（不主动推云，保持「纯本机」口径）
+async function onRestoreArchive (h: any) {
+  if (rollingBack.value) return
+  const okToGo = window.confirm(`从本机硬存档恢复到 ${fmtHistTime(h.saved_at)} 的版本（已答 ${h.answered} 题）？\n\n当前进度会被这一版替换。`)
+  if (!okToGo) return
+  rollingBack.value = true
+  try {
+    const done = await restoreLocalArchive(historyBankRef.value, h.saved_at)
+    if (!done) { toastError('恢复失败：该版本已不在硬存档里'); return }
+    showHistory.value = false
+    toastSuccess('已从本机硬存档恢复该版本')
+    await restoreProgress()
+    await refreshHistory()
+  } catch (e: any) {
+    toastError('恢复失败：' + String((e && e.message) || e))
+  } finally {
+    rollingBack.value = false
+  }
 }
 function fmtHistTime (iso: string): string {
   const t = Date.parse(String(iso || ''))
@@ -679,6 +721,9 @@ const syncChipMark = computed(() => {
   if (s.state === 'ok') return '✓'
   return ''
 })
+// 2026-10-07：只要同步还在跑就挂横幅（不弹框、不拦截——"轻提示不拦"是既定语）。
+// 状态每 3s 随页面已有的轮询刷新 ⇒ 同步完成即自动消失，无需额外定时器。
+const syncingHint = computed(() => syncStat.value.state === 'syncing')
 const syncChipText = computed(() => {
   const s = syncStat.value
   if (s.state === 'syncing') return '同步中…'
@@ -772,12 +817,15 @@ async function saveProgressInner() {
       try { const p = JSON.parse(back || 'null'); landed = !!(p && p.saved_at === progress.saved_at) } catch { landed = false }
       if (!landed) throw new Error('落盘校验不过（读回与本次不符）')
       // 同步更新全局最近练习记录（首页"继续刷题"卡片使用）
+      // 2026-10-07：`_reset` 要跟着指针走——推送侧的防倒退闸门靠它区分「用户点了重新开始」
+      // 与「进度被意外写退」（不带标记且位置回到开头 ⇒ 不推，见 sync-ids.ts shouldPushLastPractice）。
       const lastPractice = {
         bank_id: bankId,
         bank_name: bankName.value,
         position: current.value + 1,
         total: questions.value.length,
         saved_at: progress.saved_at,
+        ...(resetMarked.value ? { _reset: resetMarked.value } : {}),
       }
       await api.setSetting(LAST_PRACTICE_KEY, JSON.stringify(lastPractice))
     } else {
@@ -789,6 +837,8 @@ async function saveProgressInner() {
     }
     dirtySince.value = 0
     saveWarn.value = ''
+    // 2026-10-07：本机硬存档——落盘成功才写，与网络/同步开关彻底解耦（云端路径不读不写它）
+    void recordLocalArchive(historyBankRef.value, progress).catch(() => {})
     // 2026-10-03：落盘成功后防抖轻推（只推进度/当天统计/续练指针三条设置行；可在设置里关）
     void import('../lib/cloud').then(m => m.scheduleProgressPush()).catch(() => {})
   } catch (e) {
@@ -1306,6 +1356,8 @@ async function restart() {
 .hist-btn2:hover:not(:disabled) { background: var(--color-primary-light); }
 .hist-btn2:disabled { opacity: 0.5; cursor: not-allowed; }
 .hist-empty { font-size: 13px; color: var(--color-text-secondary); padding: 12px 0; }
+/* 2026-10-07：硬存档分组标题（与「进度历史版本」区分开，两组数据互相独立） */
+.hist-subhead { font-size: 13px; font-weight: 600; color: var(--color-text); margin: 16px 0 6px; padding-top: 12px; border-top: 2px solid var(--color-border-light); }
 
 .search-result-banner { background: var(--color-info-light); color: var(--color-info); padding: 8px 16px; border-radius: var(--radius-md); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
 .search-result-banner b { color: var(--color-primary); font-weight: 600; }
@@ -1321,6 +1373,8 @@ async function restart() {
 .search-result-overflow { padding: 8px 14px; font-size: 12px; color: var(--color-text-tertiary); text-align: center; background: var(--color-bg); border-top: 1px solid var(--color-border-light); }
 .restored-banner { background: var(--color-success-light); border: 1px solid var(--color-success); color: var(--color-success); padding: 8px 16px; border-radius: var(--radius-md); margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
 .restored-banner .close-btn { background: none; border: none; font-size: 18px; cursor: pointer; color: var(--color-success); padding: 0 4px; line-height: 1; }
+/* 2026-10-07：同步未完成横幅——用警示色与「恢复成功」的绿色横幅区分开 */
+.restored-banner.syncing-warn { background: var(--color-warning-light, #fff7e6); border-color: var(--color-warning, #d48806); color: var(--color-warning, #d48806); }
 .loading { text-align: center; padding: 48px; color: var(--color-text-tertiary); }
 .empty-filter { text-align: center; padding: 48px; color: var(--color-text-tertiary); }
 .empty-filter .empty-icon { font-size: 56px; margin-bottom: 10px; opacity: 0.5; }

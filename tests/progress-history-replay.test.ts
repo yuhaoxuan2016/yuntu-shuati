@@ -65,16 +65,32 @@ ok('反向对照：当前进度里确实没有任何已答记录（无历史栈�
   Object.values(currentAfterLoss.answer_states).every((s: any) => s.submitted === false))
 
 // ── 演练：连续多版本 + 空档穿插，栈内始终是真版本
+// 2026-10-07 口径变更：入栈去重改为**按内容**（已答数 或 逐题对错），只翻页不占槽
+// ⇒ 这里每一版必须真的多答一题，否则会被判为「内容未变」而不占槽（正是新口径要的效果）。
 let h2: any[] = []
 const saves = ['V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7']
+const moreAnswered = (n: number) => ({
+  ...real,
+  current_id: 500010 + n * 10,
+  answer_states: Object.fromEntries(Array.from({ length: 60 + n }, (_, i) => [
+    String(500001 + i),
+    { selected: [], blankAnswer: '', submitted: true, isCorrect: i % 3 !== 0, selfEvalDone: false, judgeSelected: i % 2 === 0, elapsedSecs: 6 },
+  ])),
+})
 for (let i = 0; i < saves.length; i++) {
-  h2 = pushHistory(h2, { ...real, saved_at: '2026-10-05T0' + i + ':00:00.000Z', current_id: 500010 + i * 10 })
+  h2 = pushHistory(h2, { ...moreAnswered(i), saved_at: '2026-10-05T0' + i + ':00:00.000Z' })
   h2 = pushHistory(h2, { ...p14, saved_at: '2026-10-05T0' + i + ':30:00.000Z' })  // 每次保存后跟一个空档
 }
 ok('7 次保存 + 7 次空档 ⇒ 栈内恰好 5 版且全是真版本', h2.length === HISTORY_MAX)
 ok('栈内没有被空档污染（每版都有实答）', h2.every((e) => trulyAnsweredCount(e.prog) > 0))
 ok('保留的是最近 5 次保存', h2.map((e) => e.saved_at).join(',') ===
   ['2026-10-05T06:00:00.000Z', '2026-10-05T05:00:00.000Z', '2026-10-05T04:00:00.000Z', '2026-10-05T03:00:00.000Z', '2026-10-05T02:00:00.000Z'].join(','))
+// 新口径的反向对照：只是翻页 / 只是重新保存（内容一模一样）不该占槽，
+// 否则「做题慢五槽相似甚至相同」—— rabbit 2026-10-07 指出的正是这个。
+ok('反向对照：只翻页不占槽（否则慢速用户 5 版会被同一份进度占满）',
+  pushHistory(h2, { ...moreAnswered(6), saved_at: '2026-10-05T06:30:00.000Z', current_id: 999999 }).length === HISTORY_MAX)
+ok('反向对照：内容变了（又答一题）⇒ 占槽并淘汰最旧',
+  pushHistory(h2, { ...moreAnswered(7), saved_at: '2026-10-05T07:00:00.000Z' }).map((e) => e.saved_at)[0] === '2026-10-05T07:00:00.000Z')
 
 // ── 演练：变电安规2026 现有 9 个库都入栈，体积估算
 let allHist: any = {}

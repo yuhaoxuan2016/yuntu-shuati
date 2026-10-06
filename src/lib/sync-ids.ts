@@ -311,10 +311,35 @@ export interface HistoryEntry {
   finished: boolean
   /** 点过「重新开始」的那一版 —— 回滚它等于接受「清空」，UI 需提示 */
   marked?: string
+  /** 2026-10-07：内容指纹（入栈去重判据）。老版本条目没有这个字段，按「内容已变」处理。 */
+  fp?: string
   prog: any             // 完整进度快照
 }
 
-/** 把一份进度压入历史栈（返回新栈）。非实质内容或与栈顶同版本时不改动。
+// 2026-10-07（rabbit 指出「做题慢五个存档会不会相似甚至相同」）：
+// 入栈去重只看 saved_at ⇒ 同一份进度每被重新保存一次（重开库、防抖补存、切后台）就白占一版，
+// 慢速用户 5 个槽位会被「几乎相同」的版本填满，真正能救命的旧版本反而被挤掉。
+// 判据改为**实质内容**：已答数 或 逐题对错摘要 变化才占槽；只翻页（current_id 变）不占槽。
+function hash32 (s: string): string {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
+  return (h >>> 0).toString(36)
+}
+
+/** 进度的内容指纹（不含 saved_at / current_id）：同内容同指纹，供入栈去重。 */
+export function progressFingerprint (prog: any): string {
+  const st = (prog && typeof prog.answer_states === 'object' && prog.answer_states) || {}
+  const parts: string[] = []
+  for (const k of Object.keys(st).sort()) {
+    const v: any = (st as any)[k]
+    if (!v || typeof v !== 'object') { parts.push(k + '=' + String(v)); continue }
+    if ('submitted' in v) parts.push(k + ':s' + (v.submitted ? 1 : 0) + ':c' + (v.isCorrect === true ? 1 : 0) + ':j' + String(v.judgeSelected))
+    else parts.push(k + ':p' + String(v.picked ?? '') + ':c' + (v.correct === true ? 1 : 0))
+  }
+  return trulyAnsweredCount(prog) + '#' + hash32(parts.join('|')) + '#' + (prog && prog.finished ? 1 : 0)
+}
+
+/** 把一份进度压入历史栈（返回新栈）。非实质内容、或与栈顶**内容相同**时不改动。
  *  「实质」用 `trulyAnsweredCount` 判 —— **必须**，不能用 answeredCountLoose：
  *  后者对「打开题库自动生成的那一条」返回 1（条目有 8 个字段但都没答），
  *  用它会让每次打开练习页都入一版空档，5 个槽位很快被空档占满、真版本全被挤出去。 */
@@ -326,12 +351,16 @@ export function pushHistory(stack: HistoryEntry[] | null | undefined, prog: any)
   const savedAt = String(prog.saved_at || '')
   if (!savedAt) return cur
   if (cur.length && cur[0] && String(cur[0].saved_at || '') === savedAt) return cur  // 同版本去重
+  const fp = progressFingerprint(prog)
+  // 2026-10-07：栈顶内容未变 ⇒ 不占槽（只更新这一版的展示时间无意义，反而挤掉真版本）
+  if (cur.length && cur[0] && String(cur[0].fp || '') === fp) return cur
   const entry: HistoryEntry = {
     saved_at: savedAt,
     answered,
     current_id: prog.current_id,
     finished: !!prog.finished,
     marked: prog._reset ? String(prog._reset) : undefined,
+    fp,
     prog: JSON.parse(JSON.stringify(prog)),          // 深拷：入栈后原对象还会被就地改写
   }
   const next = [entry, ...cur.filter((e) => String(e?.saved_at || '') !== savedAt)]
@@ -352,4 +381,58 @@ export function makeRollbackValue(prog: any, myDev: string, nowIso: string): any
   out._src = { dev: myDev, v: PROG_SCHEMA_V }
   delete out._reset                                  // 回滚本身不是「有意清空」，别留下这个标记
   return out
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-10-07：推送侧两道闸门（03:44 / 02:10 两次「进度被写退」事故的直接补丁）
+//
+// 事故形态：一台「本机进度是空档」的设备轻推 ⇒ 云端 333 答的实质进度被 1 条空档顶掉。
+// 守卫（mergeProgressMapForCloud）本身是对的（用真实形态验过：空 vs 富 ⇒ 保富），
+// 但**守卫没跑起来**就等于没有 —— 下面两条把「守卫失效」的两种出口各自堵死。
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const PROGRESS_ROW_KEY = 'practice_progress'
+
+/**
+ * 装配真正要推送的设置行。
+ * **`readFailed` 时必须剔除进度行**——旧实现 `(await merge()) || rows` 会在读云端失败时
+ * 原样直推本机值，等于「守卫一失效就敞开大门」（03:44 就是这么被顶掉的）。
+ * 宁可本次不推（下轮再试），也不能拿本机空档去覆盖云端实质进度。
+ */
+export function resolvePushedRows<T extends { key?: string }> (
+  rows: T[], merged: T[] | null, readFailed: boolean,
+): T[] {
+  const hasProg = rows.some(r => r && r.key === PROGRESS_ROW_KEY)
+  if (!hasProg) return rows
+  if (readFailed || !merged) return rows.filter(r => !(r && r.key === PROGRESS_ROW_KEY))
+  return merged
+}
+
+/** 两端对同一个库写的 `bank_id` 是各自的本地号（网页 14 / 小程序 21），只有库名可跨端比对。 */
+function sameBankForPointer (a: any, b: any): boolean {
+  const an = String(a?.bank_name || '').trim()
+  const bn = String(b?.bank_name || '').trim()
+  if (an && bn) return an === bn
+  const ai = Number(a?.bank_id)
+  const bi = Number(b?.bank_id)
+  return Number.isFinite(ai) && Number.isFinite(bi) && ai === bi
+}
+
+/**
+ * 续练指针能不能推。
+ * 判据（定死，勿随意调）：同一个库、新位置 ≤2、旧位置 ≥5、且没有「重新开始」标记 ⇒ 判为倒退，不推。
+ * 下限 2 是留给「刚打开就退出」的正常写入；上限 5 保证「本来就在开头」的新库不被误伤。
+ */
+export function shouldPushLastPractice (
+  local: any, cloud: any | null | undefined, opts?: { readFailed?: boolean },
+): boolean {
+  if (opts?.readFailed) return false                 // 读不到云端就别推（与进度行同口径）
+  if (!local || typeof local !== 'object') return false
+  if (String(local._reset || '')) return true        // 用户明确「重新开始」，那是他的意图
+  if (!cloud || typeof cloud !== 'object') return true  // 云端没有 ⇒ 首次写入
+  const nPos = Number(local.position)
+  const oPos = Number(cloud.position)
+  if (!Number.isFinite(nPos) || !Number.isFinite(oPos)) return true
+  if (!sameBankForPointer(local, cloud)) return true
+  return !(nPos <= 2 && oPos >= 5)
 }
