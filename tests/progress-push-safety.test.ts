@@ -82,6 +82,32 @@ console.log('\n── ② last_practice 指针防倒退 ──')
     shouldPushLastPractice({ ...base, position: 3 }, { ...base, position: 464 }) === true)
 }
 
+console.log('\n── ②b 订阅库：bank_id 是**字符串**（lquiz_banks_14），闸门也必须生效 ──')
+{
+  // 2026-10-07 事故现场：rabbit 进「变电安规2026」（订阅库）→ 指针被写回 position=1 上行，
+  // 云端 last_practice 变成 { bank_name:'', bank_id:'lquiz_banks_14', position:1 }。
+  // 根因：sameBankForPointer 用 Number(bank_id) 判「同一个库」，而订阅库的 bank_id 是字符串
+  //   ⇒ Number('lquiz_banks_14') = NaN ⇒ isFinite 为假 ⇒ 判「不是同一个库」⇒ 闸门放行。
+  const subBase = { bank_id: 'lquiz_banks_14', bank_name: '变电安规2026', total: 1134, saved_at: 'X' }
+  const subBad = { ...subBase, position: 1 }            // 事故那一笔（含 bank_name 空的变体）
+  const subGood = { ...subBase, position: 468 }         // 云端正本
+
+  ok('❗核心：订阅库 · 新 1 / 旧 468 ⇒ 必须判倒退、不推',
+    shouldPushLastPractice(subBad, subGood) === false)
+  ok('❗事故变体：云端 bank_name 为空串、只靠字符串 bank_id 认库 ⇒ 仍必须判同库',
+    shouldPushLastPractice(subBad, { ...subBase, bank_name: '', position: 468 }) === false)
+  ok('❗事故变体：本机 bank_name 为空串 ⇒ 也要认得出是同库',
+    shouldPushLastPractice({ ...subBad, bank_name: '' }, subGood) === false)
+  ok('订阅库 · 新 470 / 旧 468 ⇒ 正常前进，放行',
+    shouldPushLastPractice({ ...subBase, position: 470 }, subGood) === true)
+  ok('❗反向对照：订阅库换了另一个库（id 与名字都不同）⇒ 放行，不误伤',
+    shouldPushLastPractice({ ...subBad, bank_id: 'lquiz_banks_15', bank_name: '中级2026' }, subGood) === true)
+  ok('❗反向对照：库名不同但都非空 ⇒ 按名字判不同库（即便 id 同为字符串）',
+    shouldPushLastPractice({ ...subBad, bank_name: '中级2026' }, subGood) === true)
+  ok('❗反向对照：订阅库 vs 本地库（数字 id）且无名字 ⇒ 不跨类型认等，放行',
+    shouldPushLastPractice({ ...subBad, bank_id: 14, bank_name: '' }, { ...subGood, bank_name: '' }) === true)
+}
+
 console.log('\n── ③ 历史栈 / 硬存档：按内容去重 ──')
 {
   const p1 = prog(10, 'T1')
@@ -120,6 +146,24 @@ console.log('\n── ④ 本机硬存档：不得进入任何云端路径（源
   const whitelist = upList.slice(0, upList.indexOf('const out: any[] = []'))
   ok('settings 上云白名单不含硬存档键', !/local_archive/.test(whitelist),
     '若将来要让它跨端，必须先改口径（当前铁律＝纯本机）')
+}
+
+console.log('\n── ⑤ 指针里的库名不能是空串（源码级 · 2026-10-07 事故加固）──')
+{
+  const pv = readFileSync(join(import.meta.dirname, '..', 'src', 'views', 'PracticeView.vue'), 'utf8')
+  // 事故前提 = 本机写出的 last_practice.bank_name 是空串。修法：订阅库（字符串 bankId）补一条云端兜底。
+  const nameLine = pv.slice(pv.indexOf('const bankName = computed'), pv.indexOf('const bankName = computed') + 400)
+  ok('❗bankName 兜底链包含 bankNameResolved（订阅库无 name 时查云端）', /bankNameResolved\.value/.test(nameLine))
+  ok('❗订阅库（字符串 bankId）在缺 name 时会去取云端名字', /typeof bankId === 'string'/.test(pv) && /fetchPublicBankName/.test(pv))
+  // 反向对照：本地库**不该**走这条云端兜底（它本来就在 bankStore 里，多查一次纯属浪费）
+  const guardIdx = pv.indexOf('fetchPublicBankName')
+  const guardBlock = pv.slice(guardIdx - 500, guardIdx + 200)
+  ok('❗反向对照：只在缺 name 时才查云端（已有名字就不查）', /!String\(route\.query\.name/.test(guardBlock))
+  // exam.ts 侧：兜底函数必须存在，且失败回空串（不是抛错）
+  const ex = readFileSync(join(import.meta.dirname, '..', 'src', 'lib', 'exam.ts'), 'utf8')
+  ok('exam.ts 导出 fetchPublicBankName', /export async function fetchPublicBankName/.test(ex))
+  const fn = ex.slice(ex.indexOf('export async function fetchPublicBankName'))
+  ok('❗兜底失败必须是回空串（拿不到名字不该阻断练习）', /catch\s*{\s*return ''/.test(fn.slice(0, 900)))
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败`)

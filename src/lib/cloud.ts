@@ -315,7 +315,7 @@ export async function consumeRecoverPendingPull(): Promise<void> {
     setWebSyncStatus('syncing')
     await syncFromCloud()
     if (cloudState.error) setWebSyncStatus('fail', cloudState.error)
-    else setWebSyncStatus('ok')
+    else { setWebSyncStatus('ok'); markPulled() }
   } catch (e: any) {
     setWebSyncStatus('fail', (e && e.message) || String(e))
     console.warn('[cloud] 找回后自动拉取失败（静默）', e)
@@ -1220,6 +1220,7 @@ async function syncAllInner(): Promise<{ pulled: number; pushed: number; failed:
   if (!cloudState.error && pushError) cloudState.error = pushError
   if (cloudState.error) setWebSyncStatus('fail', cloudState.error)
   else setWebSyncStatus('ok')
+  if (!cloudState.error) markPulled()   // 2026-10-07：只有这轮真的拉成功，才算「本机拿到云端最新」
   return {
     pulled: pullRes.pulled,
     pushed: pushRes.pushed,
@@ -1275,6 +1276,15 @@ export async function setAutoSyncEnabled(on: boolean): Promise<void> {
 // 轻同步状态（练习页顶栏「已同步 / 失败重试」提示的数据源；纯内存）
 export type WebSyncState = 'idle' | 'syncing' | 'ok' | 'fail'
 const webSyncStatus = { state: 'idle' as WebSyncState, at: 0, msg: '' }
+// 2026-10-07（rabbit 事故 #2）：`at` 记的是「**任何**状态变更时刻」，含**只推不拉**的轻推。
+// 这带来两个错相：
+//   ① 首页胶囊在「刚推完一条进度」后显示「已同步 HH:MM」——可那是上行，本机并没有拿到云端最新；
+//   ② 首页数据重跑（pollHomeSync）也按 `at` 判转变 ⇒ **推完就重跑一次首页**，白跑。
+// 修法：单独记一份「**最后一次成功拉取**的时刻」。胶囊文案与首页重跑都以它为准；
+//   `at` 保留原义（UI 动效/转变检测仍用它）。只推不拉的轮次不再冒充「已同步」。
+const webSyncPull = { at: 0 }
+export function getLastPullAt (): number { return webSyncPull.at }
+function markPulled (): void { webSyncPull.at = Date.now() }
 function setWebSyncStatus (state: WebSyncState, msg = ''): void {
   webSyncStatus.state = state
   webSyncStatus.at = Date.now()
@@ -1301,7 +1311,7 @@ async function maybeAutoSyncOnOpenInner(): Promise<void> {
     await syncFromCloud()
     // syncFromCloud 内部吞错、不抛出 ⇒ 用 cloudState.error 判定亮灯
     if (cloudState.error) setWebSyncStatus('fail', cloudState.error)
-    else setWebSyncStatus('ok')
+    else { setWebSyncStatus('ok'); markPulled() }
   } catch (e: any) {
     setWebSyncStatus('fail', (e && e.message) || String(e))
     console.warn('[cloud] 打开自动同步失败（静默）', e)

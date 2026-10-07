@@ -413,9 +413,22 @@ function sameBankForPointer (a: any, b: any): boolean {
   const an = String(a?.bank_name || '').trim()
   const bn = String(b?.bank_name || '').trim()
   if (an && bn) return an === bn
-  const ai = Number(a?.bank_id)
-  const bi = Number(b?.bank_id)
-  return Number.isFinite(ai) && Number.isFinite(bi) && ai === bi
+  // 2026-10-07：**先按字符串比 bank_id**（订阅库是 `lquiz_banks_14`，两端一致且稳定）。
+  // ⚠️ 此前只有 `Number(bank_id)` 一条路 ⇒ 字符串 id 得 NaN ⇒ isFinite 假 ⇒ 判「不是同一个库」
+  //   ⇒ 防倒退闸门对**订阅库整体失效**。事故（当日 08:14 实测）：rabbit 进「变电安规2026」（订阅库）
+  //   退出后，本机首存把指针写成 position=1 上行，云端 last_practice 被顶成第 1 题（进度本体未丢，
+  //   丢的是首页「继续刷题」指向）。触发前提是**库名缺失**（事故里云端写入的 bank_name 是空串），
+  //   所以此前只用带名字的用例测不出来 —— 见 tests/progress-push-safety.test.ts 的 ②b 组。
+  // 数字库（本地库）仍走数值比较，且**不跨类型**认等（'14' 与 14 视为不同，避免本地号撞上订阅库号）。
+  const as = String(a?.bank_id ?? '').trim()
+  const bs = String(b?.bank_id ?? '').trim()
+  if (!as || !bs) return false
+  const aNum = Number(as)
+  const bNum = Number(bs)
+  const aIsNum = as !== '' && Number.isFinite(aNum)
+  const bIsNum = bs !== '' && Number.isFinite(bNum)
+  if (aIsNum !== bIsNum) return false          // 一边数字一边字符串 ⇒ 不同库，不做跨类型猜测
+  return aIsNum ? aNum === bNum : as === bs
 }
 
 /**

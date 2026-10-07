@@ -255,7 +255,7 @@ import QuestionCard, { type QuestionState } from '../components/QuestionCard.vue
 import { classifyQuestionType, TYPE_LABELS, groupQuestionsByCategory } from '../lib/exam'
 import { calculateAutoQuality, calculateNextReview, qualityLabel, labelToQuality, formatDate, computeNextReviewTs, toReviewTs, type QualityLabel } from '../lib/spaced-repetition'
 import { formatSyncDetail } from '../lib/sync-format'
-import { getWebSyncStatus, retryProgressSync, listProgressHistory, rollbackProgress } from '../lib/cloud'
+import { getWebSyncStatus, getLastPullAt, retryProgressSync, listProgressHistory, rollbackProgress } from '../lib/cloud'
 import { shouldWarnOnEnter } from '../lib/sync-notice'
 // 2026-10-07：本机硬存档——独立于云端的最后一道保险（关掉同步、没配云也照记）
 import { recordLocalArchive, listLocalArchive, restoreLocalArchive, ARCHIVE_MAX } from '../lib/local-archive'
@@ -329,7 +329,22 @@ async function doPageSync () {
 }
 
 // 2026-09-27：订阅库不在 bankStore（那是本地库列表）⇒ 名字优先取路由 query 里的 name（公共库入口会带上）。
-const bankName = computed(() => String(route.query.name || '') || bankStore.banks.find(b => b.id === bankId)?.name || '')
+// 2026-10-07（rabbit 事故加固）：入口**不带 name** 时（首页续练卡、错题本/收藏/统计跳回练习等），
+//   订阅库的 bankName 会退化成空串，而空串会被写进续练指针 `last_practice.bank_name` 并上行。
+//   续练指针跨端认库只有「库名 + bank_id」两条线索，名字缺失时判错库的概率显著升高（当日 08:14 事故：
+//   云端 bank_name 为空 + 两端 bank_id 形态不同 ⇒ 判成两个库 ⇒ 防倒退闸门失效 ⇒ 指针被顶成第 1 题）。
+//   ⇒ 这里补一条**云端兜底**：订阅库（字符串 bankId）名字拿不到时，直接查题库元信息；
+//     本地库不变（它本来就在 bankStore 里）。异步补齐，拿到后自动更新（写入侧读的是 computed）。
+const bankNameResolved = ref('')
+const bankName = computed(() => String(route.query.name || '') || bankStore.banks.find(b => b.id === bankId)?.name || bankNameResolved.value || '')
+if (typeof bankId === 'string') {
+  // 已有名字就不查云端（公共库入口都带 name，这条只为「不带 name 的入口」兜底）
+  if (!String(route.query.name || '')) {
+    import('../lib/exam').then(m => m.fetchPublicBankName(String(bankId)))
+      .then(n => { if (n) bankNameResolved.value = n })
+      .catch(() => { /* 拿不到名字不阻断练习，只是指针少一条线索 */ })
+  }
+}
 const questions = ref<Question[]>([])
 const order = ref<number[]>([])
 const current = ref(0)
@@ -724,6 +739,9 @@ function retrySave() { void saveProgress() }
 
 // 2026-10-03：顶栏同步状态（断网/失败可见、可点重试）——只读云同步模块的内存状态，每 3s 刷一次
 const syncStat = ref(getWebSyncStatus())
+// 2026-10-07：上次成功**拉取**的时刻 —— 「本机数据有多新」的真值（`state.at` 含只推不拉的轻推，
+// 拿它判新鲜度会把「刚推了一条进度」误当成「本机已是最新」）。每次 refreshSyncStat 同步刷新。
+const lastPullAtRef = ref(getLastPullAt())
 let syncStatTimer: number | null = null
 // 状态符（2026-10-07 晚）：☁ 常驻（与首页胶囊同一套）；同步中 ↻ 转、完成 ✓ 轻弹、失败 !、待同步只有云
 const syncChipMark = computed(() => {
@@ -745,7 +763,8 @@ function evaluateNotice () {
   const ok = st.state === 'ok'
   const warn = shouldWarnOnEnter({
     synced: ok,
-    lastOkAt: ok ? Number(st.at) || 0 : 0,
+    // 2026-10-07：判「本机有多新」要用**上次成功拉取**的时刻（`at` 含只推不拉的轻推，会误判成「刚同步过」）
+    lastOkAt: ok ? lastPullAtRef.value : 0,
     lastFail: st.state === 'fail',
     busy: st.state === 'syncing',
     now: Date.now(),
@@ -760,12 +779,12 @@ const syncChipText = computed(() => {
   const s = syncStat.value
   if (s.state === 'syncing') return '同步中…'
   if (s.state === 'fail') return '同步失败·点重试'
-  if (s.state === 'ok') {
-    const d = new Date(Number(s.at) || Date.now())
-    const p2 = (n: number) => String(n).padStart(2, '0')
-    return `已同步 ${p2(d.getHours())}:${p2(d.getMinutes())}`
-  }
-  return '未同步'
+  // 2026-10-07：与首页胶囊同口径 —— 只推不拉的轻推不算「已同步」，真值取上次成功拉取的时刻。
+  const pullAt = lastPullAtRef.value
+  if (!pullAt) return '未同步'
+  const d = new Date(pullAt)
+  const p2 = (n: number) => String(n).padStart(2, '0')
+  return `已同步 ${p2(d.getHours())}:${p2(d.getMinutes())}`
 })
 // 完成轻弹：只在「转变为 ok」那一刻挂 500ms（页面刚打开时已是 ok 不弹）
 const justSynced = ref(false)
@@ -779,6 +798,7 @@ function refreshSyncStat () {
   const prevState = syncStat.value.state
   const next = getWebSyncStatus()
   syncStat.value = next
+  lastPullAtRef.value = getLastPullAt()
   if (prevState !== 'ok' && next.state === 'ok') markJustSynced()
   evaluateNotice()   // 首次评估在首次 refreshSyncStat（进页面那一刻），之后由闸门挡住不重复
 }

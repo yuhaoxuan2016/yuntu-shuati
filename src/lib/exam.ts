@@ -997,6 +997,34 @@ async function fetchPublicBankMeta(bankRef: string): Promise<any | null> {
   }
 }
 
+/**
+ * 2026-10-07：只取公共题库的**名字**（订阅库的 `bankName` 兜底）。
+ *
+ * 起因（rabbit 事故）：订阅库的入口若不带 `?name=`，练习页的 `bankName` 就是空串，
+ * 而空串会一路写进续练指针 `last_practice.bank_name` 并上行——续练指针跨端认库
+ * **只有库名与 bank_id 两条线索**，名字空缺时全靠 bank_id 兜（见 sync-ids 的
+ * sameBankForPointer）。少一条线索就多一次判错库的机会，所以**入参兜底必须在写入侧**做掉。
+ *
+ * 与 `fetchPublicBankMeta` 同一条查询形状（where 必须是 ACL 的子集，不能用 doc(id).get()），
+ * 但**只回名字**：调用方不需要题数/模式时不必为整份元信息等 15 秒超时。
+ * 任何失败都返回 `''`（拿不到名字不是错误，指针照写，只是少一条线索）。
+ */
+export async function fetchPublicBankName(bankRef: string): Promise<string> {
+  const ref = String(bankRef || '')
+  if (!ref) return ''
+  try {
+    const res = await withTimeout<any>(cloudDb.collection('quiz_banks')
+      .where({ _id: ref, visibility: 'public' })
+      .field({ name: true })
+      .limit(1)
+      .get(), 15000, '读取题库名')
+    const rows = Array.isArray(res.data) ? res.data : []
+    return String((rows[0] && rows[0].name) || '').trim()
+  } catch {
+    return ''
+  }
+}
+
 // 读取云端公共题库的题目（用于抽题出卷与刷题；按题库云端 _id / bank_ref 关联）
 // 加载优化（2026-09-23，档1+档2）：
 //   档1 = 字段裁剪（服务端只下发要用的字段）+ 分页并行（原来是 200 条一页串行，1134 题要 6 个来回）

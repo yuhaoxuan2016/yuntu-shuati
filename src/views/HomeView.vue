@@ -521,6 +521,8 @@ loadRecordCounts()
 type HomeSyncState = { state: 'idle' | 'syncing' | 'ok' | 'fail'; at: number; msg?: string }
 const syncEnabled = ref(cloudConfigured())
 const homeSync = ref<HomeSyncState>({ state: 'idle', at: 0 })
+// 上次成功**拉取**的时刻（0 = 还没成功拉过）。胶囊文案与首页重跑都以它为真值。见 pollHomeSync 注释。
+const homeSyncAt = ref(0)
 // 状态符（2026-10-07 晚，rabbit：「云哪去了，是不是不能加原来的云」）：☁ 常驻在场，
 // 状态用随行小符 + 动效表达——同步中 ↻ 转、完成 ✓ 轻弹、失败 !、未开启/待同步只有云（靠颜色区分）
 const homeSyncMark = computed(() => {
@@ -544,12 +546,14 @@ const homeSyncText = computed(() => {
   const s = homeSync.value
   if (s.state === 'syncing') return '同步中…'
   if (s.state === 'fail') return '同步失败 · 点重试'
-  if (s.state === 'ok') {
-    const d = new Date(s.at || Date.now())
-    const p2 = (n: number) => String(n).padStart(2, '0')
-    return `已同步 ${p2(d.getHours())}:${p2(d.getMinutes())}`
-  }
-  return '未同步 · 点一下同步'
+  // 2026-10-07：这里的时刻必须取「上次成功拉取」而不是「上次状态变更」——
+  // 只推不拉的轻推也会写状态，拿它当「已同步」等于对本机数据新鲜度说谎。
+  // 还真没成功拉过时如实说「未同步」，不编一个时间。
+  const pullAt = homeSyncAt.value
+  if (!pullAt) return '未同步 · 点一下同步'
+  const d = new Date(pullAt)
+  const p2 = (n: number) => String(n).padStart(2, '0')
+  return `已同步 ${p2(d.getHours())}:${p2(d.getMinutes())}`
 })
 // 动态 import（首页 chunk 刻意不静态引 cloud.ts，见上方 cloudConfigured 注释）；只取一次，与 App.vue 那份同一实例
 let homeCloudMod: Promise<typeof import('../lib/cloud')> | null = null
@@ -593,7 +597,9 @@ async function doHomeSync() {
     } else {
       homeSync.value = { state: 'ok', at: st.at || Date.now() }
       markJustSynced()
-      lastSyncedAt = homeSync.value.at // 这笔重跑已由本函数负责，避免轮询再触发一次
+      // 本函数自己拉过了（syncAll 先推后拉）：把这笔记成已重跑，免得轮询再触发一次
+      lastReloadedPullAt = m.getLastPullAt()
+      homeSyncAt.value = lastReloadedPullAt
       toastSuccess('云同步完成')
       await refreshAfterSync()
     }
@@ -602,11 +608,12 @@ async function doHomeSync() {
     toastError('同步失败：' + homeSync.value.msg)
   } finally { homeSyncBusy = false }
 }
-// 3 秒轮询：刷新四态；捕捉「同步完成」的转变 → 自动重跑首页数据（覆盖 App.vue 那次打开自动同步）。
-// 转变判定看 `at`（每次状态变更都会被改写）而不是上一态——同步可能在两次轮询之间整段完成，
-// 只看 prev==='syncing' 会漏。完成时间早于本次进页面的，数据刚装载过 ⇒ 只记基线不重跑。
+// 3 秒轮询：刷新四态；捕捉「真实拉取完成」→ 自动重跑首页数据（覆盖 App.vue 那次打开自动同步）。
+// 2026-10-07 修正判定基准：此前看 `at`（任何状态变更，含只推不拉的轻推）⇒ 推完一条进度就重跑首页
+// （白跑），且胶囊会显示「已同步」而本机并没有拿到云端最新。现在以「上次成功**拉取**」为准。
 const homeMountedAt = Date.now()
-let lastSyncedAt = 0
+let lastPullAt = 0            // 云端最后一次成功拉取的时刻（来自 cloud.ts）
+let lastReloadedPullAt = 0    // 本地已据此重跑过首页数据的那次拉取（防重复重跑）
 let syncPollTimer: number | null = null
 function pollHomeSync() {
   syncEnabled.value = cloudConfigured()
@@ -614,10 +621,15 @@ function pollHomeSync() {
     const s = m.getWebSyncStatus()
     const prevState = homeSync.value.state
     homeSync.value = { state: s.state, at: s.at, msg: s.msg }
+    // 2026-10-07（rabbit 事故 #2）：上次成功**拉取**的时刻才是「本机数据有多新」的真值。
+    // 原先用 `s.at`（任何状态变更，含只推不拉的轻推）⇒ 推完一条进度就重跑一次首页数据（白跑），
+    // 且胶囊会显示「已同步」而本机其实没拿到云端最新。现在文案与重跑都以 pullAt 为准。
+    lastPullAt = m.getLastPullAt()
+    homeSyncAt.value = lastPullAt
     if (prevState !== 'ok' && s.state === 'ok') markJustSynced()
-    if (s.state === 'ok' && s.at && s.at !== lastSyncedAt) {
-      lastSyncedAt = s.at
-      if (s.at >= homeMountedAt && !homeSyncBusy) void refreshAfterSync()
+    if (lastPullAt && lastPullAt !== lastReloadedPullAt) {
+      lastReloadedPullAt = lastPullAt
+      if (lastPullAt >= homeMountedAt && !homeSyncBusy) void refreshAfterSync()
     }
   }).catch(() => { /* cloud 模块加载失败：保持原状态 */ })
 }
@@ -632,7 +644,8 @@ function guardEnterPractice(url: string) {
   const ok = st.state === 'ok'
   if (!enterToastOnce && shouldWarnOnEnter({
     synced: ok,
-    lastOkAt: ok ? Number(st.at) || 0 : 0,
+    // 2026-10-07：给「本机有多新」判定的是**上次成功拉取**的时刻，不是上次状态变更（只推不拉也算）。
+    lastOkAt: ok ? homeSyncAt.value : 0,
     lastFail: st.state === 'fail',
     busy: st.state === 'syncing',
     now: Date.now(),
