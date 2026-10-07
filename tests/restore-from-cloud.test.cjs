@@ -9,6 +9,10 @@
 //   ⇒ 那么「恢复无效」只能出在**清空→拉取之间**那一段：清键之后、拉取之前，
 //      本机若被页面自己的保存逻辑写了空档，且拉取复用了一个已完成的 Promise，就等于什么都没做。
 //
+// ⚠️ 2026-10-08 更新：第 ④ 组已从「诊断记录」改为**修复守卫** —— 该段已修（恢复改为
+//    `waitForIdle` 等轮空后独占开一轮 + 清键与拉取收进同一把锁 + 文案按 rebuilt 事实输出）。
+//    修复本身的守卫在 tests/sync-restore.test.cjs。
+//
 // 跑法：node tests/restore-from-cloud.test.cjs
 const fs = require('fs')
 const path = require('path')
@@ -129,30 +133,31 @@ async function main () {
     ok('❗tookCloud ≥ 1（有库采用了云端较新版本）', r.tookCloud >= 1, `实际 ${r.tookCloud}`)
   }
 
-  // ══════════ ④ 那么问题只能出在「清空 → 拉取」之间 ══════════
-  console.log('\n── ④ 排除法：问题出在 doRestoreFromCloud 的流程上 ──')
+  // ══════════ ④ 清空 → 拉取 这一段（2026-10-08 已修：这组从「诊断记录」改为「修复守卫」）══════════
+  console.log('\n── ④ 「清空 → 拉取」之间：命名不同是设计，复用与假文案曾是病根 ──')
   {
-    // 4a. 清键的判据：清的是 practice_progress_*（带库后缀）
-    ok('❗清键用的是 startsWith(\'practice_progress\')（带库后缀的本机键）',
-      /k\.startsWith\('practice_progress'\)/.test(settingsSrc))
+    // 4a. 命名不同是**设计如此**（本机一库一键 / 云端一个打包 map）
+    //     ⇒ 清本机键**完全不会**碰到云端那一行 ⇒ 清空本身是安全的。
+    ok('❗清键用 startsWith(\'practice_progress_\')（带库后缀的本机键）',
+      /k\.startsWith\('practice_progress_'\)/.test(cloudSrc))
+    // 反向对照：绝不能退化成无后缀 —— 那会连带清掉「所有库的打包 map」，语义完全不同
+    ok('❗❗反向：清键判据不得退化成无后缀 practice_progress',
+      !/startsWith\('practice_progress'\)/.test(cloudSrc))
     ok('❗云端那一行的 key 是无后缀的 practice_progress（PROGRESS_ROW_KEY）',
       /export const PROGRESS_ROW_KEY = 'practice_progress'/.test(syncSrc))
-    // 这两者命名不同是**设计如此**（本机一库一键 / 云端一个打包 map），不是 bug。
-    // 但它意味着：清本机键**完全不会**碰到云端那一行 ⇒ 清空本身是安全的。
 
-    // 4b. 真正的问题：syncFromCloud() 走全局锁，锁忙时**返回别人那一轮的 Promise**
-    ok('❗runExclusive 在锁忙时直接返回在跑的 Promise（与 label 无关）',
-      /if \(inFlight\) return inFlight as Promise<T>/.test(mutexSrc))
-    ok('❗syncFromCloud 走的就是这把锁', /runExclusive\('syncFromCloud', syncFromCloudInner\)/.test(cloudSrc))
-    // ⇒ 若此刻首页 3 秒轮询/答题后轻推正跑着 syncAll，doRestoreFromCloud 拿回的是那一轮的 Promise。
-    //    那一轮**可能已经在清键之前就拉完了**（它自己也会拉），于是「清完 → 拉」的顺序被打乱：
-    //    清键发生在那一轮拉取之后 ⇒ 本机被清空，且**没有任何后续拉取来补**。
+    // 4b. 病根一：锁忙时复用别人的 Promise。**默认行为保留**（幂等的全量合并靠它省一次请求）。
+    ok('❗runExclusive 默认仍复用（既有 5 个调用点依赖，不能删）',
+      /if \(!opts\?\.waitForIdle\) return inFlight as Promise<T>/.test(mutexSrc))
+    // 4b'. 修复：恢复链路改用 waitForIdle ⇒ 等轮空后**自己独占开一轮**，不复用别人。
+    ok('❗恢复链路走 waitForIdle（等轮空后自己开一轮）',
+      /runExclusive\('restore-progress'[\s\S]{0,3000}?waitForIdle: true/.test(cloudSrc))
 
-    // 4c. 而且无论成没成，文案都是「已按云端版本恢复进度」——这正是 rabbit 看到的假成功
-    ok('❗成功文案写死在调用处（不依赖真实拉取结果）',
-      /'已按云端版本恢复进度'/.test(settingsSrc))
-    const downTok = /已重置 \$\{n\} 个本机进度，正在按云端恢复…/.test(settingsSrc)
-    ok('❗前置提示说「正在按云端恢复」，但拉取可能根本没跑', downTok)
+    // 4c. 病根二：成功文案与真实结果脱钩 —— 现在必须过 restoreOutcomeText 判据
+    ok('❗视图不再写死成功文案，改走 restoreOutcomeText',
+      !/'已按云端版本恢复进度'/.test(settingsSrc) && /restoreOutcomeText\(/.test(settingsSrc))
+    ok('❗视图不再自己清键（清键与拉取已成 lib 里的同一把锁内动作）',
+      !/idb\.setSetting\(k, ''\)/.test(settingsSrc))
   }
 
   // ══════════ ⑤ 错题为什么也是空的（独立集合，与进度无关）══════════

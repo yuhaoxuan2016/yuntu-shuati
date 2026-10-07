@@ -889,25 +889,34 @@ async function doDownload() {
   }
 }
 
-// 2026-09-28（rabbit 批准）：以云端为准恢复进度 —— 清掉本机所有题库进度键，再拉一次云端
-// （下载侧会自动做「来源题号 → 本机题号」换算）。用于本机进度被异常状态顶掉时的兜底。
+// 2026-09-28（rabbit 批准）：以云端为准恢复进度 —— 用于本机进度被异常状态顶掉时的兜底。
+// 2026-10-08：清键 + 拉取整体搬进 `cloud.restoreProgressFromCloud()`。两个原因：
+//   ① 必须**等轮空后自己独占开一轮**。此前这里直接调拉取函数，而那会走全局锁的「复用」语义——
+//      此刻正有别的轮在跑（最典型：打开网页 4 秒后的自动拉取）时拿回的是**别人那一轮**的结果，
+//      它可能**在清键之前**就已读完本机数据 ⇒ 键清空了却没有任何人为这次恢复再拉一次，
+//      界面照弹成功提示、进度纹丝不动（rabbit 报的「恢复无效，进度还是 1、已做 0 题」）。
+//   ② 清键与拉取必须在同一把锁内，中间不给别人插队。
+//   文案同时改为按事实：只有真的重建了进度才说恢复成功（判据 restoreOutcomeText）。
 async function doRestoreFromCloud() {
   if (!cloudSaved.value) { toastError('请先保存配置'); return }
   if (syncAction.value) return
   syncAction.value = 'down'
   cloudSyncing.value = true
   try {
-    const { idb } = await import('../lib/db')
-    const all = await idb.getAllSettings()
-    let n = 0
-    for (const k of Object.keys(all)) {
-      if (k.startsWith('practice_progress')) { await idb.setSetting(k, ''); n++ }   // idb 无删除 API：置空即失效
-    }
-    toast('info', n ? `已重置 ${n} 个本机进度，正在按云端恢复…` : '本机没有进度记录，直接拉取云端…')
     const mod = await import('../lib/cloud')
-    const res = await mod.syncFromCloud()
+    const res = await mod.restoreProgressFromCloud()
     const st = mod.getCloudStatus()
-    reportSyncResult('down', { pushed: 0, failed: 0, skipped: 0, ...res, pullDetail: res.detail }, st, '已按云端版本恢复进度')
+    if (!st.authed || st.error) {
+      cloudError.value = true
+      cloudStatusText.value = st.error || '云端未授权'
+      toastError('恢复未完成：' + (st.error || '云端未授权'))
+      return
+    }
+    const outcome = mod.restoreOutcomeText(res.cleared, res.rebuilt)
+    cloudError.value = false
+    cloudStatusText.value = `✓ ${outcome.text} · ⬇ ${formatSyncDetail(res.detail)}`
+    if (outcome.kind === 'ok') toastSuccess(outcome.text)
+    else toast('info', outcome.text)
   } catch (e) {
     cloudError.value = true
     cloudStatusText.value = '恢复失败：' + (e instanceof Error ? e.message : String(e))

@@ -17,6 +17,8 @@ import {
   type LedgerKV,
 } from './sync-ledger'
 import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal, mergeProgressMapForCloud, orderHitRate, PROG_SCHEMA_V, reshapeMpProgress, pushHistory, pickHistory, makeRollbackValue, HISTORY_MAX, resolvePushedRows, shouldPushLastPractice, PROGRESS_ROW_KEY } from './sync-ids'
+// 「恢复结果文案」的判据住在 sync-ids.ts（纯函数、可直测）；这里转出，让设置页只需 import 本模块一处。
+export { restoreOutcomeText } from './sync-ids'
 import { decideDeletedMark, nextTries, type RemoveResult } from './deleted-marks'
 import type { SyncDetail } from './sync-format'
 import { runExclusive, isSyncBusy, onSyncBusyChange } from './sync-mutex'
@@ -1037,6 +1039,42 @@ async function syncFromCloudInner(): Promise<{ pulled: number; truncated: boolea
   }
 }
 
+/**
+ * 「以云端为准恢复进度」：清掉本机所有题库进度键，再**由自己**从云端重新拉一遍。
+ *
+ * 2026-10-08（rabbit「我直接从云端恢复是无效的，进度还是 1、已做 0 题」）修两处：
+ *   ① **等轮空后独占开一轮**（`waitForIdle`）。原先视图层直接调 `syncFromCloud()`，而它走全局锁的
+ *      「复用」语义 —— 此刻若正有别的轮在跑（最典型：打开网页 4 秒后的自动拉取），拿回的是
+ *      **别人那一轮**的 promise。那一轮可能**在清键之前**就已读完本机数据，于是键清空了、
+ *      却没有任何人为这次恢复再拉一次 ⇒ 界面照弹成功提示，进度纹丝不动。
+ *   ② 清键与拉取收进**同一把锁内**，中间不给任何人插队（此前两者之间是裸的，可被插）。
+ *  返回值 `rebuilt` 是**拉完之后数出来的**本机非空进度键个数 —— 不靠「没报错」推断（那是上一版
+ *  的错处：把「拉取成功」当成了「恢复成功」）。文案判据见 sync-ids.restoreOutcomeText。
+ */
+export async function restoreProgressFromCloud (): Promise<{ cleared: number; rebuilt: number; pulled: number; truncated: boolean; suppressed: number; cleaned: number; detail: SyncDetail }> {
+  return runExclusive('restore-progress', async () => {
+    // 清键：idb 无删除 API，置空即失效（练习页读到空串会当「没有进度」）。
+    // ⚠️ 只动带库后缀的 `practice_progress_<ref>`；无后缀的 `practice_progress` 是「所有库的打包 map」，
+    //    语义完全不同，碰它会毁掉别的库的进度。
+    let cleared = 0
+    try {
+      const all = await idb.getAllSettings()
+      for (const k of Object.keys(all)) {
+        if (k.startsWith('practice_progress_')) { await idb.setSetting(k, ''); cleared++ }
+      }
+    } catch (e) { console.warn('[cloud] 清空本机进度失败（继续拉取）', e) }
+    const res = await syncFromCloudInner()
+    let rebuilt = 0
+    try {
+      const after = await idb.getAllSettings()
+      for (const k of Object.keys(after)) {
+        if (k.startsWith('practice_progress_') && String(after[k] || '').trim()) rebuilt++
+      }
+    } catch { /* 数不出来就报 0：宁可少说，不可多说 */ }
+    return { cleared, rebuilt, ...res }
+  }, { waitForIdle: true })
+}
+
 // 本地 → 云端（推送本设备私人数据；公共数据人人可读无需同步，rabbit 2026-08-15 明确）
 // 2026-08-21 性能优化（方案 A+B，解决「云同步速度慢」）：
 // - A 并发推送：逐条串行改为 6 并发批量（Promise.allSettled），单条失败不中断整体，最后汇总失败数提示
@@ -1220,9 +1258,12 @@ async function syncAllInner(): Promise<{ pulled: number; pushed: number; failed:
   // 2026-10-07：全量同步此前不写同步状态 ⇒ 首页/练习页芯片会「刚同步过仍显示未同步」。按统一口径回写。
   const round = beginSyncRound()
   setWebSyncStatus('syncing', '', round)
-  const pushRes = await pushToCloud()
+  // 2026-10-08：本函数**自身就在锁内**（runExclusive('syncAll', …)）⇒ 这里必须调**内层**。
+  // 调导出版本会 `runExclusive('pushToCloud'/'syncFromCloud', …)` 再抢同一把锁：拿回的是
+  // 「自己这一轮」的 promise ⇒ 等自己（挂死），或把锁提前释放（互斥形同虚设）。两条都是从这里来的。
+  const pushRes = await pushToCloudInner()
   const pushError = cloudState.error // 拉取会把 error 清空，先抓在手里
-  const pullRes = await syncFromCloud()
+  const pullRes = await syncFromCloudInner()
   if (!cloudState.error && pushError) cloudState.error = pushError
   if (cloudState.error) setWebSyncStatus('fail', cloudState.error, round)
   else setWebSyncStatus('ok', '', round)
@@ -1341,7 +1382,12 @@ async function maybeAutoSyncOnOpenInner(): Promise<void> {
     try { localStorage.setItem(AUTO_PULL_KEY, String(Date.now())) } catch { /* 静默 */ }
     const round = beginSyncRound()
     setWebSyncStatus('syncing', '', round)
-    await syncFromCloud()
+    // 2026-10-08：本函数**自身就在锁内**（runExclusive('auto-pull', …)）。原先这里调的是导出的
+    // `syncFromCloud()` —— 它再抢同一把锁，而此时锁正被自己持着 ⇒ 拿回来的是**自己的 promise**
+    // ⇒ `await` 自己 ⇒ 永不返回、锁永不释放 ⇒ 该页面会话里**所有同步全废**（设置页四个按钮、
+    // 答题轻推、恢复按钮全拿到那个永不完结的 promise）。触发：距上次自动拉取 ≥10 分钟或当天首开
+    // （已绑定账号自动同步默认开）⇒ 现象正是「隔久了进网页就一只转圈，十分钟内刷新反而正常」。
+    await syncFromCloudInner()
     // syncFromCloud 内部吞错、不抛出 ⇒ 用 cloudState.error 判定亮灯
     if (cloudState.error) setWebSyncStatus('fail', cloudState.error, round)
     else { setWebSyncStatus('ok', '', round); markPulled() }

@@ -449,3 +449,20 @@ export function shouldPushLastPractice (
   if (!sameBankForPointer(local, cloud)) return true
   return !(nPos <= 2 && oPos >= 5)
 }
+
+/**
+ * 「以云端为准恢复进度」的结果文案判据（纯函数、可直测）。
+ * 口径：**只有真的重建了本机进度键才说「恢复」**。
+ * 起因（2026-10-08）：原先这句话只以「拉取没报错」为准，而「没报错」≠「恢复了」——
+ * 清空本机后若那一轮拉取其实早已读完本机数据（详见 sync-mutex 的 waitForIdle），
+ * 界面照样说恢复成功，用户进去却还是第 1 题、已做 0 题。宁可少说，不可多说。
+ * @param cleared 清空的本机进度键个数
+ * @param rebuilt 拉完之后**数出来的**本机非空进度键个数
+ */
+export function restoreOutcomeText (cleared: number, rebuilt: number): { kind: 'ok' | 'info'; text: string } {
+  const c = Number(cleared) || 0
+  const r = Number(rebuilt) || 0
+  if (r > 0) return { kind: 'ok', text: `已按云端版本恢复 ${r} 个题库的进度` }
+  if (c > 0) return { kind: 'info', text: `已清空本机 ${c} 个进度，但云端没有可恢复的内容` }
+  return { kind: 'info', text: '本机与云端都没有可恢复的进度' }
+}
