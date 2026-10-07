@@ -395,7 +395,20 @@ async function openHistory () {
   await refreshHistory()
   showHistory.value = true
 }
-// 硬存档恢复：只写本机进度槽位 + 新时间戳，随下次同步自然上行（不主动推云，保持「纯本机」口径）
+// 2026-10-07：恢复结果如实措辞。此前两条手动恢复路径都无条件 toast「已恢复」，
+// 而 apply 失败（引用解析不出来）时画面纹丝不动 —— rabbit 报的「点了恢复完全没用」有一半是这句话造成的。
+function reportRestore (r: RestoreOutcome, okText: string) {
+  if (r === 'applied') { toastSuccess(okText); return }
+  if (r === 'no-saved' || r === 'unparsable') {
+    toastError('恢复失败：这版进度读不出来（数据可能已损坏）')
+    return
+  }
+  if (r === 'not-loaded') {
+    toastError('恢复失败：题目还没加载完，请稍后重试')
+    return
+  }
+  toastError('恢复失败：这版进度里的题目对不上当前题库（可能题库已更新）。当前进度未改动')
+}
 async function onRestoreArchive (h: any) {
   if (rollingBack.value) return
   const okToGo = window.confirm(`从本机硬存档恢复到 ${fmtHistTime(h.saved_at)} 的版本（已答 ${h.answered} 题）？\n\n当前进度会被这一版替换。`)
@@ -405,8 +418,7 @@ async function onRestoreArchive (h: any) {
     const done = await restoreLocalArchive(historyBankRef.value, h.saved_at)
     if (!done) { toastError('恢复失败：该版本已不在硬存档里'); return }
     showHistory.value = false
-    toastSuccess('已从本机硬存档恢复该版本')
-    await restoreProgress()
+    reportRestore(await restoreProgress(), '已从本机硬存档恢复该版本')
     await refreshHistory()
   } catch (e: any) {
     toastError('恢复失败：' + String((e && e.message) || e))
@@ -430,8 +442,7 @@ async function onRollback (h: any) {
     const done = await rollbackProgress(historyBankRef.value, h.saved_at)
     if (!done) { toastError('恢复失败：该版本已不在历史里'); return }
     showHistory.value = false
-    toastSuccess('已恢复该版本进度')
-    await restoreProgress()      // 就地重载，用户立刻看到题号回退
+    reportRestore(await restoreProgress(), '已恢复该版本进度')   // 就地重载，用户立刻看到题号回退
     await refreshHistory()
   } catch (e: any) {
     toastError('恢复失败：' + String((e && e.message) || e))
@@ -590,18 +601,22 @@ onMounted(async () => {
 // 把两端「继续刷题」位置顶掉（02:10 实测）。用户真答了题或按「重新开始」即解除。
 const restoreUnsettled = ref(false)
 
-// 从后端恢复上次进度
-async function restoreProgress() {
+// 从后端恢复上次进度。
+// 2026-10-07：返回值改为如实汇报结果，供「恢复历史版本」调用方给用户一个明确交代——
+//   此前无论成功失败都返回 undefined，调用方只能一律 toast「已恢复该版本」，
+//   失败时（引用解析不出来）用户看到的就是「提示说恢复了、画面毫无变化」。
+type RestoreOutcome = 'applied' | 'no-saved' | 'unparsable' | 'refs-unresolved' | 'not-loaded'
+async function restoreProgress(): Promise<RestoreOutcome> {
   const saved = await api.getSetting(progressKey.value)
-  if (!saved) return
+  if (!saved) return 'no-saved'
   let progress: SavedProgress
   try {
     progress = JSON.parse(saved)
   } catch {
-    return
+    return 'unparsable'
   }
-  if (!progress || progress.current_id == null) return
-  if (!questions.value.length) return
+  if (!progress || progress.current_id == null) return 'unparsable'
+  if (!questions.value.length) return 'not-loaded'
 
   // 沿用落盘的「重新开始」标记（云端版本覆盖本机后此处自然读不到）
   resetMarked.value = progress._reset ? String(progress._reset) : null
@@ -645,10 +660,17 @@ async function restoreProgress() {
     if (curIdx === undefined) {
       // 有进度却解析不出当前位置 ⇒ 不装作恢复成功；挂闸门，直到用户真答题/重新开始
       restoreUnsettled.value = true
-      return
+      // 2026-10-07（rabbit：「恢复历史版本完全没用」）：此处原先**完全静默**——不弹提示、不改画面，
+      // 用户在界面上看到的就是「点了恢复，什么都没发生」。改为把结果如实交回调用方，
+      // 由调用方决定措辞（自动恢复路径不打扰用户，手动恢复路径必须明说失败）。
+      return 'refs-unresolved'
     }
     const currentOrderIdx = order.value.findIndex(i => i === curIdx)
     current.value = currentOrderIdx >= 0 ? currentOrderIdx : 0
+    // 2026-10-07：**必须强制重挂载题目卡**。此前只有 `currentQuestion.id` 变（换题）时才靠 :key 重建，
+    // 而「恢复到与当前同一题」时 key 不变 ⇒ QuestionCard 的 selected/submitted/isCorrect 那些
+    // setup 期一次性的 ref 保持旧值 ⇒ **对错永远刷不出来**（rabbit 报的「题目对错也无法恢复」）。
+    reloadKey.value++
 
     // 恢复各题答题状态
     if (progress.answer_states) {
@@ -672,6 +694,7 @@ async function restoreProgress() {
     }
 
     await nextTick()
+    return 'applied'
   } finally {
     restoring.value = false
   }
@@ -897,6 +920,15 @@ async function saveProgressInner() {
     // 2026-10-07：只有真的入栈了才刷新列表（存档变化 ⇒ 面板计数与按钮可见性要跟上）
     void recordLocalArchive(historyBankRef.value, progress)
       .then((changed) => { if (changed) void refreshArchive() })
+      .catch(() => {})
+    // 2026-10-07（rabbit：「恢复历史版本完全没用」，实读云端发现最新版本只有 128 题、而他已答 337）：
+    // 「进度历史版本」这组的入栈时机原先**只挂在轻推链上**（cloud.ts 的 pushProgressLight →
+    // recordProgressHistory），而轻推有 8 秒防抖 + 30 秒最小间隔 + 「自动同步开关」三重闸门
+    // ⇒ 关掉自动同步、或保存密集时被防抖吃掉的那一版，**永远不进历史栈**。
+    // 结果就是：用户在历史面板里看到的版本比他真实走到的最远处**旧得多**，恢复过去自然像「没用」。
+    // 现在改成**与保存同步入栈**（本地写，不依赖网络/开关），轻推那条保留（负责把栈带上云）。
+    void import('../lib/cloud').then(m => m.recordHistoryFromLocal(historyBankRef.value, progress))
+      .then((changed) => { if (changed) void refreshHistory() })
       .catch(() => {})
     // 2026-10-03：落盘成功后防抖轻推（只推进度/当天统计/续练指针三条设置行；可在设置里关）
     void import('../lib/cloud').then(m => m.scheduleProgressPush()).catch(() => {})

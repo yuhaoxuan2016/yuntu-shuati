@@ -2084,6 +2084,38 @@ export async function listProgressHistory(bankRef: string): Promise<any[]> {
   return Array.isArray(arr) ? arr : []
 }
 
+/**
+ * 2026-10-07：**单库**入栈（练习页每次落盘成功后调用）。
+ *
+ * 与 `recordProgressHistory`（整包 map、挂在轻推链上）的分工：
+ *   · 本函数 = 保存即入栈，**完全不依赖网络、同步开关、防抖**；
+ *   · recordProgressHistory = 轻推时顺带补一次（覆盖「从别处同步回来的版本」），并负责把栈带上云。
+ *
+ * 起因（rabbit 实报「恢复历史版本完全没用」）：实读云端发现他 `lquiz_banks_14` 的栈里
+ * 最新一版只有 **128 题**，而他的真实进度是 **337 题** —— 因为入栈此前只发生在轻推成功那一刻，
+ * 而轻推有 8 秒防抖 + 30 秒最小间隔 + 自动同步开关三重闸门，答得快或关了自动同步的版本
+ * **根本进不了栈**。历史面板于是永远比用户真实进度旧一截，恢复过去看着就像没生效。
+ *
+ * 与「本机硬存档」的区别：本函数写的是**云端也会看到**的那份 `practice_history`；
+ * 硬存档是纯本机、任何云端路径都不碰的保险。两者独立保留，互不引用。
+ */
+export async function recordHistoryFromLocal(bankRef: string, prog: any): Promise<boolean> {
+  const ref = String(bankRef || '')
+  if (!ref || !prog || typeof prog !== 'object') return false
+  try {
+    const hist = await readLocalHistory()
+    const before = Array.isArray(hist[ref]) ? hist[ref] : []
+    const after = pushHistory(before, prog)
+    if (JSON.stringify(after) === JSON.stringify(before)) return false
+    hist[ref] = after
+    await idb.setSetting(PRACTICE_HISTORY_KEY, JSON.stringify(hist))
+    return true
+  } catch (e) {
+    console.warn('[cloud] 单库历史入栈失败（不阻断保存）', e)
+    return false
+  }
+}
+
 /** 回滚到某一版：写回本机 `practice_progress_<ref>`（练习页读的就是这个键）并立即轻推上云。
  *  回滚值带 `_src`（本机标记）与刷新后的 saved_at —— 否则同步守卫会用别处旧版本把它顶回去。
  *  ⚠️ 只写 `<ref>` 后缀键，**不要**去动无后缀的 `practice_progress` —— 那是「所有库的打包 map」，
