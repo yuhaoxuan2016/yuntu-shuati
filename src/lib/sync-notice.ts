@@ -27,13 +27,23 @@ export interface EnterNoticeInput {
   lastFail?: boolean
   /** 此刻是否有同步正在跑（最典型该提示的场景） */
   busy?: boolean
+  /**
+   * 此刻**是否真的在拉取**（云端 → 本机）。2026-10-07 新增：
+   * `busy` 是全局锁口径，只推不拉的轻推也会点亮它 ⇒ 拿它判「本机可能还没拿到云端最新」
+   * 会把「正在上传」误报成「正在下载」。有这条精确信号时以它为准。
+   * 不传 = 退回旧的 `busy` 口径（兼容既有调用与测试）。
+   */
+  pullBusy?: boolean
   /** 当前时刻（显式传入，便于测试） */
   now: number
 }
 
 /** 进页面那一刻是否该提示「可能读不到上次进度」。 */
 export function shouldWarnOnEnter (i: EnterNoticeInput): boolean {
-  if (i.busy) return true                       // 正在同步：此刻退出重进大概率能拿到，值得提示
+  // 2026-10-07：优先用「拉取在飞」这条精确信号 —— 只推不拉的轮次不该触发本提示。
+  // 未传 pullBusy 时退回 busy（旧口径），保证既有调用方行为不变。
+  const pulling = i.pullBusy !== undefined ? i.pullBusy : !!i.busy
+  if (pulling) return true                      // 正在拉：此刻退出重进大概率能拿到，值得提示
   if (i.lastFail) return true                   // 上次失败：本机多半不是最新的
   if (!i.synced) return true                    // 从没成功同步过（没配云 / 没跑过）
   const last = Number(i.lastOkAt) || 0

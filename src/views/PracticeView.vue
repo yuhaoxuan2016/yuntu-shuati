@@ -255,7 +255,7 @@ import QuestionCard, { type QuestionState } from '../components/QuestionCard.vue
 import { classifyQuestionType, TYPE_LABELS, groupQuestionsByCategory } from '../lib/exam'
 import { calculateAutoQuality, calculateNextReview, qualityLabel, labelToQuality, formatDate, computeNextReviewTs, toReviewTs, type QualityLabel } from '../lib/spaced-repetition'
 import { formatSyncDetail } from '../lib/sync-format'
-import { getWebSyncStatus, getLastPullAt, retryProgressSync, listProgressHistory, rollbackProgress } from '../lib/cloud'
+import { getWebSyncStatus, getLastPullAt, isPullInFlight, retryProgressSync, listProgressHistory, rollbackProgress } from '../lib/cloud'
 import { shouldWarnOnEnter } from '../lib/sync-notice'
 // 2026-10-07：本机硬存档——独立于云端的最后一道保险（关掉同步、没配云也照记）
 import { recordLocalArchive, listLocalArchive, restoreLocalArchive, ARCHIVE_MAX } from '../lib/local-archive'
@@ -789,7 +789,9 @@ function evaluateNotice () {
     // 2026-10-07：判「本机有多新」要用**上次成功拉取**的时刻（`at` 含只推不拉的轻推，会误判成「刚同步过」）
     lastOkAt: ok ? lastPullAtRef.value : 0,
     lastFail: st.state === 'fail',
-    busy: st.state === 'syncing',
+    // 2026-10-07：用「**拉取**在飞」而不是「任意同步在飞」——只推不拉的轻推也会把 state 点成 syncing，
+    // 拿它判「可能读不到上次进度」等于把「正在上传」误报成「正在下载」，横幅因此赖着不走。
+    pullBusy: isPullInFlight(),
     now: Date.now(),
   })
   if (warn) {

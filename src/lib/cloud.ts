@@ -312,10 +312,11 @@ export async function consumeRecoverPendingPull(): Promise<void> {
     if (!isCloudEnabled()) return
     if (!(await ensureApp())) return
     // 2026-10-07：此前零状态写入（完全静默）⇒ 芯片读不到这次拉取。补上与打开自动拉同一口径。
-    setWebSyncStatus('syncing')
+    const round = beginSyncRound()
+    setWebSyncStatus('syncing', '', round)
     await syncFromCloud()
-    if (cloudState.error) setWebSyncStatus('fail', cloudState.error)
-    else { setWebSyncStatus('ok'); markPulled() }
+    if (cloudState.error) setWebSyncStatus('fail', cloudState.error, round)
+    else { setWebSyncStatus('ok', '', round); markPulled() }
   } catch (e: any) {
     setWebSyncStatus('fail', (e && e.message) || String(e))
     console.warn('[cloud] 找回后自动拉取失败（静默）', e)
@@ -972,6 +973,9 @@ async function syncFromCloudInner(): Promise<{ pulled: number; truncated: boolea
   if (!(await ensureApp())) return { pulled: 0, truncated: false, suppressed: 0, cleaned: 0, detail: {} }
   if (!isAuthed()) return { pulled: 0, truncated: false, suppressed: 0, cleaned: 0, detail: {} }
   cloudState.error = null
+  // 2026-10-07：标记「拉取在飞」——供进库横幅区分「正在下载」与「正在上传」（见 pullInFlight 注释）。
+  // finally 里无论如何都减回去：抛错也必须复位，否则一次异常会让横幅永久以为"正在拉"。
+  pullInFlight++
   try {
     let pulled = 0
     let truncated = false
@@ -1028,6 +1032,7 @@ async function syncFromCloudInner(): Promise<{ pulled: number; truncated: boolea
     console.warn('syncFromCloud 失败：', e)
     return { pulled: 0, truncated: false, suppressed: 0, cleaned: 0, detail: {} }
   } finally {
+    pullInFlight--
     cloudState.syncing = isSyncBusy()
   }
 }
@@ -1213,13 +1218,14 @@ export function syncAll(): Promise<{ pulled: number; pushed: number; failed: num
 
 async function syncAllInner(): Promise<{ pulled: number; pushed: number; failed: number; skipped: number; truncated: boolean; suppressed: number; cleaned: number; pushDetail: SyncDetail; pullDetail: SyncDetail; error: string | null }> {
   // 2026-10-07：全量同步此前不写同步状态 ⇒ 首页/练习页芯片会「刚同步过仍显示未同步」。按统一口径回写。
-  setWebSyncStatus('syncing')
+  const round = beginSyncRound()
+  setWebSyncStatus('syncing', '', round)
   const pushRes = await pushToCloud()
   const pushError = cloudState.error // 拉取会把 error 清空，先抓在手里
   const pullRes = await syncFromCloud()
   if (!cloudState.error && pushError) cloudState.error = pushError
-  if (cloudState.error) setWebSyncStatus('fail', cloudState.error)
-  else setWebSyncStatus('ok')
+  if (cloudState.error) setWebSyncStatus('fail', cloudState.error, round)
+  else setWebSyncStatus('ok', '', round)
   if (!cloudState.error) markPulled()   // 2026-10-07：只有这轮真的拉成功，才算「本机拿到云端最新」
   return {
     pulled: pullRes.pulled,
@@ -1285,7 +1291,33 @@ const webSyncStatus = { state: 'idle' as WebSyncState, at: 0, msg: '' }
 const webSyncPull = { at: 0 }
 export function getLastPullAt (): number { return webSyncPull.at }
 function markPulled (): void { webSyncPull.at = Date.now() }
-function setWebSyncStatus (state: WebSyncState, msg = ''): void {
+// 2026-10-07（rabbit：转圈 + 有提示，但"实际已经同步上去了"）：区分「**拉取**在跑」与「任意同步在跑」。
+//   `state === 'syncing'` 是**全局锁**口径，只推不拉的轻推也会点亮它 ⇒ 用它判「本机可能还没拿到
+//   云端最新」等于把「正在上传」误报成「正在下载」。这里单独记一份「拉取在飞」的真值，供进库横幅使用。
+let pullInFlight = 0
+export function isPullInFlight (): boolean { return pullInFlight > 0 }
+// 2026-10-07（rabbit：练习页一直转圈、且"实际已经同步上去了"）：状态写回加**代次号**。
+// 起因：全仓有 6 处 setWebSyncStatus（轻推 2 处、全量 2 处、自动拉 2 处），都写同一份对象、无代次，
+//   于是**收尾晚的那一轮覆盖收尾早的那一轮** —— 典型是轻推先结束写 ok、全量拉取还在跑，
+//   转圈图标被强行改成「已同步」；反过来轻推后写 ok 也会把别的轮的 syncing 抹掉。
+// 口径：每轮开始（写 syncing）时认领一个自增号，之后**只有代次仍等于自己**才允许写状态；
+//   别的轮已经开始（代次前进）就放弃写入 —— 后开的那轮才是用户该看到的真相。
+let syncRoundSeq = 0
+let syncRoundOwner = 0
+/** 认领新一轮：返回本轮代次号，后续收尾写状态时带回来做归属校验。 */
+function beginSyncRound (): number {
+  syncRoundSeq++
+  syncRoundOwner = syncRoundSeq
+  return syncRoundSeq
+}
+/** 本轮是否仍是"当前轮"（有人开了更新的一轮就不再是）。 */
+function isMySyncRound (round: number): boolean { return round === syncRoundOwner }
+function setWebSyncStatus (state: WebSyncState, msg = '', round?: number): void {
+  // 带 round 的调用（收尾写 ok/fail）= 必须仍是当前轮，否则丢弃，别覆盖别人的真相
+  if (round !== undefined && !isMySyncRound(round)) {
+    console.info(`[cloud] 同步状态写回已过期（第 ${round} 轮，当前第 ${syncRoundOwner} 轮），忽略`)
+    return
+  }
   webSyncStatus.state = state
   webSyncStatus.at = Date.now()
   webSyncStatus.msg = msg
@@ -1307,11 +1339,12 @@ async function maybeAutoSyncOnOpenInner(): Promise<void> {
     try { last = Number(localStorage.getItem(AUTO_PULL_KEY) || 0) } catch { last = 0 }
     if (last && Date.now() - last < AUTO_PULL_INTERVAL_MS) return
     try { localStorage.setItem(AUTO_PULL_KEY, String(Date.now())) } catch { /* 静默 */ }
-    setWebSyncStatus('syncing')
+    const round = beginSyncRound()
+    setWebSyncStatus('syncing', '', round)
     await syncFromCloud()
     // syncFromCloud 内部吞错、不抛出 ⇒ 用 cloudState.error 判定亮灯
-    if (cloudState.error) setWebSyncStatus('fail', cloudState.error)
-    else { setWebSyncStatus('ok'); markPulled() }
+    if (cloudState.error) setWebSyncStatus('fail', cloudState.error, round)
+    else { setWebSyncStatus('ok', '', round); markPulled() }
   } catch (e: any) {
     setWebSyncStatus('fail', (e && e.message) || String(e))
     console.warn('[cloud] 打开自动同步失败（静默）', e)
@@ -1364,11 +1397,12 @@ function pushProgressLight(force = false): Promise<void> {
 
 async function pushProgressLightInner(force = false): Promise<void> {
   if (!force && Date.now() - lastLightPushAt < AUTO_PUSH_MIN_INTERVAL_MS) return
-  setWebSyncStatus('syncing')
+  const round = beginSyncRound()
+  setWebSyncStatus('syncing', '', round)
   try {
-    if (!(await ensureApp())) { setWebSyncStatus('fail', '云未连接'); return }
-    if (!isAuthed()) { setWebSyncStatus('fail', '未登录云端'); return }
-    if (!force && !(await getAutoSyncEnabled())) { setWebSyncStatus('idle'); return }
+    if (!(await ensureApp())) { setWebSyncStatus('fail', '云未连接', round); return }
+    if (!isAuthed()) { setWebSyncStatus('fail', '未登录云端', round); return }
+    if (!force && !(await getAutoSyncEnabled())) { setWebSyncStatus('idle', '', round); return }
     const rows: any[] = []
     const progRow = await collectPracticeProgressRow()
     if (progRow) {
@@ -1399,7 +1433,7 @@ async function pushProgressLightInner(force = false): Promise<void> {
         console.warn(`[cloud] 续练指针疑似倒退，本次不推（云端第 ${cloudLp.value?.position} 题 vs 本机第 ${localLp?.position} 题）`)
       }
     }
-    if (!rows.length) { setWebSyncStatus('ok'); return }
+    if (!rows.length) { setWebSyncStatus('ok', '', round); return }
     // 进度包先与云端逐键合并（防止把别处设备较新的库进度顶掉）——与手动推送同一条口径
     const m = await mergeProgressMapWithCloud(rows)
     const merged = resolvePushedRows(rows, m ? m.rows : null, !!m?.readFailed)
@@ -1408,12 +1442,12 @@ async function pushProgressLightInner(force = false): Promise<void> {
     if (ok) {
       lastLightPushAt = Date.now()
       cloudState.lastSyncAt = now()
-      setWebSyncStatus('ok')
+      setWebSyncStatus('ok', '', round)
     } else {
-      setWebSyncStatus('fail', '推送未生效（网络或权限）')
+      setWebSyncStatus('fail', '推送未生效（网络或权限）', round)
     }
   } catch (e: any) {
-    setWebSyncStatus('fail', (e && e.message) || String(e))
+    setWebSyncStatus('fail', (e && e.message) || String(e), round)
     console.warn('[cloud] 进度自动推送失败（静默，下次作答会再试）', e)
   }
 }
@@ -2174,6 +2208,22 @@ async function listAllSettings(): Promise<any[]> {
       continue
     }
     out.push({ _id: settingsDocId(k), key: k, value: v })
+  }
+  // 2026-10-07：续练指针的防倒退闸门**必须在这里也有一份**。此前它只存在于轻推链
+  // （pushProgressLightInner），而全量同步（打开网页的自动同步 / 设置页「上传」「双向同步」）
+  // 走的是上面那个 `keys` 循环 —— **无条件推**。后果实测：换设备或清缓存后本机
+  // `last_practice` 是新生成的 position=1，一次自动同步就先把它推上云，把云端 466 顶掉；
+  // 紧接着再拉回来的就是刚被自己推上去的那个 1 ⇒ 用户看到的「进度回到第 1 题」。
+  // 两条链共用同一个纯函数判据（sync-ids.ts），口径只有一处，不会分叉。
+  const lpIdx = out.findIndex(r => r && r.key === 'last_practice')
+  if (lpIdx >= 0) {
+    let localLp: any = null
+    try { localLp = JSON.parse(String(out[lpIdx].value || 'null')) } catch { localLp = null }
+    const cloudLp = await readCloudLastPractice()
+    if (!shouldPushLastPractice(localLp, cloudLp.value, { readFailed: cloudLp.readFailed })) {
+      console.warn(`[cloud] 续练指针疑似倒退，全量同步本次不推它（云端第 ${cloudLp.value?.position} 题 vs 本机第 ${localLp?.position} 题）`)
+      out.splice(lpIdx, 1)
+    }
   }
   // 2026-10-04：昵称（纯网名）随设置行上云——小程序「我的」显示它、两端双向（后写者胜）。
   // 值直接取本机 localStorage（昵称不存 idb），体积 ≤32 字符，无需体积守卫。

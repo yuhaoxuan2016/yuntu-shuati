@@ -614,11 +614,15 @@ async function doHomeSync() {
 const homeMountedAt = Date.now()
 let lastPullAt = 0            // 云端最后一次成功拉取的时刻（来自 cloud.ts）
 let lastReloadedPullAt = 0    // 本地已据此重跑过首页数据的那次拉取（防重复重跑）
+// 2026-10-07：精确的「**拉取**在飞」信号（与全局锁口径的 state === 'syncing' 不同 —— 后者含只推不拉的轻推）。
+// 进库 toast 的判断要用它，否则「正在上传」会被误报成「正在下载」。
+let homePullBusy = false
 let syncPollTimer: number | null = null
 function pollHomeSync() {
   syncEnabled.value = cloudConfigured()
   getHomeCloudMod().then(m => {
     const s = m.getWebSyncStatus()
+    homePullBusy = m.isPullInFlight()
     const prevState = homeSync.value.state
     homeSync.value = { state: s.state, at: s.at, msg: s.msg }
     // 2026-10-07（rabbit 事故 #2）：上次成功**拉取**的时刻才是「本机数据有多新」的真值。
@@ -647,7 +651,8 @@ function guardEnterPractice(url: string) {
     // 2026-10-07：给「本机有多新」判定的是**上次成功拉取**的时刻，不是上次状态变更（只推不拉也算）。
     lastOkAt: ok ? homeSyncAt.value : 0,
     lastFail: st.state === 'fail',
-    busy: st.state === 'syncing',
+    // 2026-10-07：同上 —— 用精确的「拉取在飞」，别拿全局锁状态（轻推也算 busy）误报成"正在下载"。
+    pullBusy: homePullBusy,
     now: Date.now(),
   })) {
     enterToastOnce = true
