@@ -16,7 +16,7 @@ import {
   type LedgerIndex,
   type LedgerKV,
 } from './sync-ledger'
-import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal, mergeProgressMapForCloud, orderHitRate, PROG_SCHEMA_V, reshapeMpProgress, pushHistory, pickHistory, makeRollbackValue, HISTORY_MAX, resolvePushedRows, shouldPushLastPractice, PROGRESS_ROW_KEY } from './sync-ids'
+import { buildSrcLocalIndex, getOrCreateDeviceId, mergeProgressForLocal, mergeProgressMapForCloud, orderHitRate, PROG_SCHEMA_V, reshapeMpProgress, pushHistory, pickHistory, makeRollbackValue, HISTORY_MAX, resolvePushedRows, shouldPushLastPractice, recordBankRefFallback, planRecordQuestionRef, PROGRESS_ROW_KEY } from './sync-ids'
 // 「恢复结果文案」的判据住在 sync-ids.ts（纯函数、可直测）；这里转出，让设置页只需 import 本模块一处。
 export { restoreOutcomeText } from './sync-ids'
 import { decideDeletedMark, nextTries, type RemoveResult } from './deleted-marks'
@@ -1184,7 +1184,8 @@ async function pushOne(coll: CloudCollection, r: any, syncKey: string): Promise<
     if (bank?.cloud_id) doc.bank_ref = bank.cloud_id
     delete doc._bank_id
   }
-  if ((coll === 'practice_records' || coll === 'wrong_questions' || coll === 'mastered_questions' || coll === 'favorites') && typeof doc.bank_id === 'number') {
+  const isRecordColl = coll === 'practice_records' || coll === 'wrong_questions' || coll === 'mastered_questions' || coll === 'favorites'
+  if (isRecordColl && typeof doc.bank_id === 'number') {
     doc._local_bank_id = doc.bank_id
     // 保留 bank_id 供云端统计；拉取时用 _local_bank_id 回映
     // 2026-09-28（跨设备映射）：带上题目的云端 _id —— 换设备落地时靠它把记录精确挂回本机题号；
@@ -1194,6 +1195,10 @@ async function pushOne(coll: CloudCollection, r: any, syncKey: string): Promise<
       if (q && q.cloud_id) doc.question_cloud_id = q.cloud_id
     } catch { /* 查不到就不带，不阻断推送 */ }
   }
+  // 2026-10-08：订阅库（bank_id 是 bankRef 字符串）此前**一个标识都不带** —— 落地侧只能靠
+  // 「bank_id 是字符串」这个隐式约定认库，而它当初没被处理 ⇒ 记录整条丢。补上 bank_ref，
+  // 让两端写的是同一套标识（小程序端早在写）。只认字符串，数字那支仍只写 _local_bank_id。
+  if (isRecordColl && typeof doc.bank_id === 'string') doc.bank_ref = doc.bank_id
   // 本机来源标记不上云（云端题已有 _local_id；src_local_id 只服务本机映射）
   delete (doc as any).src_local_id
   const ok = await pushDoc(coll, doc)
@@ -1726,6 +1731,13 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
       // 现在：先解析题库，再解析题目，两个都允许**按云 _id 兜底**。
       let bankId = await mapCloudBankToLocal(r._local_bank_id ?? r.bank_id)
       if (bankId == null && r.bank_ref) bankId = await mapCloudBankRefToLocal(String(r.bank_ref))
+      // 2026-10-08：网页端推送**不给记录类写 bank_ref**（只有「题目」那一支写），而订阅库记录的
+      // bank_id 就是 bankRef 字符串本身 ⇒ 上面两条都解不出（订阅库本机没有库行、这份又没带 bank_ref）
+      // ⇒ bankId 恒为 null ⇒ 整条**静默丢弃**（实测：错题 8 条 / 收藏 4 条 / 已掌握 81 条）。
+      // 补一条：bank_id 是字符串时按 bankRef 再解一次；mapCloudBankRefToLocal 内含
+      // 「必须真的订阅过」的守卫，不会把别人的库挂到本机上。判据在 sync-ids（纯函数、可直测）。
+      const refFallback = recordBankRefFallback(bankId, r.bank_id)
+      if (refFallback) bankId = await mapCloudBankRefToLocal(refFallback)
       // `_local_bank_id` 在 pushOne 里是「保留 bank_id 供云端统计」的并写字段，语义与 bank_id 同源，
       // 别把它当云端 _id 用；只有 bank_ref 是真正的云身份。
       if (bankId != null) {
@@ -1735,11 +1747,16 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
         // 绝不把记录挂到同号的另一道题上。无该字段（本机自产/历史遗留）→ 保持原样（本就是本机号语义）。
         // 2026-10-02：此前 `question_id` 为 0 且无 question_cloud_id 时会原样落库（挂到 0 号题），
         // 现在这种「定位不到也不带云身份」的行直接跳过 —— 挂错题比不挂更糟。
-        if (r.question_cloud_id) {
+        // 2026-10-08（订阅库）：上面的翻译是读**本机题目行**建索引的，而订阅库题目在线直读、本机无题行
+        // ⇒ 对订阅库必然返回 null ⇒ 带 question_cloud_id 的小程序行被整体跳过（实测 11 条错题）。
+        // 订阅库的题号本来就是云端 `_local_id`（推送方与展示侧用同一套编号）⇒ 原样采用。
+        // 三分支判据在 sync-ids.planRecordQuestionRef（纯函数、可直测），口径只此一处。
+        const plan = planRecordQuestionRef({ bankId, questionCloudId: r.question_cloud_id, questionId: r.question_id })
+        if (plan === 'translate') {
           const localQid = await mapCloudQuestionToLocal(bankId, String(r.question_cloud_id))
           if (localQid == null) return 'skipped'
           r.question_id = localQid
-        } else if (!(Number(r.question_id) > 0)) {
+        } else if (plan === 'skip') {
           return 'skipped'
         }
         if (coll === 'practice_records') {

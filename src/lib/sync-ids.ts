@@ -466,3 +466,46 @@ export function restoreOutcomeText (cleared: number, rebuilt: number): { kind: '
   if (c > 0) return { kind: 'info', text: `已清空本机 ${c} 个进度，但云端没有可恢复的内容` }
   return { kind: 'info', text: '本机与云端都没有可恢复的进度' }
 }
+
+/**
+ * 记录类（错题 / 收藏 / 已掌握 / 练习记录）落地：库解析失败后，还能不能拿 `bank_id` 本身当 bankRef 再试一次。
+ * 返回**要试的 bankRef**，或 null（不需要试 / 不该试）。
+ * 起因（2026-10-08）：网页端推送**不给记录类写 `bank_ref`**（只有「题目」那一支写），而订阅库记录的
+ *   `bank_id` 就是 bankRef 字符串本身 ⇒ 落地时两条既有路径（本机题库 cloud_id / `bank_ref`）都解不出
+ *   ⇒ 整条**静默丢弃**（实测：错题 8 条、收藏 4 条、已掌握 81 条）。
+ * ⚠️ 只认**字符串**：数字 `bank_id` 是「推送设备的本地库号」，解不出就是解不出 —— 拿它当 bankRef
+ *   去认库会认到别的库上（宁可丢，不可错挂）。
+ */
+export function recordBankRefFallback (bankId: number | string | null | undefined, rawBankId: unknown): string | null {
+  if (bankId != null) return null            // 已经解出来了，别再兜（免得把认对的覆盖成别的）
+  if (typeof rawBankId !== 'string') return null
+  return rawBankId || null
+}
+
+/**
+ * 记录类落地：这条记录的**题号该怎么定**（纯函数、可直测）。三个取值：
+ *   · `'translate'` —— 按 `question_cloud_id` 翻译成本机题号（**本地库**：本机有题目行可查）
+ *   · `'as-is'`     —— 原样采用 `question_id`（**订阅库**：题号本就是云端稳定号）
+ *   · `'skip'`      —— 定不了 ⇒ 整条跳过（宁可少挂，绝不挂错号）
+ *
+ * 为什么**订阅库不能翻译**：`mapCloudQuestionToLocal` 是读**本机题目行**建 `cloud_id → 本机号` 索引的，
+ *   而订阅库（题目在线直读、不落本地）本机**没有任何题行** ⇒ 必然返回 null ⇒ 带 `question_cloud_id`
+ *   的行被整体丢弃（实测 11 条错题就是这么没的）。
+ *   订阅库的 `question_id` 由 `api.listQuestions` 的订阅分支给出，就是云端 `_local_id`，跨设备一致；
+ *   展示侧用**同一套编号**去云端取题 ⇒ 原样采用即正确，翻译反而只可能失败。
+ *
+ * 判据 `typeof bankId === 'string'` = 订阅库：本仓既有口径（纯数字 ⇒ 本地库；字符串 ⇒ 订阅库，
+ *   见 PracticeView 的路由参数说明与 `mapCloudBankRefToLocal` 的返回值）。
+ */
+export function planRecordQuestionRef (opts: {
+  bankId: number | string | null | undefined
+  questionCloudId?: unknown
+  questionId?: unknown
+}): 'translate' | 'as-is' | 'skip' {
+  const bankId = opts.bankId
+  if (bankId == null) return 'skip'                                     // 库都没解出来：无处置放
+  const hasUsableId = Number(opts.questionId) > 0
+  if (typeof bankId === 'string') return hasUsableId ? 'as-is' : 'skip' // 订阅库：不翻译
+  if (opts.questionCloudId) return 'translate'                          // 本地库：优先按云端题 _id 精确映射
+  return hasUsableId ? 'as-is' : 'skip'
+}
