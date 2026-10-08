@@ -108,8 +108,11 @@ async function main () {
       /pullInFlight\+\+/.test(cloudSrc))
     ok('❗finally 里无论如何都复位（抛错也不漏）',
       /finally \{\s*pullInFlight--/.test(cloudSrc))
+    // 2026-10-08：练习页把 isPullInFlight() 先绑给 `pulling`（同一值还驱动「拉完自收」）——
+    // 判据强度不降：既查绑定来源、又查字段确实由它传入
     ok('❗两个调用方都改成传 pullBusy',
-      /pullBusy: isPullInFlight\(\)/.test(pracSrc) && /pullBusy: homePullBusy/.test(homeSrc))
+      /const pulling = isPullInFlight\(\)/.test(pracSrc) && /pullBusy: pulling/.test(pracSrc)
+      && /pullBusy: homePullBusy/.test(homeSrc))
     ok('❗反向：调用方不再传旧的 busy',
       !/busy: st\.state === 'syncing'/.test(pracSrc) && !/busy: st\.state === 'syncing'/.test(homeSrc))
     ok('❗首页每 3 秒轮询里刷新 homePullBusy',

@@ -8,7 +8,8 @@
 //
 // 三条要钉住的语义：
 //   ① 判据＝「本机可能还没有云端最新进度」（不是"此刻正在同步"）
-//   ② 本次进页面**只提示一次**：同一次停留期间后台又同步完/又失败，不重新弹
+//   ② 评估**只在进页面那一刻做一次并冻结**：未提示就保持不提示、提示过也不重复（2026-10-08 补：
+//     此前挂在 3s 轮询里反复求值，「距上次拉取 >60s」随时间自然翻真 ⇒ 进库约 1 分钟后横幅迟到冒出）
 //   ③ 下次再进页面**重新判**（可能又错过了新的）
 const fs = require('fs')
 const path = require('path')
@@ -62,15 +63,20 @@ console.log('\n── ② 源码级：横幅判据已不再等于「正在同步
   ok('横幅仍是页面顶部那条（文案保留）', /云同步还没完成/.test(view))
 }
 
-console.log('\n── ③ 「本次进页面只提示一次」的闸门 ──')
+console.log('\n── ③ 进页面评估一次即冻结（2026-10-08 修「横幅迟到」）──')
 {
   const view = fs.readFileSync(path.join(ROOT, 'src', 'views', 'PracticeView.vue'), 'utf8')
-  ok('有"本次已提示过"的标记', /noticeShown|warnShown|bannerShownOnce|noticeOnce/.test(view))
-  ok('❗反向对照：标记在进页面时被复位（否则第二次进页面就不再提示了）',
-    /noticeOnce\.value = false|noticeShown\.value = false|warnShown\.value = false/.test(view))
-  // 闸门语义：一旦提示过，后续状态变化不得让它再次为真（早退即可，不一定要 return false）
-  ok('提示过之后即使仍在陈旧状态也不重复弹',
-    /if \(noticeOnce\.value\) return\b|if \(noticeShown\.value\) return\b|if \(warnShown\.value\) return\b/.test(view))
+  ok('有"本次已评估过"的冻结标记', /noticeEvaluated/.test(view))
+  ok('❗反向对照：冻结在评估**一开始**就置位（而不是等警告出现才置位）——'
+    + '否则「陈旧窗口」会随时间自然翻真、横幅进库约 1 分钟后自己冒出来',
+    /if \(noticeEvaluated\) return[\s\S]{0,80}noticeEvaluated = true/.test(view))
+  ok('❗反向对照：旧写法（只在提示后挡重复、未提示则持续复评）已移除',
+    !/if \(noticeOnce\.value\) return/.test(view))
+  ok('进页面时复位冻结与展示状态（下次进页面重新判）',
+    /noticeEvaluated = false/.test(view) && /noticeShouldShow\.value = false/.test(view))
+  ok('❗新增：因「正在拉取」弹出的横幅，拉完自动收掉（注释承诺过，本版做实）',
+    /noticeHideWhenPullDone/.test(view) && /!isPullInFlight\(\)[\s\S]{0,120}noticeShouldShow\.value = false/.test(view))
+  ok('横幅仍是页面顶部那条（文案保留）', /云同步还没完成/.test(view))
 }
 
 console.log('\n── ④ 首页 toast 用同一判据（原先那条从没弹过）──')

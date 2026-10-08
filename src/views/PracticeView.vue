@@ -776,27 +776,32 @@ const syncChipMark = computed(() => {
 })
 // 2026-10-07：进库横幅 —— 判据改成「本机可能还没有云端最新进度」（见 lib/sync-notice.ts）。
 // 原先判 `state === 'syncing'`，而进页面时同步不启动 ⇒ 那条件几乎凑不出来，横幅一次都没出现过。
-// 口径（rabbit 2026-10-07 纠正）：**首次进入练习页时提示一次**，不是每次同步都跳；
-// 同一次停留期间后台又同步完/又失败都不重新弹（noticeOnce 闸门），下次进页面重新判。
-const noticeOnce = ref(false)
+// 口径（rabbit 2026-10-07 纠正）：**首次进入练习页时提示一次**，不是每次同步都跳；下次进页面重新判。
+// 2026-10-08（rabbit 实测：进库约 1 分钟后横幅会自己冒出来）：评估必须**只在进页面那一刻做一次并冻结**——
+// 此前它挂在 3 秒轮询里反复求值，而「距上次拉取 >60s 算可能不最新」会随时间自然翻真 ⇒ 横幅迟到。
+// 另：因「正在拉取」弹的横幅，拉完自动收掉（注释一直这么承诺，本版把它做实）。
+let noticeEvaluated = false
 const noticeShouldShow = ref(false)
+let noticeHideWhenPullDone = false
 function evaluateNotice () {
-  if (noticeOnce.value) return                     // 本次进页面已提示过 ⇒ 不再重复
+  if (noticeEvaluated) return                     // 本次进页面只评估一次（进页面那一刻），评完冻结
+  noticeEvaluated = true
   const st = syncStat.value
   const ok = st.state === 'ok'
+  const pulling = isPullInFlight()
   const warn = shouldWarnOnEnter({
     synced: ok,
     // 2026-10-07：判「本机有多新」要用**上次成功拉取**的时刻（`at` 含只推不拉的轻推，会误判成「刚同步过」）
     lastOkAt: ok ? lastPullAtRef.value : 0,
     lastFail: st.state === 'fail',
     // 2026-10-07：用「**拉取**在飞」而不是「任意同步在飞」——只推不拉的轻推也会把 state 点成 syncing，
-    // 拿它判「可能读不到上次进度」等于把「正在上传」误报成「正在下载」，横幅因此赖着不走。
-    pullBusy: isPullInFlight(),
+    // 拿它判「可能读不到上次进度」等于把「正在上传」误报成「正在下载」。
+    pullBusy: pulling,
     now: Date.now(),
   })
   if (warn) {
     noticeShouldShow.value = true
-    noticeOnce.value = true                        // 一旦提示过，本次停留不再弹
+    noticeHideWhenPullDone = pulling               // 仅「因拉取而弹」的：拉完自动收；其余原因留到手动关
   }
 }
 const syncingHint = computed(() => noticeShouldShow.value)
@@ -825,7 +830,12 @@ function refreshSyncStat () {
   syncStat.value = next
   lastPullAtRef.value = getLastPullAt()
   if (prevState !== 'ok' && next.state === 'ok') markJustSynced()
-  evaluateNotice()   // 首次评估在首次 refreshSyncStat（进页面那一刻），之后由闸门挡住不重复
+  evaluateNotice()   // 只在进页面那一刻评估一次（见 evaluateNotice 注释），之后冻结
+  // 2026-10-08：因「正在拉取」弹的横幅，拉完自动收掉
+  if (noticeShouldShow.value && noticeHideWhenPullDone && !isPullInFlight()) {
+    noticeShouldShow.value = false
+    noticeHideWhenPullDone = false
+  }
 }
 async function onSyncChipTap () {
   if (syncStat.value.state === 'syncing') return
@@ -837,9 +847,10 @@ async function onSyncChipTap () {
 onMounted(() => {
   saveWatchTimer = setInterval(checkSaveHealth, 45000)
   document.addEventListener('visibilitychange', onVisibilityChange)
-  // 本次进页面重新判一次（上次看过的提示不该阻止这次提示）：复位闸门 → 立即评估一次
-  noticeOnce.value = false
+  // 本次进页面重新判一次（上次看过的提示不该阻止这次提示）：复位冻结 → 立即评估一次
+  noticeEvaluated = false
   noticeShouldShow.value = false
+  noticeHideWhenPullDone = false
   refreshSyncStat()
   syncStatTimer = window.setInterval(refreshSyncStat, 3000)
 })
