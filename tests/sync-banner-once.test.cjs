@@ -40,7 +40,7 @@ const NOW = 1_800_000_000_000   // 固定"现在"，避免用真实时钟造成�
 
 console.log('── ① 判据：本机可能还没有云端最新进度 ──')
 {
-  eq('从未同步过（没配云/没跑过）⇒ 提示', M.shouldWarnOnEnter({ synced: false, lastOkAt: 0, now: NOW }), true)
+  eq('从未成功同步过（配了云但还没跑过 ⇒ 提示；未配云由调用方闸掉、到不了这里）', M.shouldWarnOnEnter({ synced: false, lastOkAt: 0, now: NOW }), true)
   eq('上次同步失败 ⇒ 提示', M.shouldWarnOnEnter({ synced: false, lastOkAt: 0, lastFail: true, now: NOW }), true)
   eq('刚同步成功（远小于阈值）⇒ 不提示', M.shouldWarnOnEnter({ synced: true, lastOkAt: NOW - 1000, now: NOW }), false)
   eq('同步成功但已经过去很久（超过陈旧阈值）⇒ 提示',
@@ -110,6 +110,26 @@ console.log('\n── ⑤ 「本机有多新」以**成功拉取**为准，不�
   const pv2 = fs.readFileSync(path.join(ROOT, 'src', 'views', 'PracticeView.vue'), 'utf8')
   ok('练习页芯片文案同样取拉取时刻', /lastPullAtRef\.value/.test(pv2))
   ok('❗反向对照：练习页不再用 `s.at` 当「已同步」时间', !/new Date\(Number\(s\.at\)/.test(pv2))
+}
+
+console.log('\n── ⑥ 「未配云」不提示（2026-10-08 补：与 mp「未打通不提示」对齐）──')
+{
+  // 病：没配云的用户没有云可同步，判据里 `!synced` 那条对他们恒真 ⇒ 每次进库都弹、纯添乱。
+  // 闸放在调用方（判据保持纯函数）；两端各用自己的「有没有云」信号：web＝配了 envId、mp＝已打通。
+  const pv = fs.readFileSync(path.join(ROOT, 'src', 'views', 'PracticeView.vue'), 'utf8')
+  const pvEval = pv.slice(pv.indexOf('function evaluateNotice'), pv.indexOf('const syncingHint'))
+  ok('练习页：评估里先闸「未配云」', /!isCloudEnabled\(\)\) return/.test(pvEval))
+  ok('❗闸在判据之前（先闸后判；顺序反了则判据先跑、闸形同虚设）',
+    pvEval.indexOf('isCloudEnabled') > -1 && pvEval.indexOf('isCloudEnabled') < pvEval.indexOf('shouldWarnOnEnter'))
+
+  const home = fs.readFileSync(path.join(ROOT, 'src', 'views', 'HomeView.vue'), 'utf8')
+  const gi = home.indexOf('function guardEnterPractice')
+  const guard = home.slice(gi, gi + 900)
+  ok('首页：进库守卫里闸「未配云」（用本文件已有的 syncEnabled，不新引 cloud.ts）',
+    /syncEnabled\.value && !enterToastOnce/.test(guard))
+  ok('❗闸在判据之前', guard.indexOf('syncEnabled.value') > -1 && guard.indexOf('syncEnabled.value') < guard.indexOf('shouldWarnOnEnter'))
+  ok('闸的信号由 3s 轮询现刷（设置页刚配完云也能被认到）',
+    /function pollHomeSync[\s\S]{0,300}syncEnabled\.value = cloudConfigured\(\)/.test(home))
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败`)

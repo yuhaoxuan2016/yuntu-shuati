@@ -642,11 +642,13 @@ function pollHomeSync() {
 // 2026-10-07：判据与练习页横幅统一（shouldWarnOnEnter）——原先只看 `state === 'syncing'`，
 // 而点题库那一刻同步早已跑完或压根没跑 ⇒ **这条 toast 从来没弹过**。现在改成「本机可能不是最新的」。
 // 另加本次进页面只提示一次，避免每次点题库都冒一句。
+// 2026-10-08：未配云不提示（syncEnabled 由 3s 轮询现刷；没配云＝判据里「从未成功同步」恒真、纯添乱；
+// 与 mp「未打通不提示」对齐）。
 let enterToastOnce = false
 function guardEnterPractice(url: string) {
   const st = homeSync.value
   const ok = st.state === 'ok'
-  if (!enterToastOnce && shouldWarnOnEnter({
+  if (syncEnabled.value && !enterToastOnce && shouldWarnOnEnter({
     synced: ok,
     // 2026-10-07：给「本机有多新」判定的是**上次成功拉取**的时刻，不是上次状态变更（只推不拉也算）。
     lastOkAt: ok ? homeSyncAt.value : 0,

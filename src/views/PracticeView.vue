@@ -255,7 +255,7 @@ import QuestionCard, { type QuestionState } from '../components/QuestionCard.vue
 import { classifyQuestionType, TYPE_LABELS, groupQuestionsByCategory } from '../lib/exam'
 import { calculateAutoQuality, calculateNextReview, qualityLabel, labelToQuality, formatDate, computeNextReviewTs, toReviewTs, type QualityLabel } from '../lib/spaced-repetition'
 import { formatSyncDetail } from '../lib/sync-format'
-import { getWebSyncStatus, getLastPullAt, isPullInFlight, retryProgressSync, listProgressHistory, rollbackProgress } from '../lib/cloud'
+import { getWebSyncStatus, getLastPullAt, isPullInFlight, retryProgressSync, listProgressHistory, rollbackProgress, isCloudEnabled } from '../lib/cloud'
 import { shouldWarnOnEnter } from '../lib/sync-notice'
 // 2026-10-07：本机硬存档——独立于云端的最后一道保险（关掉同步、没配云也照记）
 import { recordLocalArchive, listLocalArchive, restoreLocalArchive, ARCHIVE_MAX } from '../lib/local-archive'
@@ -786,6 +786,9 @@ let noticeHideWhenPullDone = false
 function evaluateNotice () {
   if (noticeEvaluated) return                     // 本次进页面只评估一次（进页面那一刻），评完冻结
   noticeEvaluated = true
+  // 2026-10-08：未配云没有云可同步，判据里「从未成功同步」那条对他们恒真 ⇒ 每次进库都弹、纯添乱。
+  // 闸在调用方（与 mp「未打通不提示」对齐；判据本身保持纯函数）。isCloudEnabled 每次现读配置，无缓存。
+  if (!isCloudEnabled()) return
   const st = syncStat.value
   const ok = st.state === 'ok'
   const pulling = isPullInFlight()
