@@ -33,15 +33,22 @@ async function fetchVisits(db) {
   return { globalTotal: globalDoc?.total ?? null, daily }
 }
 
-// 资源点读数（schema 2）。三条实测口径，别改回旧写法：
-//  · DescribeCreditsUsage 的 StartDate 实测不影响结果（0~21 天窗口返回同一个数），它给的是
-//    「当前计费周期」累计——DeductValue 就是控制台「套餐资源点」那个已用数（2026-09-25 实测 1481.62 一致）。
-//  · ReportValue = OriginCredits − DeductValue 的**未扣减残差，不是余额**。旧版把它当 remaining，
+// 资源点读数（schema 3）。
+// 🔴 2026-10-09 实测更正（推翻 schema 2 的两条前提）：
+//  · `DescribeCreditsUsage` 的窗口**基本被忽略**：0~0/1~0/2~0/6~0 全返 0；7 天窗口返 0；≥10 天返 7024.45；
+//    整段落在 10-01 之后的窗口（含单日 10-01、10-05）恒 0；整段落在 09-30 之前的窗口（哪怕单日）恒 7024.45。
+//    ⇒ 它给的是**最近一个已结算周期**，不是「当前周期累计」——老注释说「就是当前周期已用」是错的，
+//    根因是当时（09-25）恰好落在有数据的那段里。**用 today=EndDate 单日窗口 ⇒ 恒 0**，这正是「资源点一直不更新」的病根。
+//  · 明细 `DescribeCreditsUsageDetail` 覆盖 **08-08→09-23**（47 天），**10 月 0 天** ⇒ 平台侧计量自 09-23 起停更（待人工去控制台确认）。
+//  ⇒ 因此本脚本只报「最近一期」并把 `数据截至` 一并输出；不把任何数写成「实时本周期」。
+//  · `ReportValue` = OriginCredits − DeductValue 的**未扣减残差，不是余额**。旧版把它当 remaining，
 //    于是 8 份存档里「剩余」恒为 832.51、周报常年喊「还能撑 3 天」。
 //  · 配额走 DescribeEnvPlans → ResourceLimit.Credits.MaxSize（个人版 40000/月），不写死。
-//  · 日均用 DescribeCreditsUsageDetail 的按日 ValueDetailList 真值；旧版「30 天窗口 ÷ 30」虚高数倍。
-const CREDITS_SCHEMA = 2
+const CREDITS_SCHEMA = 3
 const DAILY_WINDOW_DAYS = 30
+// 聚合口径的窗口＝「dataThrough 所在自然月的 1 号 → dataThrough」。
+// 实测依据（2026-10-09）：单日 09-20 查询 = 7024.45（= 整个 9 月），单日 10-01 = 0 ⇒ 平台按**自然月**聚合并忽略窗口内的天数；
+// 而窗口一旦跨月就把上个月并进来（08-30→10-09 = 8155.77 = 8+9 月）⇒ 必须切在月初，否则「最近一期」会虚高一截。
 
 export async function fetchCredits() {
   const tcb = tcbSdk.tcb.v20180608
@@ -50,12 +57,6 @@ export async function fetchCredits() {
   const fmt = (dt) => dt.toISOString().slice(0, 10)
   const d = new Date()
   const today = fmt(d)
-
-  const usage = R(await c.DescribeCreditsUsage({ EnvId: ENV_ID, StartDate: today, EndDate: today }))
-  const used = Number(usage.DeductValue ?? 0)
-  const origin = Number(usage.OriginCredits ?? 0)
-  const unwaived = Number(usage.ReportValue ?? 0)
-  const packageDeduct = Number(usage.PackageDeductValue ?? 0)
 
   let quota = null, quotaEvery = null, packageId = null, packageName = null
   try {
@@ -96,6 +97,22 @@ export async function fetchCredits() {
   const dailyWindowDays = DAILY_WINDOW_DAYS + 1
   const dailyTotal = Number(dailySeries.reduce((s, x) => s + x.deduct, 0).toFixed(2))
   const avgDailyBurn = dailyTotal / dailyWindowDays
+
+  // 数据新鲜度：明细里最新的一天＝平台侧计量的覆盖上限（2026-10-09 实测＝09-23，10 月 0 天）
+  const dataThrough = dailySeries.length ? dailySeries[dailySeries.length - 1].date : null
+  const staleDays = dataThrough ? Math.floor((Date.parse(today) - Date.parse(dataThrough)) / 86400000) : null
+  const stale = staleDays != null && staleDays >= 2
+
+  // 聚合口径：窗口**锚在 dataThrough**（不是今天）——停更期间读数才稳定。
+  // 且窗口取 30 天：实测 60 天窗口会把上一期也并进来（8月+9月 = 8155.77），30 天只圈住最近一期（9 月 = 7024.45）。
+  const anchor = dataThrough || today
+  const usageStart = anchor.slice(0, 8) + '01'
+  const usage = R(await c.DescribeCreditsUsage({ EnvId: ENV_ID, StartDate: usageStart, EndDate: anchor }))
+  const used = Number(usage.DeductValue ?? 0)   // 最近一期（平台侧已结算）的扣减；**不是**实时本周期
+  const origin = Number(usage.OriginCredits ?? 0)
+  const unwaived = Number(usage.ReportValue ?? 0)
+  const packageDeduct = Number(usage.PackageDeductValue ?? 0)
+
   const remaining = quota != null ? Number((quota - used).toFixed(2)) : null
   const usagePct = quota ? Number((used / quota * 100).toFixed(2)) : null
 
@@ -103,12 +120,15 @@ export async function fetchCredits() {
     schema: CREDITS_SCHEMA, used, origin, unwaived, packageDeduct,
     quota, quotaEvery, packageId, packageName, remaining, usagePct,
     dailySeries, dailyWindowDays, dailyTotal, avgDailyBurn, byModule,
+    dataThrough, staleDays, stale, usageAnchor: anchor, usageWindowStart: usageStart,
   }
 }
 
 // 告警判定：配额按月重置 ⇒「还能撑几天」是错指标，只看使用率与烧速
+// ⚠️ 平台侧数据停更时**不产出使用率告警**——拿旧数喊「用得快」比不喊更坏（2026-10-09：明细停在 09-23）
 export function warnReasons(c) {
   const out = []
+  if (c.stale) return out
   if (c.quota && c.usagePct >= 80) out.push(`资源点使用率 ${c.usagePct}%（≥80%）`)
   const budget = c.quota ? c.quota / 30 : 0
   if (budget > 0 && c.avgDailyBurn > budget * 2) out.push(`日均实扣 ${c.avgDailyBurn.toFixed(0)} 点/天，超月度预算速率 ${budget.toFixed(0)} 点/天的 2 倍`)
@@ -144,22 +164,28 @@ async function main() {
     console.log(`${x.date}  ${String(x.count).padStart(4)}  ${'█'.repeat(Math.min(x.count, 40))}`)
   }
 
-  // ===== B. 资源点（当前计费周期） =====
+  // ===== B. 资源点（平台侧口径见 fetchCredits 顶部；只有「最近一期」+「数据截至」是可信的） =====
   let credits = null
   try { credits = await fetchCredits() } catch (e) { console.log('\n（资源点抓取失败: ' + (e.message || e) + '）') }
   if (credits) {
     const c = credits
-    console.log(`\n【CloudBase 资源点 · 当前计费周期】`)
+    console.log(`\n【CloudBase 资源点 · 最近一期（平台侧已结算，非实时本周期）】`)
     console.log(`   套餐: ${c.packageName ?? '?'}（${c.packageId ?? '?'}）`)
-    console.log(`   本周期已用: ${c.used} 点` + (c.quota ? ` / 配额 ${c.quota} 点（每${c.quotaEvery}）= 使用率 ${c.usagePct}%` : ' / 配额: 未取到'))
-    console.log(`   本周期剩余: ${c.remaining ?? '?'} 点`)
+    console.log(`   最近一期已用: ${c.used} 点` + (c.quota ? ` / 配额 ${c.quota} 点（每${c.quotaEvery}）= 占比 ${c.usagePct}%` : ' / 配额: 未取到'))
+    console.log(`   按配额推算剩余: ${c.remaining ?? '?'} 点（配额按月重置，别写成「还能撑 N 天」）`)
     console.log(`   未扣减残差(ReportValue，⚠️不是余额): ${c.unwaived} 点 · 资源包扣减: ${c.packageDeduct} 点`)
+    if (c.stale) {
+      console.log(`   🔴 数据截至 ${c.dataThrough}（距今 ${c.staleDays} 天）——**平台侧资源点计量已停更**，上面数字是停更前最后结算的一期；`)
+      console.log(`      不要再把它读成「本周期 0 点/未消耗」。要去控制台用量统计页看实时数（2026-10-09 实测：明细 10 月 0 天）。`)
+    } else if (c.dataThrough) {
+      console.log(`   数据截至 ${c.dataThrough}`)
+    }
     if (c.byModule.length) {
       console.log(`   近 ${c.dailyWindowDays} 天消耗构成（按日明细归并）:`)
       for (const m of c.byModule) console.log(`     ${m.name}(${m.module}): ${m.deduct}`)
     }
     if (c.dailySeries.length) {
-      console.log(`   近 ${c.dailyWindowDays} 天按日实扣: 合计 ${c.dailyTotal} 点 · 日均 ${c.avgDailyBurn.toFixed(1)} 点/天`)
+      console.log(`   近 ${c.dailyWindowDays} 天按日实扣: 合计 ${c.dailyTotal} 点 · 日均 ${c.avgDailyBurn.toFixed(1)} 点/天（窗口会滚，日均随旧日滚出而变小，≠用量下降）`)
       console.log('     ' + c.dailySeries.slice(-10).map((x) => `${x.date.slice(5)}=${x.deduct}`).join('  '))
     } else {
       console.log('   ⚠️ 按日明细为空——日均算不出来，别把这个 0 读成「没消耗」')
