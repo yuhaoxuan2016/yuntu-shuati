@@ -2600,6 +2600,12 @@ export async function unbindMiniProgram(): Promise<boolean> {
     setBoundCache(null)
     authedUid = null
     cloudState.authed = false
+    // 2026-10-09：**清了身份就得清同步时间戳**——它们是「上一个身份的云端数据有多新」，
+    // 留着两个后果：① 本轮自动拉取被 10 分钟节流跳过（新身份的数据干等）；② 进库横幅拿旧身份
+    // 的成功时刻当真、不再提示（而新身份可能压根没同步过）。与小程序 unbindAccount 同口径。
+    try { localStorage.removeItem(AUTO_PULL_KEY) } catch { /* 静默 */ }
+    try { localStorage.removeItem(LAST_PULL_KEY) } catch { /* 静默 */ }
+    webSyncPull.at = 0
     // 下次调用 ensureCloud 会重新走匿名登录
     return true
   } catch {

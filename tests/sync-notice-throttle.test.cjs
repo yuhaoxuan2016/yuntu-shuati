@@ -138,6 +138,13 @@ console.log('── ⑤ 真实路径：开了页面**直接点进题库**（rabb
   ok('❗练习页的 synced 改为「有没有成功拉取记录」，不再取 state === \'ok\'',
     !/const ok = st\.state === 'ok'[\s\S]{0,200}synced: ok/.test(pv))
   ok('❗首页同理', !/const ok = st\.state === 'ok'[\s\S]{0,300}synced: ok/.test(hv))
+
+  // 落了盘就得管生命周期：换身份时旧身份的时间戳必须清掉（否则新身份的数据干等 + 横幅不提示）。
+  // 与小程序 unbindAccount 同口径（那边从 2026-09 起就这么清）。
+  const unbind = cloud.slice(cloud.indexOf('export async function unbindMiniProgram'))
+  ok('❗解绑时清掉「自动拉取节流戳」与「上次成功拉取戳」',
+    unbind.indexOf('removeItem(AUTO_PULL_KEY)') > -1 && unbind.indexOf('removeItem(LAST_PULL_KEY)') > -1 &&
+    unbind.indexOf('removeItem(LAST_PULL_KEY)') < unbind.indexOf('return true'))
 }
 
 console.log('── ⑥ ❗冷启动判据：近期同步过 ⇒ 不唠叨；没同步过/真陈旧 ⇒ 照说 ──')
