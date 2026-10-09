@@ -259,7 +259,7 @@ import QuestionCard, { type QuestionState } from '../components/QuestionCard.vue
 import { classifyQuestionType, TYPE_LABELS, groupQuestionsByCategory } from '../lib/exam'
 import { calculateAutoQuality, calculateNextReview, qualityLabel, labelToQuality, formatDate, computeNextReviewTs, toReviewTs, type QualityLabel } from '../lib/spaced-repetition'
 import { formatSyncDetail } from '../lib/sync-format'
-import { getWebSyncStatus, getLastPullAt, isPullInFlight, listProgressHistory, rollbackProgress, isCloudEnabled, autoPullDueOnOpen } from '../lib/cloud'
+import { getWebSyncStatus, getLastPullAt, isPullInFlight, listProgressHistory, rollbackProgress, isCloudEnabled, autoPullDueOnOpen, getLastSyncOkAt } from '../lib/cloud'
 import { shouldWarnOnEnter } from '../lib/sync-notice'
 // 2026-10-07：本机硬存档——独立于云端的最后一道保险（关掉同步、没配云也照记）
 import { recordLocalArchive, listLocalArchive, restoreLocalArchive, ARCHIVE_MAX } from '../lib/local-archive'
@@ -769,6 +769,9 @@ const syncStat = ref(getWebSyncStatus())
 // 2026-10-07：上次成功**拉取**的时刻 —— 「本机数据有多新」的真值（`state.at` 含只推不拉的轻推，
 // 拿它判新鲜度会把「刚推了一条进度」误当成「本机已是最新」）。每次 refreshSyncStat 同步刷新。
 const lastPullAtRef = ref(getLastPullAt())
+// 2026-10-09：胶囊**显示**专用的「最近一次同步成功」（任向，上传成功也算；与小程序同口径）。
+// 判事（横幅快照 pullAtAtEvaluated / 数据重跑）一律仍走 lastPullAtRef —— 两把钥匙别混。
+const lastSyncOkAtRef = ref(getLastSyncOkAt())
 let syncStatTimer: number | null = null
 // 状态符（2026-10-07 晚）：☁ 常驻（与首页胶囊同一套）；同步中 ↻ 转、完成 ✓ 轻弹、失败 !、待同步只有云
 const syncChipMark = computed(() => {
@@ -838,10 +841,11 @@ const syncChipText = computed(() => {
   const s = syncStat.value
   if (s.state === 'syncing') return '同步中…'
   if (s.state === 'fail') return '同步失败·点重试'
-  // 2026-10-07：与首页胶囊同口径 —— 只推不拉的轻推不算「已同步」，真值取上次成功拉取的时刻。
-  const pullAt = lastPullAtRef.value
-  if (!pullAt) return '未同步'
-  const d = new Date(pullAt)
+  // 2026-10-09（rabbit：答题界面时间不自动刷新、要手动点）：显示取「最近一次**同步成功**」（任向——
+  // 答题时的上传成功也算，与小程序同口径）；判事口径（横幅/重跑/防倒退）仍全部走 lastPullAtRef。
+  const okAt = lastSyncOkAtRef.value
+  if (!okAt) return '未同步'
+  const d = new Date(okAt)
   const p2 = (n: number) => String(n).padStart(2, '0')
   return `已同步 ${p2(d.getHours())}:${p2(d.getMinutes())}`
 })
@@ -858,6 +862,7 @@ function refreshSyncStat () {
   const next = getWebSyncStatus()
   syncStat.value = next
   lastPullAtRef.value = getLastPullAt()
+  lastSyncOkAtRef.value = getLastSyncOkAt()
   if (prevState !== 'ok' && next.state === 'ok') markJustSynced()
   evaluateNotice()   // 只在进页面那一刻评估一次（见 evaluateNotice 注释），之后冻结
   // 2026-10-09（rabbit 实测：点云朵催同步后，横幅照旧杵着）：横幅的两条自动收口，都以

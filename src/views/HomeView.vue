@@ -521,8 +521,11 @@ loadRecordCounts()
 type HomeSyncState = { state: 'idle' | 'syncing' | 'ok' | 'fail'; at: number; msg?: string }
 const syncEnabled = ref(cloudConfigured())
 const homeSync = ref<HomeSyncState>({ state: 'idle', at: 0 })
-// 上次成功**拉取**的时刻（0 = 还没成功拉过）。胶囊文案与首页重跑都以它为真值。见 pollHomeSync 注释。
+// 上次成功**拉取**的时刻（0 = 还没成功拉过）。首页重跑与进库守卫以它为真值。
 const homeSyncAt = ref(0)
+// 2026-10-09：胶囊**显示**专用的「最近一次同步成功」（任向，含上传；与小程序同口径）。
+// 判事（进库守卫、数据重跑）仍走 homeSyncAt（拉取口径）——两把钥匙别混。
+const homeSyncOkAt = ref(0)
 // 状态符（2026-10-07 晚，rabbit：「云哪去了，是不是不能加原来的云」）：☁ 常驻在场，
 // 状态用随行小符 + 动效表达——同步中 ↻ 转、完成 ✓ 轻弹、失败 !、未开启/待同步只有云（靠颜色区分）
 const homeSyncMark = computed(() => {
@@ -546,12 +549,11 @@ const homeSyncText = computed(() => {
   const s = homeSync.value
   if (s.state === 'syncing') return '同步中…'
   if (s.state === 'fail') return '同步失败 · 点重试'
-  // 2026-10-07：这里的时刻必须取「上次成功拉取」而不是「上次状态变更」——
-  // 只推不拉的轻推也会写状态，拿它当「已同步」等于对本机数据新鲜度说谎。
-  // 还真没成功拉过时如实说「未同步」，不编一个时间。
-  const pullAt = homeSyncAt.value
-  if (!pullAt) return '未同步 · 点一下同步'
-  const d = new Date(pullAt)
+  // 2026-10-09：显示取「最近一次同步成功」（任向，含上传）——不再只认拉取时刻，
+  // 否则答题时那次次的轻推成功都不动时间，看起来像"没同步"。判事口径见 homeSyncAt/homeSyncOkAt 声明处。
+  const okAt = homeSyncOkAt.value
+  if (!okAt) return '未同步 · 点一下同步'
+  const d = new Date(okAt)
   const p2 = (n: number) => String(n).padStart(2, '0')
   return `已同步 ${p2(d.getHours())}:${p2(d.getMinutes())}`
 })
@@ -629,6 +631,7 @@ function pollHomeSync() {
     // 且胶囊会显示「已同步」而本机其实没拿到云端最新。现在文案与重跑都以 pullAt 为准。
     lastPullAt = m.getLastPullAt()
     homeSyncAt.value = lastPullAt
+    homeSyncOkAt.value = m.getLastSyncOkAt()
     if (prevState !== 'ok' && s.state === 'ok') markJustSynced()
     if (lastPullAt && lastPullAt !== lastReloadedPullAt) {
       lastReloadedPullAt = lastPullAt
@@ -657,7 +660,8 @@ async function guardEnterPractice (url: string) {
       // 「有没有成功拉取记录」以**持久化**的拉取时刻为准（内存 state 刷新即归零，判不出"刚同步过"）
       const lastPull = m.getLastPullAt()
       const hasSynced = lastPull > 0
-      homeSyncAt.value = lastPull          // 顺手把胶囊文案的真值刷新（别让它在冷启动那几秒说谎）
+      homeSyncAt.value = lastPull          // 顺手把守卫判据的真值刷新（别让它在冷启动那几秒说谎）
+      homeSyncOkAt.value = m.getLastSyncOkAt()   // 胶囊显示用的「最近一次同步成功」一并现读
       if (shouldWarnOnEnter({
         synced: hasSynced,
         // 2026-10-07：给「本机有多新」判定的是**上次成功拉取**的时刻，不是上次状态变更（只推不拉也算）。

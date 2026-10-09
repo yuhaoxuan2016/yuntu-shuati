@@ -1350,6 +1350,21 @@ function markPulled (): void {
   webSyncPull.at = Date.now()
   try { localStorage.setItem(LAST_PULL_KEY, String(webSyncPull.at)) } catch { /* 静默 */ }
 }
+// 2026-10-09（rabbit 两次实测：答题界面「☁ 已同步 HH:MM」不自动刷新、要手动点才变）：
+// 另记一份「**最近一次同步成功**」（**任向**：上传/下载/自动拉都算），供两处胶囊**显示**用 ——
+// 与小程序 `setSyncStatus('ok')` 打戳同口径（mp 的 `yt_last_sync_ok_at`）。
+// ⚠️ 与上面 LAST_PULL_KEY 是**两把钥匙**：拉取时刻仍是横幅/数据重跑/防倒退的唯一真值，
+//   此戳**只显示不判事**，不许互相冒充（10-07 事故 #2 的教训是"别拿推冒充拉"，不是"别显示"）。
+const LAST_SYNC_OK_KEY = 'cloud_last_sync_ok_at'
+function readPersistedSyncOk (): number {
+  try { return Number(localStorage.getItem(LAST_SYNC_OK_KEY) || 0) || 0 } catch { return 0 }
+}
+const webSyncOk = { at: readPersistedSyncOk() }
+export function getLastSyncOkAt (): number { return webSyncOk.at }
+function markSyncOk (): void {
+  webSyncOk.at = Date.now()
+  try { localStorage.setItem(LAST_SYNC_OK_KEY, String(webSyncOk.at)) } catch { /* 静默 */ }
+}
 // 2026-10-07（rabbit：转圈 + 有提示，但"实际已经同步上去了"）：区分「**拉取**在跑」与「任意同步在跑」。
 //   `state === 'syncing'` 是**全局锁**口径，只推不拉的轻推也会点亮它 ⇒ 用它判「本机可能还没拿到
 //   云端最新」等于把「正在上传」误报成「正在下载」。这里单独记一份「拉取在飞」的真值，供进库横幅使用。
@@ -1380,6 +1395,8 @@ function setWebSyncStatus (state: WebSyncState, msg = '', round?: number): void 
   webSyncStatus.state = state
   webSyncStatus.at = Date.now()
   webSyncStatus.msg = msg
+  // 最近一次同步成功（任向）——只供显示；与判事口径的分工见 LAST_SYNC_OK_KEY 段注释
+  if (state === 'ok') markSyncOk()
 }
 export function getWebSyncStatus (): { state: WebSyncState; at: number; msg: string } {
   return { ...webSyncStatus }

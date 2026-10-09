@@ -88,14 +88,23 @@ console.log('── ④ ❗反向对照：轻推仍不得打拉取标记（上�
     /export async function retryProgressSync/.test(CLOUD))
 }
 
-console.log('── ⑤ 进库横幅与云朵文案不会自相矛盾（判据仍以拉取为准）──')
+console.log('── ⑤ 进库横幅与云朵文案各自的真值（横幅＝拉取；胶囊＝最近一次同步成功，含上传）──')
 {
   ok('横幅判据用 pullBusy（拉取在飞），不是全局 busy',
     /pullBusy: pulling/.test(PV) && /const pulling = isPullInFlight\(\)/.test(PV))
-  ok('胶囊文案用 lastPullAtRef（上次成功拉取），与横幅同一真值',
-    /const pullAt = lastPullAtRef\.value/.test(PV))
-  ok('❗反向对照：胶囊文案不得改用 state.at（那会把只推不拉冒充成已同步）',
-    !/const s = syncStat\.value[\s\S]{0,120}new Date\(s\.at\)/.test(PV))
+  // 2026-10-09（rabbit 两次实测：答题界面「已同步 HH:MM」不自刷新、要手动点才变）：
+  // 胶囊**显示**改取「最近一次同步成功」（**任向**：上传成功也算；与小程序 setSyncStatus('ok') 打戳同口径）。
+  // 横幅/数据重跑/防倒退等**判事**口径不动，仍以拉取为准 —— 两把钥匙分开，别互相冒充。
+  ok('胶囊文案取「最近一次同步成功」戳（getLastSyncOkAt）',
+    /const okAt = lastSyncOkAtRef\.value/.test(PV) && /export function getLastSyncOkAt/.test(CLOUD))
+  ok('❗反向对照：胶囊文案不得取 state.at（那是「状态变更时刻」，10-07 事故 #2 的老坑）',
+    !/new Date\(s\.at\)/.test(PV) && !/new Date\(Number\(s\.at\)/.test(PV))
+  ok('❗两把钥匙分开：横幅的评估快照仍用拉取时刻（pullAtAtEvaluated）',
+    /pullAtAtEvaluated = lastPullAtRef\.value/.test(PV))
+  ok('cloud.ts：成功戳在「状态写 ok」那一刻打（与小程序同点位）',
+    /LAST_SYNC_OK_KEY = 'cloud_last_sync_ok_at'/.test(CLOUD) && /if \(state === 'ok'\) markSyncOk\(\)/.test(CLOUD))
+  ok('❗反向对照：成功戳不许动拉取键（cloud_last_pull_at 仍只由 markPulled 写）',
+    !/markSyncOk[\s\S]{0,160}LAST_PULL_KEY/.test(CLOUD))
   ok('判据模块仍把「拉取在飞」放在首位（最该提示的场景）',
     /if \(pulling\) return true/.test(NOTICE))
 }
