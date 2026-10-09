@@ -1334,9 +1334,22 @@ const webSyncStatus = { state: 'idle' as WebSyncState, at: 0, msg: '' }
 //   ② 首页数据重跑（pollHomeSync）也按 `at` 判转变 ⇒ **推完就重跑一次首页**，白跑。
 // 修法：单独记一份「**最后一次成功拉取**的时刻」。胶囊文案与首页重跑都以它为准；
 //   `at` 保留原义（UI 动效/转变检测仍用它）。只推不拉的轮次不再冒充「已同步」。
-const webSyncPull = { at: 0 }
+// 2026-10-09（rabbit：「你见过哪个做题的人愿意在首页等一分钟？不都是直接进题库吗？」）：
+// 「上次成功拉取时刻」必须**持久化**。此前它是纯内存 ⇒ 每次刷新归零，冷启动时与「从没成功同步过」
+// 在外面**长得一模一样**（都是 0）—— 于是进库横幅在真实路径（开页面直接点进去）上恒判「从未同步」
+// ⇒ 无论近期刚同步过多少次都照弹，减噪形同虚设。落盘后冷启动也能分清「刚同步过」与「从没同步过」。
+// ⚠️ 只在 markPulled（真拉成功）时写：这是**成功口径**，不能拿"尝试过"冒充
+//（小程序侧同款教训：尝试戳不能当成功戳用）。
+const LAST_PULL_KEY = 'cloud_last_pull_at'
+function readPersistedLastPull (): number {
+  try { return Number(localStorage.getItem(LAST_PULL_KEY) || 0) || 0 } catch { return 0 }
+}
+const webSyncPull = { at: readPersistedLastPull() }
 export function getLastPullAt (): number { return webSyncPull.at }
-function markPulled (): void { webSyncPull.at = Date.now() }
+function markPulled (): void {
+  webSyncPull.at = Date.now()
+  try { localStorage.setItem(LAST_PULL_KEY, String(webSyncPull.at)) } catch { /* 静默 */ }
+}
 // 2026-10-07（rabbit：转圈 + 有提示，但"实际已经同步上去了"）：区分「**拉取**在跑」与「任意同步在跑」。
 //   `state === 'syncing'` 是**全局锁**口径，只推不拉的轻推也会点亮它 ⇒ 用它判「本机可能还没拿到
 //   云端最新」等于把「正在上传」误报成「正在下载」。这里单独记一份「拉取在飞」的真值，供进库横幅使用。
@@ -1399,7 +1412,8 @@ async function maybeAutoSyncOnOpenInner(): Promise<void> {
     let last = 0
     try { last = Number(localStorage.getItem(AUTO_PULL_KEY) || 0) } catch { last = 0 }
     if (last && Date.now() - last < AUTO_PULL_INTERVAL_MS) return
-    try { localStorage.setItem(AUTO_PULL_KEY, String(Date.now())) } catch { /* 静默 */ }    const round = beginSyncRound()
+    try { localStorage.setItem(AUTO_PULL_KEY, String(Date.now())) } catch { /* 静默 */ }
+    const round = beginSyncRound()
     setWebSyncStatus('syncing', '', round)
     // 2026-10-08：本函数**自身就在锁内**（runExclusive('auto-pull', …)）。原先这里调的是导出的
     // `syncFromCloud()` —— 它再抢同一把锁，而此时锁正被自己持着 ⇒ 拿回来的是**自己的 promise**

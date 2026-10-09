@@ -110,13 +110,21 @@ async function main () {
       /finally \{\s*pullInFlight--/.test(cloudSrc))
     // 2026-10-08：练习页把 isPullInFlight() 先绑给 `pulling`（同一值还驱动「拉完自收」）——
     // 判据强度不降：既查绑定来源、又查字段确实由它传入
-    ok('❗两个调用方都改成传 pullBusy',
+    // 2026-10-09 更新（首页改用**点击那一刻现读**，见下）：断言改为查「首页也传了精确信号」，
+    //   不再钉死表达式形状——但仍必须来自 isPullInFlight（不许退回全局 busy）。
+    ok('❗两个调用方都传 pullBusy（「正在下载」的精确信号）',
       /const pulling = isPullInFlight\(\)/.test(pracSrc) && /pullBusy: pulling/.test(pracSrc)
-      && /pullBusy: homePullBusy/.test(homeSrc))
+      && /pullBusy: m\.isPullInFlight\(\)/.test(homeSrc))
     ok('❗反向：调用方不再传旧的 busy',
-      !/busy: st\.state === 'syncing'/.test(pracSrc) && !/busy: st\.state === 'syncing'/.test(homeSrc))
-    ok('❗首页每 3 秒轮询里刷新 homePullBusy',
-      /homePullBusy = m\.isPullInFlight\(\)/.test(homeSrc))
+      !/busy: st\.state === 'syncing'/.test(pracSrc) && !/busy: st\.state === 'syncing'/.test(homeSrc)
+      && !/busy: homeSync\.value\.state/.test(homeSrc))
+    // 2026-10-09（rabbit：真实路径就是开页面直接点进题库）：首页原先靠 3 秒轮询把 isPullInFlight
+    //   缓存进 homePullBusy。但**冷启动的头 3 秒轮询还没跑过**，缓存值恒假；同一时期 homeSyncAt 也是 0
+    //   ⇒ 判定全落在「从没成功同步过」上、近期同步过也照弹。现改为在守卫里现读。
+    ok('❗首页在守卫里**现读**精确信号（不依赖 3 秒轮询缓存）',
+      /pullBusy: m\.isPullInFlight\(\)/.test(homeSrc))
+    ok('❗反向对照：首页不许再留那份缓存变量（「还没轮询过」会被当成「没在拉」）',
+      !/homePullBusy/.test(homeSrc.replace(/\/\/[^\n]*/g, '')))
   }
 
   // ══════════ ③-b shouldWarnOnEnter 的行为（真跑纯函数）══════════

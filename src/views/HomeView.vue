@@ -614,18 +614,14 @@ async function doHomeSync() {
 const homeMountedAt = Date.now()
 let lastPullAt = 0            // 云端最后一次成功拉取的时刻（来自 cloud.ts）
 let lastReloadedPullAt = 0    // 本地已据此重跑过首页数据的那次拉取（防重复重跑）
-// 2026-10-07：精确的「**拉取**在飞」信号（与全局锁口径的 state === 'syncing' 不同 —— 后者含只推不拉的轻推）。
-// 进库 toast 的判断要用它，否则「正在上传」会被误报成「正在下载」。
-let homePullBusy = false
+// 2026-10-09：原先这里缓存了 homePullBusy（拉取在飞），供进库 toast 用。
+// 现已改为在 guardEnterPractice 里**点击那一刻现读**（冷启动前 3 秒轮询还没跑过，缓存值一律是假的）
+// ⇒ 这个缓存变量连同 autoPullDueNow 一并撤掉，只留一个真值来源（cloud 模块本身）。
 let syncPollTimer: number | null = null
 function pollHomeSync() {
   syncEnabled.value = cloudConfigured()
   getHomeCloudMod().then(m => {
     const s = m.getWebSyncStatus()
-    homePullBusy = m.isPullInFlight()
-    // 2026-10-09：进库 toast 的减噪信号 —— 「本轮会不会自动拉」。与 syncEnabled 同一个刷新点，
-    // 只读、不写节流时间戳（见 cloud.autoPullDueOnOpen 的说明）。
-    void m.autoPullDueOnOpen().then(due => { autoPullDueNow = due }).catch(() => { /* 读不到就保持上次值 */ })
     const prevState = homeSync.value.state
     homeSync.value = { state: s.state, at: s.at, msg: s.msg }
     // 2026-10-07（rabbit 事故 #2）：上次成功**拉取**的时刻才是「本机数据有多新」的真值。
@@ -647,27 +643,36 @@ function pollHomeSync() {
 // 另加本次进页面只提示一次，避免每次点题库都冒一句。
 // 2026-10-08：未配云不提示（syncEnabled 由 3s 轮询现刷；没配云＝判据里「从未成功同步」恒真、纯添乱；
 // 与 mp「未打通不提示」对齐）。
-// 2026-10-09（rabbit：要考虑自动拉的 10 分钟冷却，近期同步过就别弹）：本轮**不会**自动拉时
-// （被节流跳过 / 自动同步开关关着），本机数据其实还是刚拉过的样子 ⇒ 不再按 1 分钟陈旧窗口抱怨。
-// autoPullDueNow 由 3s 轮询现刷（与 syncEnabled 同一个刷新点），不引入新监听。
+// 2026-10-09（rabbit：真实路径就是开页面直接点进题库）：判定依据**必须在点击那一刻现取**，
+//   不能等 3 秒轮询——冷启动首 3 秒里 homeSyncAt 还是 0（内存口径刷新即归零），
+//   那会被判成「从没成功同步过」⇒ 近期刚同步过也照弹 toast。
+//   故本函数改为 async：等 cloud 模块（已缓存则只是微任务）后**现读**四个信号；取不到就不提示、不拦路。
+//   注意：这里刻意不静态 import cloud（首页 chunk 保持轻），所以只能等动态 import。
 let enterToastOnce = false
-let autoPullDueNow = true
-function guardEnterPractice(url: string) {
-  const st = homeSync.value
-  const ok = st.state === 'ok'
-  if (syncEnabled.value && !enterToastOnce && shouldWarnOnEnter({
-    synced: ok,
-    // 2026-10-07：给「本机有多新」判定的是**上次成功拉取**的时刻，不是上次状态变更（只推不拉也算）。
-    lastOkAt: ok ? homeSyncAt.value : 0,
-    lastFail: st.state === 'fail',
-    // 2026-10-07：同上 —— 用精确的「拉取在飞」，别拿全局锁状态（轻推也算 busy）误报成"正在下载"。
-    pullBusy: homePullBusy,
-    // 2026-10-09：本轮会不会自动拉（不会 ⇒ 本机大概率刚拉过，不必抱怨）
-    autoPullDue: autoPullDueNow,
-    now: Date.now(),
-  })) {
-    enterToastOnce = true
-    toastInfo('云同步还没完成：现在进去可能读不到上次进度，建议稍等几秒再进')
+async function guardEnterPractice (url: string) {
+  if (syncEnabled.value && !enterToastOnce) {
+    try {
+      const m = await getHomeCloudMod()
+      const s = m.getWebSyncStatus()
+      // 「有没有成功拉取记录」以**持久化**的拉取时刻为准（内存 state 刷新即归零，判不出"刚同步过"）
+      const lastPull = m.getLastPullAt()
+      const hasSynced = lastPull > 0
+      homeSyncAt.value = lastPull          // 顺手把胶囊文案的真值刷新（别让它在冷启动那几秒说谎）
+      if (shouldWarnOnEnter({
+        synced: hasSynced,
+        // 2026-10-07：给「本机有多新」判定的是**上次成功拉取**的时刻，不是上次状态变更（只推不拉也算）。
+        lastOkAt: hasSynced ? lastPull : 0,
+        lastFail: s.state === 'fail',
+        // 2026-10-07：同上 —— 用精确的「拉取在飞」，别拿全局锁状态（轻推也算 busy）误报成"正在下载"。
+        pullBusy: m.isPullInFlight(),
+        // 2026-10-09：本轮会不会自动拉（不会 ⇒ 本机大概率刚拉过，不必抱怨；真陈旧则照报）
+        autoPullDue: await m.autoPullDueOnOpen(),
+        now: Date.now(),
+      })) {
+        enterToastOnce = true
+        toastInfo('云同步还没完成：现在进去可能读不到上次进度，建议稍等几秒再进')
+      }
+    } catch { /* 判定依据取不到就不提示（宁可少说，不可多说），导航照走 */ }
   }
   router.push(url)
 }

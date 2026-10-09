@@ -66,13 +66,26 @@ export function shouldWarnOnEnter (i: EnterNoticeInput): boolean {
   const pulling = i.pullBusy !== undefined ? i.pullBusy : !!i.busy
   if (pulling) return true                      // 正在拉：此刻退出重进大概率能拿到，值得提示
   if (i.lastFail) return true                   // 上次失败：本机多半不是最新的
-  if (!i.synced) return true                    // 从没成功同步过（没配云 / 没跑过）
+
+  // 2026-10-09（rabbit：直接进题库才是真实路径）：这里**不能**只看 `synced` 布尔值。
+  //   `synced` 此前由内存 state === 'ok' 推出，刷新即归零 ⇒ 冷启动恒 false
+  //   ⇒ 下面那行「从没成功同步过」把**所有**冷启动都吃掉，近期同步过也照弹（减噪永远走不到）。
+  //   现在把「有没有成功记录」与「成功时刻」合并判断：有**任一**证据就算同步过
+  //   （lastOkAt 现由持久化提供，冷启动也有值）。两者都空 = 真·从没成功同步过。
   const last = Number(i.lastOkAt) || 0
-  if (!last) return true
-  // 2026-10-09：本轮**不会**自动拉时（被 10 分钟节流跳过 / 开关关着），本机数据其实还是刚拉过的样子
-  // ⇒ 不按 1 分钟窗口抱怨。放在最后一条：前面那些「确定本机可能不新」的情形（拉取在飞 / 上次失败 /
-  // 从未成功 / 一直没拉成功过）优先级更高，一条都不能被这条减噪吃掉。
-  // 不传该信号（undefined）= 保持旧口径，既有调用方与测试行为不变。
-  if (i.autoPullDue === false) return false
-  return (Number(i.now) || 0) - last > STALE_PULL_MS   // 超过陈旧窗口（边界取闭：正好等于不提示）
+  if (!i.synced && !last) return true
+
+  // 陈旧度：距今多久没成功拉到云端最新。
+  const age = (Number(i.now) || 0) - last
+  if (last && age <= STALE_PULL_MS) return false   // 刚同步过（边界取闭：正好等于不提示）
+
+  // 2026-10-09：本轮**会**自动拉（或调用方没给这个信号 = 旧口径）⇒ 就该提示。
+  // 此刻确实可能读到旧数据；拉完会由调用方自动收掉这条横幅。
+  if (i.autoPullDue !== false) return true
+
+  // 本轮**不会**自动拉（被 10 分钟节流跳过 / 自动同步开关关着）。
+  // 近期确实同步过 ⇒ 本机数据够新，别唠叨。
+  if (age <= RECENT_AUTO_PULL_MS) return false
+  // 真陈旧（超过「近期」窗口）却又不拉 ⇒ 得让人知道本机不是最新的。
+  return true
 }

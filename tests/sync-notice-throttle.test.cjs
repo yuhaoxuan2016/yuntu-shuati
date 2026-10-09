@@ -114,5 +114,59 @@ console.log('── ④ ❗反向对照：10 分钟节流不认识横幅（不�
     !/from '\.\/cloud'/.test(raw))
 }
 
+console.log('── ⑤ 真实路径：开了页面**直接点进题库**（rabbit 2026-10-09）──')
+{
+  // rabbit 原话：「你见过哪个做题的人愿意在首页等一分钟？不都是直接进题库吗？」
+  // ⇒ 上一版把减噪挂在 `synced`（= 内存 state === 'ok'）之后是**形同虚设**：
+  //   刷新页面后 state 归零成 idle、webSyncPull.at 也归零 ⇒ synced 恒 false
+  //   ⇒ 判据在「从未成功同步过」那一支就 return true 了，减噪那行**永远走不到**。
+  const cloud = fs.readFileSync(CLOUD, 'utf8')
+  ok('❗「上次成功拉取」必须**持久化**（内存口径刷新即归零 ⇒ 冷启动时无法与"从没同步过"区分）',
+    /cloud_last_pull_at/.test(cloud))
+  ok('❗markPulled 同时写内存与本地存储（成功才写；只推不拉的轻推仍不得写）',
+    /function markPulled[\s\S]{0,300}?localStorage\.setItem/.test(cloud))
+  const markSeg = cloud.slice(cloud.indexOf('function markPulled'), cloud.indexOf('function markPulled') + 320)
+  ok('❗反向对照：内部仍只由 markPulled 写（不许别处伪造"已拉取"）',
+    (cloud.match(/webSyncPull\.at = Date\.now\(\)/g) || []).length === 1)
+  ok('初始化时从本地存储读回（否则首屏仍是「未同步」）',
+    /const webSyncPull = \{ at: readPersistedLastPull\(\)/.test(cloud) ||
+    /webSyncPull = \{ at: readPersisted/.test(cloud))
+
+  // 调用方必须把**持久化后**的成功时刻交上去，而不是拿内存 state 推 synced
+  const pv = fs.readFileSync(path.join(ROOT, 'src', 'views', 'PracticeView.vue'), 'utf8')
+  const hv = fs.readFileSync(path.join(ROOT, 'src', 'views', 'HomeView.vue'), 'utf8')
+  ok('❗练习页的 synced 改为「有没有成功拉取记录」，不再取 state === \'ok\'',
+    !/const ok = st\.state === 'ok'[\s\S]{0,200}synced: ok/.test(pv))
+  ok('❗首页同理', !/const ok = st\.state === 'ok'[\s\S]{0,300}synced: ok/.test(hv))
+}
+
+console.log('── ⑥ ❗冷启动判据：近期同步过 ⇒ 不唠叨；没同步过/真陈旧 ⇒ 照说 ──')
+{
+  // 冷启动时调用方交上来的就是持久化值（lastOkAt = 上次成功拉取时刻）
+  eq('❗3 分钟前刚同步过 + 本轮不会自动拉 ⇒ 不弹（rabbit 的真实路径）',
+    M.shouldWarnOnEnter({
+      synced: true, lastOkAt: NOW - 3 * MIN, autoPullDue: false, now: NOW,
+    }), false)
+  eq('❗3 分钟前刚同步过 + 本轮会自动拉（还没起跑）⇒ 照弹（此刻确实可能读到旧数据，拉完自动收）',
+    M.shouldWarnOnEnter({
+      synced: true, lastOkAt: NOW - 3 * MIN, autoPullDue: true, now: NOW,
+    }), true)
+  eq('❗从没成功同步过（持久化里也没有）⇒ 照弹',
+    M.shouldWarnOnEnter({
+      synced: false, lastOkAt: 0, autoPullDue: true, now: NOW,
+    }), true)
+  eq('❗真陈旧（3 小时）+ 本轮不会自动拉 ⇒ 照弹（没有拉取安排，得让人知道）',
+    M.shouldWarnOnEnter({
+      synced: true, lastOkAt: NOW - 3 * 60 * MIN, autoPullDue: false, now: NOW,
+    }), true)
+
+  // 上面那种「不会有拉取来收横幅」的情形 ⇒ 必须能手动关，否则整场会话都杵在那儿。
+  const pv = fs.readFileSync(path.join(ROOT, 'src', 'views', 'PracticeView.vue'), 'utf8')
+  const banner = pv.slice(pv.indexOf('v-if="syncingHint"'), pv.indexOf('v-if="syncingHint"') + 300)
+  ok('❗这条进库横幅必须带关闭按钮（同页另两条都有；只靠"拉完自收"会卡住）',
+    /close-btn/.test(banner) && /dismissSyncingHint/.test(banner))
+  ok('关闭函数清展示状态与「拉完自收」标记', /function dismissSyncingHint[\s\S]{0,300}noticeShouldShow\.value = false/.test(pv))
+}
+
 console.log(`\n${pass} 通过 / ${fail} 失败`)
 process.exit(fail ? 1 : 0)

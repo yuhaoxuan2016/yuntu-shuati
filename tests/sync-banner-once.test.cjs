@@ -87,7 +87,11 @@ console.log('\n── ④ 首页 toast 用同一判据（原先那条从没弹�
     !/if \(homeSync\.value\.state === 'syncing'\) toastInfo/.test(home))
   ok('首页 toast 也有"只提示一次"的闸门', /enterToastOnce/.test(home))
   ok('两端（首页 toast / 练习页横幅）用同一个判据函数'
-    + ' ⇒ 不会一处提示一处沉默', /shouldWarnOnEnter\(\{[\s\S]{0,400}?\}\)/.test(home) && /shouldWarnOnEnter\(\{/.test(
+    + ' ⇒ 不会一处提示一处沉默',
+    // 2026-10-09：先在**剥掉注释**的源码上匹配——判据是「两处都调了它」，
+    // 不该因为守卫里注释变长（解释为什么现读、为什么不缓存）就误判失败。
+    /shouldWarnOnEnter\(\{[\s\S]{0,400}?\}\)/.test(home.replace(/\/\/[^\n]*/g, ''))
+    && /shouldWarnOnEnter\(\{/.test(
       fs.readFileSync(path.join(ROOT, 'src', 'views', 'PracticeView.vue'), 'utf8')))
 }
 

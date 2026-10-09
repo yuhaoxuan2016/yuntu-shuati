@@ -110,8 +110,12 @@
 
     <!-- 2026-10-07：进库提醒**下沉到练习页**——检查点放在「页面打开那一刻」，
          任何入口进来都覆盖（首页那 4 个入口的 toast 保留，但不拦）。同步跑完自动消失。 -->
+    <!-- 2026-10-09：补关闭按钮。此前它只靠「拉完自收」，可有些弹它的理由**根本不会有拉取**
+         （自动同步关着 / 本轮被 10 分钟节流跳过且本机真的很旧）⇒ 永远收不掉、用户被卡住。
+         同页另外两条横幅都有关闭，这条漏了。 -->
     <div v-if="syncingHint" class="restored-banner syncing-warn">
       ⚠ 云同步还没完成：现在可能读不到上次进度，建议退出等几秒重进
+      <button class="close-btn" @click="dismissSyncingHint">×</button>
     </div>
 
     <div v-if="restoredBanner" class="restored-banner">
@@ -798,12 +802,16 @@ function evaluateNotice () {
   // 用 `.then()` 而不是 await：本函数被 refreshSyncStat 同步调用（3 秒轮询里），不该把它变成 async。
   void autoPullDueOnOpen().then((due) => {
     const st = syncStat.value
-    const ok = st.state === 'ok'
+    // 2026-10-09（rabbit：真实路径就是开页面直接点进题库）：`synced` **不能**再由内存 state 推。
+    // state 刷新即归零成 idle ⇒ 冷启动恒 false ⇒ 判据在「从未同步」那支就返回，近期刚同步过也照弹。
+    // 改用「有没有成功拉取记录」——`lastPullAtRef` 现在取自持久化值（详见 cloud.ts 的 LAST_PULL_KEY）。
+    const lastPull = lastPullAtRef.value
+    const hasSynced = lastPull > 0
     const pulling = isPullInFlight()
     const warn = shouldWarnOnEnter({
-      synced: ok,
+      synced: hasSynced,
       // 2026-10-07：判「本机有多新」要用**上次成功拉取**的时刻（`at` 含只推不拉的轻推，会误判成「刚同步过」）
-      lastOkAt: ok ? lastPullAtRef.value : 0,
+      lastOkAt: hasSynced ? lastPull : 0,
       lastFail: st.state === 'fail',
       // 2026-10-07：用「**拉取**在飞」而不是「任意同步在飞」——只推不拉的轻推也会把 state 点成 syncing，
       // 拿它判「可能读不到上次进度」等于把「正在上传」误报成「正在下载」。
@@ -819,6 +827,13 @@ function evaluateNotice () {
   }).catch(() => { /* 判定失败就当作不提示（宁可少说，不可多说） */ })
 }
 const syncingHint = computed(() => noticeShouldShow.value)
+// 2026-10-09：用户手动关掉进库提醒。必须连 `noticeEvaluated` 一起维持（它已冻结）——
+// 只需清展示状态与「拉完自收」标记；顺手把快照对齐当前拉取点，避免刚关掉又被下一轮判定拉起来。
+function dismissSyncingHint () {
+  noticeShouldShow.value = false
+  noticeHideWhenPullDone = false
+  pullAtAtEvaluated = lastPullAtRef.value
+}
 const syncChipText = computed(() => {
   const s = syncStat.value
   if (s.state === 'syncing') return '同步中…'
