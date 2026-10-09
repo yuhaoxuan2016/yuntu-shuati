@@ -255,7 +255,7 @@ import QuestionCard, { type QuestionState } from '../components/QuestionCard.vue
 import { classifyQuestionType, TYPE_LABELS, groupQuestionsByCategory } from '../lib/exam'
 import { calculateAutoQuality, calculateNextReview, qualityLabel, labelToQuality, formatDate, computeNextReviewTs, toReviewTs, type QualityLabel } from '../lib/spaced-repetition'
 import { formatSyncDetail } from '../lib/sync-format'
-import { getWebSyncStatus, getLastPullAt, isPullInFlight, listProgressHistory, rollbackProgress, isCloudEnabled } from '../lib/cloud'
+import { getWebSyncStatus, getLastPullAt, isPullInFlight, listProgressHistory, rollbackProgress, isCloudEnabled, autoPullDueOnOpen } from '../lib/cloud'
 import { shouldWarnOnEnter } from '../lib/sync-notice'
 // 2026-10-07：本机硬存档——独立于云端的最后一道保险（关掉同步、没配云也照记）
 import { recordLocalArchive, listLocalArchive, restoreLocalArchive, ARCHIVE_MAX } from '../lib/local-archive'
@@ -793,23 +793,30 @@ function evaluateNotice () {
   // 2026-10-08：未配云没有云可同步，判据里「从未成功同步」那条对他们恒真 ⇒ 每次进库都弹、纯添乱。
   // 闸在调用方（与 mp「未打通不提示」对齐；判据本身保持纯函数）。isCloudEnabled 每次现读配置，无缓存。
   if (!isCloudEnabled()) return
-  const st = syncStat.value
-  const ok = st.state === 'ok'
-  const pulling = isPullInFlight()
-  const warn = shouldWarnOnEnter({
-    synced: ok,
-    // 2026-10-07：判「本机有多新」要用**上次成功拉取**的时刻（`at` 含只推不拉的轻推，会误判成「刚同步过」）
-    lastOkAt: ok ? lastPullAtRef.value : 0,
-    lastFail: st.state === 'fail',
-    // 2026-10-07：用「**拉取**在飞」而不是「任意同步在飞」——只推不拉的轻推也会把 state 点成 syncing，
-    // 拿它判「可能读不到上次进度」等于把「正在上传」误报成「正在下载」。
-    pullBusy: pulling,
-    now: Date.now(),
-  })
-  if (warn) {
-    noticeShouldShow.value = true
-    noticeHideWhenPullDone = pulling               // 仅「因拉取而弹」的：拉完自动收；其余原因留到手动关
-  }
+  // 2026-10-09（rabbit：要考虑自动拉的 10 分钟冷却，近期同步过就别弹）：本轮**不会**自动拉时
+  // （被节流跳过 / 自动同步开关关着），本机数据其实还是刚拉过的样子 ⇒ 不按 1 分钟陈旧窗口抱怨。
+  // 用 `.then()` 而不是 await：本函数被 refreshSyncStat 同步调用（3 秒轮询里），不该把它变成 async。
+  void autoPullDueOnOpen().then((due) => {
+    const st = syncStat.value
+    const ok = st.state === 'ok'
+    const pulling = isPullInFlight()
+    const warn = shouldWarnOnEnter({
+      synced: ok,
+      // 2026-10-07：判「本机有多新」要用**上次成功拉取**的时刻（`at` 含只推不拉的轻推，会误判成「刚同步过」）
+      lastOkAt: ok ? lastPullAtRef.value : 0,
+      lastFail: st.state === 'fail',
+      // 2026-10-07：用「**拉取**在飞」而不是「任意同步在飞」——只推不拉的轻推也会把 state 点成 syncing，
+      // 拿它判「可能读不到上次进度」等于把「正在上传」误报成「正在下载」。
+      pullBusy: pulling,
+      // 2026-10-09：本轮会不会自动拉（tick 本地累计口径）——不会则本机大概率刚拉过，不必抱怨
+      autoPullDue: due,
+      now: Date.now(),
+    })
+    if (warn) {
+      noticeShouldShow.value = true
+      noticeHideWhenPullDone = pulling               // 仅「因拉取而弹」的：拉完自动收；其余原因留到手动关
+    }
+  }).catch(() => { /* 判定失败就当作不提示（宁可少说，不可多说） */ })
 }
 const syncingHint = computed(() => noticeShouldShow.value)
 const syncChipText = computed(() => {

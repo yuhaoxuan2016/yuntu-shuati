@@ -623,6 +623,9 @@ function pollHomeSync() {
   getHomeCloudMod().then(m => {
     const s = m.getWebSyncStatus()
     homePullBusy = m.isPullInFlight()
+    // 2026-10-09：进库 toast 的减噪信号 —— 「本轮会不会自动拉」。与 syncEnabled 同一个刷新点，
+    // 只读、不写节流时间戳（见 cloud.autoPullDueOnOpen 的说明）。
+    void m.autoPullDueOnOpen().then(due => { autoPullDueNow = due }).catch(() => { /* 读不到就保持上次值 */ })
     const prevState = homeSync.value.state
     homeSync.value = { state: s.state, at: s.at, msg: s.msg }
     // 2026-10-07（rabbit 事故 #2）：上次成功**拉取**的时刻才是「本机数据有多新」的真值。
@@ -644,7 +647,11 @@ function pollHomeSync() {
 // 另加本次进页面只提示一次，避免每次点题库都冒一句。
 // 2026-10-08：未配云不提示（syncEnabled 由 3s 轮询现刷；没配云＝判据里「从未成功同步」恒真、纯添乱；
 // 与 mp「未打通不提示」对齐）。
+// 2026-10-09（rabbit：要考虑自动拉的 10 分钟冷却，近期同步过就别弹）：本轮**不会**自动拉时
+// （被节流跳过 / 自动同步开关关着），本机数据其实还是刚拉过的样子 ⇒ 不再按 1 分钟陈旧窗口抱怨。
+// autoPullDueNow 由 3s 轮询现刷（与 syncEnabled 同一个刷新点），不引入新监听。
 let enterToastOnce = false
+let autoPullDueNow = true
 function guardEnterPractice(url: string) {
   const st = homeSync.value
   const ok = st.state === 'ok'
@@ -655,6 +662,8 @@ function guardEnterPractice(url: string) {
     lastFail: st.state === 'fail',
     // 2026-10-07：同上 —— 用精确的「拉取在飞」，别拿全局锁状态（轻推也算 busy）误报成"正在下载"。
     pullBusy: homePullBusy,
+    // 2026-10-09：本轮会不会自动拉（不会 ⇒ 本机大概率刚拉过，不必抱怨）
+    autoPullDue: autoPullDueNow,
     now: Date.now(),
   })) {
     enterToastOnce = true

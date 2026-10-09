@@ -1377,6 +1377,21 @@ export function maybeAutoSyncOnOpen(): Promise<void> {
   return runExclusive('auto-pull', maybeAutoSyncOnOpenInner)
 }
 
+// 2026-10-09（rabbit：「要考虑首页同步的 10 分钟冷却，如果近期已经同步过，没必要弹横幅」）：
+// 告诉调用方「本次进页面**是否会真的自动拉一次**」。两道冷却（10 分钟节流、自动同步开关）
+// 任一拦下都会跳过 —— 这时本机数据其实还是几秒前刚拉过的样子，进库横幅不该按 1 分钟陈旧窗口抱怨。
+//
+// ⚠️ 这里是**唯一真值**：判据端只消费布尔值，不自己再比一遍时间（避免两处口径漂移）。
+// ⚠️ 本函数只读，**不得**认领代次/写状态/动节流时间戳 —— 它会被 3 秒轮询反复调用。
+//   节流时间戳只在**真正要拉**的那一刻写（见 maybeAutoSyncOnOpenInner），此处提前写了会让本轮空转。
+export async function autoPullDueOnOpen(): Promise<boolean> {
+  if (!isCloudEnabled()) return false
+  if (!(await getAutoSyncEnabled())) return false
+  let last = 0
+  try { last = Number(localStorage.getItem(AUTO_PULL_KEY) || 0) } catch { last = 0 }
+  return !(last && Date.now() - last < AUTO_PULL_INTERVAL_MS)
+}
+
 async function maybeAutoSyncOnOpenInner(): Promise<void> {
   try {
     if (!isCloudEnabled()) return
@@ -1384,8 +1399,7 @@ async function maybeAutoSyncOnOpenInner(): Promise<void> {
     let last = 0
     try { last = Number(localStorage.getItem(AUTO_PULL_KEY) || 0) } catch { last = 0 }
     if (last && Date.now() - last < AUTO_PULL_INTERVAL_MS) return
-    try { localStorage.setItem(AUTO_PULL_KEY, String(Date.now())) } catch { /* 静默 */ }
-    const round = beginSyncRound()
+    try { localStorage.setItem(AUTO_PULL_KEY, String(Date.now())) } catch { /* 静默 */ }    const round = beginSyncRound()
     setWebSyncStatus('syncing', '', round)
     // 2026-10-08：本函数**自身就在锁内**（runExclusive('auto-pull', …)）。原先这里调的是导出的
     // `syncFromCloud()` —— 它再抢同一把锁，而此时锁正被自己持着 ⇒ 拿回来的是**自己的 promise**

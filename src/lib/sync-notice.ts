@@ -18,6 +18,19 @@
  *  rabbit 2026-10-07 明确要保持那个节流（首屏留白 + 一页一次够了）。 */
 export const STALE_PULL_MS = 60 * 1000
 
+/**
+ * 「近期自动拉取过」的认定窗口（2026-10-09，rabbit：要考虑自动拉的冷却，近期同步过就别弹）。
+ *
+ * 为什么单列这一条：启动自动拉取有**两道独立冷却**——① 距上次自动拉取 < 10 分钟就跳过本轮；
+ * ② 自动同步开关关着也跳过。两者都会让「本机数据其实还是几秒前刚拉的」这种情况发生，
+ * 而横幅判据只认 STALE_PULL_MS（1 分钟）⇒ 过了 1 分钟就笃定地说「可能读不到上次进度」，纯添乱。
+ *
+ * 取 10 分钟 = 与自动拉的节流同量级，但**两者语义不同、不得合并**：
+ *   本常量只回答「还要不要抱怨本机不够新」，**不决定拉取频率**（拉取频率只有 cloud.ts 说了算）。
+ *   旧口径「1 分钟陈旧窗口决定横幅、不决定拉取频率」不变；本常量在它之上再减掉一段"明知刚同步过"的噪音。
+ */
+export const RECENT_AUTO_PULL_MS = 10 * 60 * 1000
+
 export interface EnterNoticeInput {
   /** 本机是否成功同步过（有成功记录） */
   synced: boolean
@@ -34,6 +47,14 @@ export interface EnterNoticeInput {
    * 不传 = 退回旧的 `busy` 口径（兼容既有调用与测试）。
    */
   pullBusy?: boolean
+  /**
+   * 本次进页面**是否会**自动拉一次（`cloud.autoPullDueOnOpen()`）。2026-10-09 新增。
+   *
+   * 用于减噪：本轮**不会**自动拉（距上次自动拉 < 10 分钟，或自动同步开关关着）时，
+   * 本机数据其实还是刚拉过的样子 ⇒ 不该按 1 分钟陈旧窗口抱怨「可能读不到上次进度」。
+   * 不传 = 退回旧的纯陈旧窗口口径（兼容既有调用与测试）。
+   */
+  autoPullDue?: boolean
   /** 当前时刻（显式传入，便于测试） */
   now: number
 }
@@ -48,5 +69,10 @@ export function shouldWarnOnEnter (i: EnterNoticeInput): boolean {
   if (!i.synced) return true                    // 从没成功同步过（没配云 / 没跑过）
   const last = Number(i.lastOkAt) || 0
   if (!last) return true
+  // 2026-10-09：本轮**不会**自动拉时（被 10 分钟节流跳过 / 开关关着），本机数据其实还是刚拉过的样子
+  // ⇒ 不按 1 分钟窗口抱怨。放在最后一条：前面那些「确定本机可能不新」的情形（拉取在飞 / 上次失败 /
+  // 从未成功 / 一直没拉成功过）优先级更高，一条都不能被这条减噪吃掉。
+  // 不传该信号（undefined）= 保持旧口径，既有调用方与测试行为不变。
+  if (i.autoPullDue === false) return false
   return (Number(i.now) || 0) - last > STALE_PULL_MS   // 超过陈旧窗口（边界取闭：正好等于不提示）
 }
