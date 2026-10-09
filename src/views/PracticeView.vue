@@ -255,7 +255,7 @@ import QuestionCard, { type QuestionState } from '../components/QuestionCard.vue
 import { classifyQuestionType, TYPE_LABELS, groupQuestionsByCategory } from '../lib/exam'
 import { calculateAutoQuality, calculateNextReview, qualityLabel, labelToQuality, formatDate, computeNextReviewTs, toReviewTs, type QualityLabel } from '../lib/spaced-repetition'
 import { formatSyncDetail } from '../lib/sync-format'
-import { getWebSyncStatus, getLastPullAt, isPullInFlight, retryProgressSync, listProgressHistory, rollbackProgress, isCloudEnabled } from '../lib/cloud'
+import { getWebSyncStatus, getLastPullAt, isPullInFlight, listProgressHistory, rollbackProgress, isCloudEnabled } from '../lib/cloud'
 import { shouldWarnOnEnter } from '../lib/sync-notice'
 // 2026-10-07：本机硬存档——独立于云端的最后一道保险（关掉同步、没配云也照记）
 import { recordLocalArchive, listLocalArchive, restoreLocalArchive, ARCHIVE_MAX } from '../lib/local-archive'
@@ -688,7 +688,7 @@ async function restoreProgress(): Promise<RestoreOutcome> {
 
     if (progress.finished) {
       finished.value = true
-    } else if (currentOrderIdx >= 0) {
+    } else if (currentOrderIdx >= 0 && !suppressRestoredBanner) {
       restoredBanner.value = true
       setTimeout(() => { restoredBanner.value = false }, 5000)
     }
@@ -783,9 +783,13 @@ const syncChipMark = computed(() => {
 let noticeEvaluated = false
 const noticeShouldShow = ref(false)
 let noticeHideWhenPullDone = false
+// 2026-10-09：本轮**拉取**开始时的拉取时刻快照。拉取把某一轮「可能读到旧进度」真正解决了 ⇒
+// 横幅该收掉；而「拉取前时刻变了」就是这件事的唯一可观测证据（不依赖 isPullInFlight 那一瞬间）。
+let pullAtAtEvaluated = 0
 function evaluateNotice () {
   if (noticeEvaluated) return                     // 本次进页面只评估一次（进页面那一刻），评完冻结
   noticeEvaluated = true
+  pullAtAtEvaluated = lastPullAtRef.value          // 记下评估时刻的拉取点，供 refreshSyncStat 识别「拉完了」
   // 2026-10-08：未配云没有云可同步，判据里「从未成功同步」那条对他们恒真 ⇒ 每次进库都弹、纯添乱。
   // 闸在调用方（与 mp「未打通不提示」对齐；判据本身保持纯函数）。isCloudEnabled 每次现读配置，无缓存。
   if (!isCloudEnabled()) return
@@ -834,18 +838,70 @@ function refreshSyncStat () {
   lastPullAtRef.value = getLastPullAt()
   if (prevState !== 'ok' && next.state === 'ok') markJustSynced()
   evaluateNotice()   // 只在进页面那一刻评估一次（见 evaluateNotice 注释），之后冻结
-  // 2026-10-08：因「正在拉取」弹的横幅，拉完自动收掉
-  if (noticeShouldShow.value && noticeHideWhenPullDone && !isPullInFlight()) {
+  // 2026-10-09（rabbit 实测：点云朵催同步后，横幅照旧杵着）：横幅的两条自动收口，都以
+  // **拉取**为准，而不是以「任意同步成功」为准。
+  //   ① 因「正在拉取」弹的：拉完（`isPullInFlight()` 转假）就收；
+  //   ② 「本机可能没有云端最新」弹的：判据在页面打开那一刻**冻结**了，而此刻真的拉完了
+  //      —— 那句「可能读不到上次进度」已经不成立。用「拉取时刻前进」识别这件事：
+  //      它在拉取成功时写入（markPulled），且**只推不拉的轻推不写**，所以不会被误判为已拉。
+  //   ⚠️ 快照 `pullAtAtEvaluated` 必须**在评估那一刻**取（见 evaluateNotice），不能在轮询里现取
+  //      —— 否则快照永远等于当前值，条件恒假、横幅永远收不掉。
+  const pulledSinceEval = lastPullAtRef.value !== pullAtAtEvaluated
+  const pullSettled = !isPullInFlight()
+  if (noticeShouldShow.value && (pullSettled && pulledSinceEval)) {
+    noticeShouldShow.value = false
+    noticeHideWhenPullDone = false
+  } else if (noticeShouldShow.value && noticeHideWhenPullDone && pullSettled) {
     noticeShouldShow.value = false
     noticeHideWhenPullDone = false
   }
 }
+// 2026-10-09（rabbit 实测：「点云朵 → 文字还是未同步、云朵却变绿了」）。原先这里调的是
+// 进度轻推（`pushProgressLight(force)`，只上行、不拉取），两个后果：
+//   ① 胶囊文案的真值是「上次成功**拉取**」（webSyncPull.at），轻推不写它
+//      ⇒ 点一次云朵，同步确实成功了、云朵也 `state='ok'` 变绿了，可文案**永远停在「未同步」**
+//      （默认绿主题下 `--color-primary` 与 `--color-success-strong` 都是绿色 ⇒ 看着就是"没同步却变绿"）；
+//   ② 用户在练习页点云朵的动机是「横幅说可能读不到上次进度」——那正是**下行**问题，
+//      而轻推只有上行 ⇒ 点完警告还在，问题一点没解决。
+// 现口径：点云朵 = **全量双向同步**（与首页胶囊 doHomeSync 同一动作，就是它 title 里写的
+// 「点一下立即全量同步（上传+下载）」——练习页此前跟自己的 tooltip 说的不是一回事）。
 async function onSyncChipTap () {
-  if (syncStat.value.state === 'syncing') return
+  // 已有全量同步在跑：如实提示等待即可，不叠加请求（完成时 3 秒轮询会接住状态与拉取时刻）
+  if (syncStat.value.state === 'syncing') { toastInfo('云同步正在进行，稍等几秒'); return }
   refreshSyncStat()
-  await retryProgressSync()
-  refreshSyncStat()
+  try {
+    const m = await import('../lib/cloud')
+    await m.syncAll()
+    const st = m.getWebSyncStatus()
+    if (st.state === 'fail') { toastError('同步失败：' + (st.msg || '网络或云端异常')); return }
+    // 这轮真的拉完了 ⇒ 由 refreshSyncStat 收掉那条「可能读不到上次进度」的横幅
+    refreshSyncStat()
+    // 云端可能比本机新：把本页进度重读一次，否则界面还停在打开时的旧数字
+    await reloadProgressAfterSync()
+  } catch (e: any) {
+    toastError('同步失败：' + ((e && e.message) || String(e)))
+  } finally {
+    refreshSyncStat()
+  }
 }
+// 同步后重读本页进度：复用 `restoreProgress()`（它已处理重挂载、答对状态回填、引用解析失败闸门），
+// 只是**不该再弹一次「已从上次进度恢复」横幅**——用户此刻在页内，不是刚进页面。故临时置标跳过。
+let reloadAfterSyncBusy = false
+async function reloadProgressAfterSync () {
+  if (reloadAfterSyncBusy) return
+  reloadAfterSyncBusy = true
+  try {
+    if (!questions.value.length) return          // 题目还没载完（与 restoreProgress 的 'not-loaded' 同口径）
+    suppressRestoredBanner = true
+    await restoreProgress()
+  } catch (e: any) {
+    console.warn('[practice] 同步后重读进度失败（界面保持原样）', e)
+  } finally {
+    suppressRestoredBanner = false
+    reloadAfterSyncBusy = false
+  }
+}
+let suppressRestoredBanner = false
 
 onMounted(() => {
   saveWatchTimer = setInterval(checkSaveHealth, 45000)

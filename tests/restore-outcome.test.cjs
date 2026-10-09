@@ -41,6 +41,10 @@ async function main () {
     return esbuild.transformSync(lines.slice(start, end + 1).join('\n'), { loader: 'ts', format: 'cjs' }).code
       .replace(/^exports\.[A-Za-z_$]+\s*=\s*[A-Za-z_$]+;?$/gm, '').trim()
   }
+  // 2026-10-09：restoreProgress 里新增了 `suppressRestoredBanner`（页内同步后重读进度时不弹
+  // 「已从上次进度恢复」横幅的临时标）。整段被切片出来跑 ⇒ 该变量必须在 runRestore 里补上，
+  // 否则 ReferenceError。**注意**：它落在 `currentOrderIdx >= 0 && !suppressRestoredBanner`
+  // 这一支 ⇒ 下面断言 restoredBanner 时同理要显式给值。
   const body = sliceFn('restoreProgress')
   const reportBody = sliceFn('reportRestore')
 
@@ -72,6 +76,7 @@ async function main () {
               answerStates, questions, progressKey, api, S, nextTick, toastError, shuffle, reloadKey } = env
       const buildProgressRefMaps = S.buildProgressRefMaps
       const resolveProgressRef = S.resolveProgressRef
+      let suppressRestoredBanner = !!env.suppressRestoredBanner
       ${body}
       return restoreProgress
     `)(env)
