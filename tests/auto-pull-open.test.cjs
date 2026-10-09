@@ -11,6 +11,10 @@
 //   ① App.vue 启动延迟 = 4000ms（首屏留白）
 //   ② cloud.ts 的自动拉取节流 = 10 分钟（AUTO_PULL_INTERVAL_MS）
 // 另：横幅判据（sync-notice.ts 的 STALE_PULL_MS = 1 分钟）与这两条是**两件事**，不得联动。
+//
+// 2026-10-09 扩充（④）：rabbit 报「不点同步，时间就显示旧的」——自动拉原先只在装载后跑一次，
+// 手机页面常驻不重载 ⇒ 芯片时间停在打开那一刻。修法＝**回到前台/聚焦也补一次触发**，
+// 仍旧走节流过的 maybeAutoSyncOnOpen（频率口径不动；只是给节流一个真正的重判时机）。
 const fs = require('fs')
 const path = require('path')
 
@@ -51,6 +55,18 @@ console.log('── ③ 横幅口径与拉取频率解耦（不许联动）─�
   ok('横幅陈旧窗口仍是 1 分钟（与 10 分钟节流无关）',
     /export const STALE_PULL_MS = 60 \* 1000/.test(notice))
   ok('注释明确了两者不是同一条线', /只决定横幅要不要出现[\s\S]{0,120}不决定自动拉取的频率/.test(notice))
+}
+
+console.log('── ④ 回到前台/聚焦也补一次自动拉（2026-10-09 rabbit：不点同步时间不更新）──')
+{
+  ok('onVisible 里触发自动拉', /function onVisible[\s\S]{0,240}pokeAutoSync\(\)/.test(app))
+  ok('onFocus 里触发自动拉', /function onFocus[\s\S]{0,240}pokeAutoSync\(\)/.test(app))
+  ok('触发走的仍是节流过的 maybeAutoSyncOnOpen（不许绕过节流直调 syncFromCloud）',
+    /function pokeAutoSync[\s\S]{0,500}maybeAutoSyncOnOpen\(\)/.test(app) &&
+    !/function pokeAutoSync[\s\S]{0,500}syncFromCloud/.test(app))
+  ok('❗反向对照：节流口径仍只住在 cloud.ts（App 端不自己比时间戳、不碰节流键）',
+    !/AUTO_PULL_KEY|AUTO_PULL_INTERVAL_MS/.test(app))
+  ok('❗反向对照：装载延迟仍是 4 秒那条（本批没把它拣回来）', /\}, 4000\)/.test(app))
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败`)

@@ -292,13 +292,21 @@ async function pokeUpdate() {
   } catch { /* 检查失败就当没有新版，别打扰用户 */ }
 }
 
+// 2026-10-09（rabbit 实测：不点同步，「☁ 已同步 HH:MM」就一直是旧的——手机上页面常驻不重载，
+// 而自动拉原先只在装载后跑一次）：回到前台/窗口聚焦也补一次「打开即拉」。
+// 复用 maybeAutoSyncOnOpen —— 10 分钟节流/自动同步开关/云未启用/互斥都在它内部判，
+// 这里只负责给节流一个**真正的重判时机**；连点也只是排队后按节流空转，频率口径不变。
+function pokeAutoSync() {
+  import('./lib/cloud').then(m => m.maybeAutoSyncOnOpen()).catch(() => {})
+}
+
 function onVisible() {
-  if (document.visibilityState === 'visible') pokeUpdate()
+  if (document.visibilityState === 'visible') { pokeUpdate(); pokeAutoSync() }
 }
 
 // focus 单独一支：窗口重新聚焦本身就意味着「回到前台」，不再要求 visibilityState（那条判据在
 // 无头/隐藏页里恒为 hidden，会让这个入口永远测不到）。
-function onFocus() { pokeUpdate() }
+function onFocus() { pokeUpdate(); pokeAutoSync() }
 
 function applyUpdate() {
   updateReady.value = false
