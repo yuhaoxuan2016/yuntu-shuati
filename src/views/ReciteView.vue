@@ -135,7 +135,7 @@ onMounted(load)
             <p v-if="(q as any).formula" class="formula">
               <span class="formula-tag">公式</span>{{ (q as any).formula }}
             </p>
-            <p v-if="(q as any).formula_vars" class="formula-vars">取值 {{ (q as any).formula_vars }}</p>
+            <p v-if="(q as any).formula_vars" class="formula-vars">{{ (q as any).formula_vars }}</p>
             <p v-if="(q as any).answer_conflict_note" class="warn-note">{{ (q as any).answer_conflict_note }}</p>
           </details>
           <details v-if="!revealAll && q.analysis" class="fold">
@@ -156,7 +156,7 @@ onMounted(load)
             <p v-if="(q as any).formula" class="formula">
               <span class="formula-tag">公式</span>{{ (q as any).formula }}
             </p>
-            <p v-if="(q as any).formula_vars" class="formula-vars">取值 {{ (q as any).formula_vars }}</p>
+            <p v-if="(q as any).formula_vars" class="formula-vars">{{ (q as any).formula_vars }}</p>
             <p v-if="(q as any).answer_conflict_note" class="warn-note">{{ (q as any).answer_conflict_note }}</p>
             <p v-if="q.analysis || (q as any).knowledge" class="ai-foot">解析与知识点总结由 AI 批量生成，仅供参考；答案以题库原文为准。</p>
             <p v-if="q.analysis" class="ana">{{ q.analysis }}</p>
