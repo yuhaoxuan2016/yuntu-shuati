@@ -135,6 +135,7 @@ onMounted(load)
             <p v-if="(q as any).formula" class="formula">
               <span class="formula-tag">公式</span>{{ (q as any).formula }}
             </p>
+            <p v-if="(q as any).formula_vars" class="formula-vars">取值 {{ (q as any).formula_vars }}</p>
             <p v-if="(q as any).answer_conflict_note" class="warn-note">{{ (q as any).answer_conflict_note }}</p>
           </details>
           <details v-if="!revealAll && q.analysis" class="fold">
@@ -155,6 +156,7 @@ onMounted(load)
             <p v-if="(q as any).formula" class="formula">
               <span class="formula-tag">公式</span>{{ (q as any).formula }}
             </p>
+            <p v-if="(q as any).formula_vars" class="formula-vars">取值 {{ (q as any).formula_vars }}</p>
             <p v-if="(q as any).answer_conflict_note" class="warn-note">{{ (q as any).answer_conflict_note }}</p>
             <p v-if="q.analysis || (q as any).knowledge" class="ai-foot">解析与知识点总结由 AI 批量生成，仅供参考；答案以题库原文为准。</p>
             <p v-if="q.analysis" class="ana">{{ q.analysis }}</p>
@@ -220,6 +222,10 @@ onMounted(load)
 .formula-tag {
   display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 4px;
   background: var(--color-primary-light); color: var(--color-primary); font-size: 0.74rem; font-weight: 700;
+}
+/* 2026-10-10：自变量取值范围——比公式块再弱一档（纯文字、无底色），只说「这题每场会换数」 */
+.formula-vars {
+  margin: 4px 0 0; padding: 0 12px; color: #8a93a8; font-size: 0.8rem;
 }
 .warn {
   font-size: 0.74rem; padding: 1px 8px; border-radius: 999px;

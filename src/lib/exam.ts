@@ -226,6 +226,9 @@ export interface ExamQuestion {
   // 2026-10-10：计算题「官方公式」——用题内量（X1、X2…）直接求各空值的算式串，多空以全角「；」连接。
   // 仅计算题（背题库）部分题携带；背题页在「推算」之外补充展示。
   formula?: string | null
+  // 2026-10-10：自变量取值范围（官方题库抽样区间，已归一化成人话：30~50 / 250/300/350；
+  // 多变量形如「X1 2~3；X2 3/6」）。含义是「这题每场会换数」，与 formula 配套展示。
+  formula_vars?: string | null
   // 标准答案与解析算出的结果对不上时的标记：'value' | 'unit' | 'rounding' | ''（一致）。
   // 题库标准答案无论对错都保留，所以这里只做提示、不改答案。
   answer_conflict?: string | null
@@ -933,6 +936,8 @@ const PUBLIC_Q_FIELDS = {
   images: true, answer_derived: true, answer_conflict: true, answer_conflict_note: true,
   // 2026-10-10：计算题「官方公式」（背题页展示用）
   formula: true,
+  // 2026-10-10：随公式一起下发的自变量取值范围（同一轮特性，同批加）
+  formula_vars: true,
   knowledge: true, difficulty: true, difficulty_why: true,
   // 2026-09-25：「题面校对过」标记（跨端展示，方便读者核对，见 analysis-4064/FACE-FIX-LOG.md）
   face_revised: true,
@@ -947,7 +952,8 @@ const PUBLIC_Q_CACHE_TTL = 24 * 3600 * 1000
 // 2026-10-07：由 3 抬到 4 —— 补下发 _id（映射为 cloud_qid，跨端进度恢复解析用）。小程序端字段未变、
 // 无需跟抬；「两端同值对齐」的约定自本条起按需各自推进（对齐是为了防漏改，不是为了强绑）。
 // 2026-10-10：由 4 抬到 5 —— 补下发 formula（计算题官方公式）；小程序端字段未变、无需跟抬。
-const PUBLIC_Q_CACHE_SCHEMA = 5
+// 2026-10-10 二轮：由 5 抬到 6 —— 同批再补 formula_vars（自变量取值范围）；小程序端本批同步跟改。
+const PUBLIC_Q_CACHE_SCHEMA = 6
 
 function mapPublicQuestion(q: any): ExamQuestion {
   // 2026-09-15 加固(评审 Important #1，根因侧)：补 `?? q._id` 兜底。
@@ -968,6 +974,7 @@ function mapPublicQuestion(q: any): ExamQuestion {
     images: Array.isArray(q.images) ? q.images : null,
     answer_derived: q.answer_derived || null,
     formula: q.formula || null,
+    formula_vars: q.formula_vars || null,
     answer_conflict: q.answer_conflict || '',
     answer_conflict_note: q.answer_conflict_note || null,
     knowledge: q.knowledge || null,
