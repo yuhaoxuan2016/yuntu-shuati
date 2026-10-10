@@ -1,7 +1,9 @@
 // 断言 sync-ids.ts 的纯函数（Node 24 直跑 TS：`node tests/sync-ids.test.ts`）
 // 覆盖：来源索引 / 单号映射 / 进度重映射 / 合并决策（他机·本机·自愈·库缺失）/ 设备指纹持久
+// 2026-10-10 起补：B1 形状归一 / B2 逐键合并 / 缩水守卫（每条带反向对照）
 import {
   buildSrcLocalIndex, mapSrcToLocal, remapProgress, mergeProgressForLocal, mergeProgressMapForCloud, getOrCreateDeviceId, orderHitRate, submittedCount, answeredCountLoose, trulyAnsweredCount,
+  normalizeAnswerStates, isSeverelyShrunk,
 } from '../src/lib/sync-ids.ts'
 
 let pass = 0, fail = 0
@@ -187,6 +189,110 @@ eq('根因3（推）：本机只有 1 条空档时不算「实质」→ 不会�
 eq('根因3：严格计数把空档判 0（answeredCountLoose 会判 1）', [
   trulyAnsweredCount(localOneGap), answeredCountLoose(localOneGap),
 ], [0, 1])
+
+// ── 2026-10-10（B1 形状归一）：小程序/桥形状 `{picked,correct}` 条目 → 网页端 QuestionState。
+// 现场：小程序推上云的每题对错混进网页端本地后，QuestionCard 读 `saved?.submitted` 恒为 undefined
+// ⇒ 对错不显示、正确率不计（PracticeView 的 `s.submitted && s.isCorrect === true`）。
+const webState = { selected: [2], blankAnswer: '甲', submitted: true, isCorrect: false, selfEvalDone: true, judgeSelected: true, elapsedSecs: 9 }
+const normed = normalizeAnswerStates({ mode: 'order', answer_states: { '10': { picked: [1, 0], correct: true }, '11': webState, '12': { picked: [], correct: false } } })
+eq('归一：小程序形状 → 网页端 QuestionState（picked → selected、submitted 补 true）', normed.answer_states['10'],
+  { selected: [1, 0], blankAnswer: '', submitted: true, isCorrect: true, selfEvalDone: false, judgeSelected: null, elapsedSecs: null })
+eq('归一：correct=false 保真（判断题答否）', normed.answer_states['12'],
+  { selected: [], blankAnswer: '', submitted: true, isCorrect: false, selfEvalDone: false, judgeSelected: null, elapsedSecs: null })
+eq('归一：picked 非数组 → selected 空数组', normalizeAnswerStates({ answer_states: { k: { picked: null, correct: true } } }).answer_states.k.selected, [])
+eq('归一反向对照：网页端条目原样（引用不变、字段不被覆盖）', normed.answer_states['11'] === webState, true)
+eq('归一判据优先级：同时带 submitted 与 picked ⇒ 按网页端处理（原样）',
+  normalizeAnswerStates({ answer_states: { k: { submitted: false, picked: [1], correct: true } } }).answer_states.k,
+  { submitted: false, picked: [1], correct: true })
+eq('归一：两种形状都不像的条目原样（null、空对象）', normalizeAnswerStates({ answer_states: { a: null, b: {} } }).answer_states, { a: null, b: {} })
+eq('归一：进度其它字段不丢', normed.mode, 'order')
+
+// 落地收口：经 mergeProgressForLocal（直通分支）落盘后，条目必须是网页端形状（B1 的实际出口）
+const bridgeCloud = { mode: 'order', order_ids: [5, 6], current_id: 5, answer_states: { '5': { picked: [0], correct: true } }, saved_at: '2026-10-10T08:00:00Z', _src: { dev: 'mp', v: 3 } }
+const landMp = mergeProgressForLocal(bridgeCloud, null, ME, new Map(), true)
+eq('归一（收口·直通分支）：桥形状经合并落盘为网页端形状', landMp.value.answer_states['5'],
+  { selected: [0], blankAnswer: '', submitted: true, isCorrect: true, selfEvalDone: false, judgeSelected: null, elapsedSecs: null })
+eq('归一（收口）：不就地改写来源对象（云端那份仍是桥形状）', bridgeCloud.answer_states['5'], { picked: [0], correct: true })
+const localBridge = JSON.stringify({ mode: 'order', order_ids: [5, 6], current_id: 5, answer_states: { '6': { picked: [1], correct: false } }, saved_at: '2026-10-10T07:00:00Z', _src: { dev: ME, v: 3 } })
+const landBoth = mergeProgressForLocal(bridgeCloud, localBridge, ME, new Map(), true)
+eq('归一（收口）：本机侧历史桥形状条目写出时同样归一（本机独有键保留）', landBoth.value.answer_states['6'],
+  { selected: [1], blankAnswer: '', submitted: true, isCorrect: false, selfEvalDone: false, judgeSelected: null, elapsedSecs: null })
+
+// ── 2026-10-10（B2 逐键合并）：整包按 saved_at 替换会删掉本机独有的作答键（本机改判/重答也传不回小程序）
+// ⇒ 同名键由较新的一方覆盖、双方独有键都保留。
+const stW = (c: boolean) => ({ selected: [1], blankAnswer: '', submitted: true, isCorrect: c, selfEvalDone: false, judgeSelected: null, elapsedSecs: null })
+const b2Cloud = { mode: 'order', order_ids: [7], current_id: 7, answer_states: { '101': stW(false), '104': stW(true) }, saved_at: '2026-10-10T10:00:00Z' }
+const b2LocalOlder = JSON.stringify({ mode: 'order', order_ids: [7], current_id: 7, answer_states: { '101': stW(true), '102': stW(false), '103': stW(true) }, saved_at: '2026-10-10T09:00:00Z', _src: { dev: ME, v: 3 } })
+const b2a = mergeProgressForLocal(b2Cloud, b2LocalOlder, ME, new Map(), true)
+eq('B2（云端较新 ⇒ 采用并合并）：同名键取云端值', b2a.value.answer_states['101'].isCorrect, false)
+eq('B2（云端较新）：本机独有键保留（旧行为整包替换会丢）', ['102', '103'].map(k => !!b2a.value.answer_states[k]), [true, true])
+eq('B2（云端较新）：云端独有键也在', b2a.value.answer_states['104'].isCorrect, true)
+
+// 本机较新：常规「取新」下本机较新不写（本地就是对的）⇒「本机覆盖同名键」只在守卫触发时才轮到（用该入口验）
+const b2Cloud6 = { mode: 'order', order_ids: [7], current_id: 7, answer_states: Object.fromEntries([101, 102, 103, 104, 105, 106].map(k => [String(k), stW(false)])), saved_at: '2026-10-10T08:00:00Z' }
+const b2LocalNewerOne = JSON.stringify({ mode: 'order', order_ids: [7], current_id: 7, answer_states: { '101': stW(true) }, saved_at: '2026-10-10T09:00:00Z', _src: { dev: ME, v: 3 } })
+const b2b = mergeProgressForLocal(b2Cloud6, b2LocalNewerOne, ME, new Map(), true)
+eq('B2（本机较新 · 守卫采用）：同名键本机赢', b2b.value.answer_states['101'].isCorrect, true)
+eq('B2（本机较新 · 守卫采用）：云端独有键都保留', Object.keys(b2b.value.answer_states).sort(), ['101', '102', '103', '104', '105', '106'])
+
+// 同刻自愈路径（本地为未映射镜像、非本机态）：ct === lt ⇒ 采用云端，合并口径同上（本机覆盖同名键）
+const b2T = '2026-10-10T09:00:00Z'
+const b2c = mergeProgressForLocal(
+  { mode: 'order', order_ids: [7], current_id: 7, answer_states: { '101': stW(false), '104': stW(true) }, saved_at: b2T },
+  JSON.stringify({ mode: 'order', order_ids: [7], current_id: 7, answer_states: { '101': stW(true), '102': stW(true) }, saved_at: b2T }),
+  ME, new Map(), true)
+eq('B2（同刻采用）：同名键本机赢', b2c.value.answer_states['101'].isCorrect, true)
+eq('B2（同刻采用）：双方独有键都保留', Object.keys(b2c.value.answer_states).sort(), ['101', '102', '104'])
+
+// ── 2026-10-10（缩水守卫 · 补中间带）：旧守卫只拦「≤1 vs ≥5」的绝对空档，中间带（来方 2~49%）不拦 ——
+// 来方 50 vs 现有 200 且 saved_at 更新 ⇒ 完整版会被缩水版压掉。新判据 = 来方不足现有的一半。
+const stBig = (n: number, base = 300) => Object.fromEntries(Array.from({ length: n }, (_, i) => [String(base + i), { submitted: true, isCorrect: i % 2 === 0 }]))
+const shrinkCloud50 = { mode: 'order', order_ids: [7], current_id: 7, answer_states: stBig(50), saved_at: '2026-10-10T10:00:00Z' }
+const localProg200 = () => JSON.stringify({ mode: 'order', order_ids: [7], current_id: 7, answer_states: stBig(200), saved_at: '2026-10-10T09:00:00Z', _src: { dev: ME, v: 3 } })
+const localProg50 = () => JSON.stringify({ mode: 'order', order_ids: [7], current_id: 7, answer_states: stBig(50), saved_at: '2026-10-10T09:00:00Z', _src: { dev: ME, v: 3 } })
+eq('缩水守卫（拉）：云端 50 vs 本机 200 且云端时间新 ⇒ 不采用（旧守卫全不触发）',
+  mergeProgressForLocal(shrinkCloud50, localProg200(), ME, new Map(), true).write, false)
+const adopt200 = mergeProgressForLocal({ ...shrinkCloud50, answer_states: stBig(200) }, localProg50(), ME, new Map(), true)
+eq('缩水守卫（拉）反向对照：云端 200 vs 本机 50 ⇒ 采用（不是「小的一律拦」）', adopt200.write, true)
+eq('  采用内容 = 200 条（合并后键数不减）', Object.keys(adopt200.value.answer_states).length, 200)
+eq('缩水守卫（拉）：来方带 _reset（有意清空）⇒ 放行',
+  mergeProgressForLocal({ ...shrinkCloud50, _reset: '2026-10-10T10:00:00Z' }, localProg200(), ME, new Map(), true).write, true)
+eq('缩水守卫（拉）反向对照：来方 120 vs 现有 200（没少一半）⇒ 照常按时间取新',
+  mergeProgressForLocal({ ...shrinkCloud50, answer_states: stBig(120) }, localProg200(), ME, new Map(), true).write, true)
+eq('缩水判据直测与边界：50 vs 200 ⇒ 缩水；恰好一半（100 vs 200）⇒ 不算；现有不足下限（4）⇒ 不算', [
+  isSeverelyShrunk({ answer_states: stBig(200) }, { answer_states: stBig(50) }),
+  isSeverelyShrunk({ answer_states: stBig(200) }, { answer_states: stBig(100) }),
+  isSeverelyShrunk({ answer_states: stBig(4) }, { answer_states: stBig(1) }),
+], [true, false, false])
+
+// 推送侧（mergeProgressMapForCloud）：同一判据，逐库判断
+const pushBig = { k: { answer_states: stBig(200, 600), saved_at: '2026-10-10T10:00:00Z' } }
+const pushShrunk = mergeProgressMapForCloud(pushBig, { k: { answer_states: stBig(50, 600), saved_at: '2026-10-10T11:00:00Z' } })
+eq('缩水守卫（推）：本机 50 vs 云端 200 且本机时间新 ⇒ 保留云端', pushShrunk.map.k.saved_at, '2026-10-10T10:00:00Z')
+eq('  计入 tookCloud', pushShrunk.tookCloud, 1)
+eq('缩水守卫（推）反向对照：本机 200 vs 云端 50（本机时间新）⇒ 采用本机',
+  mergeProgressMapForCloud({ k: { answer_states: stBig(50, 600), saved_at: '2026-10-10T10:00:00Z' } }, { k: { answer_states: stBig(200, 600), saved_at: '2026-10-10T11:00:00Z' } }).map.k.saved_at, '2026-10-10T11:00:00Z')
+eq('缩水守卫（推）：本机带 _reset（有意清空）⇒ 放行',
+  mergeProgressMapForCloud(pushBig, { k: { answer_states: stBig(50, 600), _reset: '2026-10-10T11:00:00Z', saved_at: '2026-10-10T11:00:00Z' } }).map.k.saved_at, '2026-10-10T11:00:00Z')
+eq('缩水守卫（推）反向对照：本机 120 vs 云端 200（没少一半）⇒ 照常按时间取新',
+  mergeProgressMapForCloud(pushBig, { k: { answer_states: stBig(120, 600), saved_at: '2026-10-10T11:00:00Z' } }).map.k.saved_at, '2026-10-10T11:00:00Z')
+
+// ── 2026-10-10（补修 A · `_reset` 有意清空连对错一起清）：来方带 `_reset` ⇒ answer_states 整包采用云端（不并键）。
+// 此前并键是永久的 ⇒ 另一端「重新开始」传来的「空 + `_reset`」被采用后，本机 20 条对错原样留着，
+// 「有意清空」传不过来，破坏 2026-10-04 既定语义（`_reset`＝允许覆盖对方的实质进度）。
+const resetCloudEmpty = { mode: 'order', order_ids: [7], current_id: 7, answer_states: {}, _reset: '2026-10-10T12:00:00Z', saved_at: '2026-10-10T12:00:00Z' }
+const local20Keys = () => JSON.stringify({ mode: 'order', order_ids: [7], current_id: 7, answer_states: stBig(20), saved_at: '2026-10-10T09:00:00Z', _src: { dev: ME, v: 3 } })
+const rReset = mergeProgressForLocal(resetCloudEmpty, local20Keys(), ME, new Map(), true)
+eq('补修A（来方带 `_reset`）：采用后 answer_states 为空（本机 20 键不残留）',
+  [rReset.write, Object.keys(rReset.value.answer_states).length, rReset.value._reset], [true, 0, '2026-10-10T12:00:00Z'])
+// 反向对照：同样空、无 `_reset` ⇒ 走既有路径。本机 20 键时被反向守卫拦下；本机不足下限（2 键）时
+// 守卫不触发、照常并键 —— 两种情形本机键都保留（证明例外分支只认 `_reset`）。
+const noResetCloudEmpty = { mode: 'order', order_ids: [7], current_id: 7, answer_states: {}, saved_at: '2026-10-10T12:00:00Z' }
+eq('补修A 反向对照：无 `_reset` 的空档遇本机 20 键 ⇒ 既有反向守卫拦下（不落地）',
+  mergeProgressForLocal(noResetCloudEmpty, local20Keys(), ME, new Map(), true).write, false)
+const rNoReset = mergeProgressForLocal(noResetCloudEmpty, JSON.stringify({ mode: 'order', order_ids: [7], current_id: 7, answer_states: { '101': stW(true), '102': stW(false) }, saved_at: '2026-10-10T09:00:00Z', _src: { dev: ME, v: 3 } }), ME, new Map(), true)
+eq('补修A 反向对照：守卫不触发时（本机 2 键）走并键路径、本机键保留',
+  [rNoReset.write, Object.keys(rNoReset.value.answer_states).sort()], [true, ['101', '102']])
 
 // ── 设备指纹
 const mem: Record<string, string> = {}

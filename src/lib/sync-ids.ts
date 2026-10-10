@@ -99,6 +99,54 @@ export function trulyAnsweredCount (prog: any): number {
   return n
 }
 
+/** 2026-10-10（两端进度口径统一 · B1 形状归一）：单条答题状态 → 网页端 QuestionState 形状。
+ *  背景：小程序写入云端的每题对错形状是 `{picked, correct}`，网页端本地/QuestionCard 认的是
+ *  `{selected, blankAnswer, submitted, isCorrect, selfEvalDone, judgeSelected, elapsedSecs}`；
+ *  小程序形状落进本地后，`saved?.submitted` 恒为 undefined ⇒ 对错不显示、正确率不计
+ *  （PracticeView 的 `s.submitted && s.isCorrect === true`）。
+ *  判据：含 `submitted` 键 ⇒ 已是网页端形状，原样返回（引用不变）；带 `picked`/`correct` 特征
+ *  ⇒ 整形成 QuestionState；两者都不像（空对象 / null / 非对象）⇒ 原样返回（不猜）。 */
+function normalizeAnswerEntry (v: any): any {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return v
+  if ('submitted' in v) return v
+  if (!('picked' in v) && !('correct' in v)) return v
+  return {
+    selected: Array.isArray(v.picked) ? v.picked : [],
+    blankAnswer: '',
+    submitted: true,
+    isCorrect: !!v.correct,
+    selfEvalDone: false,
+    judgeSelected: null,
+    elapsedSecs: null,
+  }
+}
+
+/** 归一一份 answer_states（键 → 网页端 QuestionState）；非对象（null / 数组 / 字符串）返回 null（无据可归，不猜）。 */
+function normalizedStatesMap (states: any): Record<string, any> | null {
+  if (!states || typeof states !== 'object' || Array.isArray(states)) return null
+  const out: Record<string, any> = {}
+  for (const [k, v] of Object.entries(states)) out[k] = normalizeAnswerEntry(v)
+  return out
+}
+
+/** 把进度对象的 answer_states 条目归一回网页端 QuestionState 形状（返回新对象；条目本身已是网页端
+ *  形状的引用不变）。非对象进度 / 无 answer_states ⇒ 原样返回。挂点：mergeProgressForLocal、reshapeMpProgress。 */
+export function normalizeAnswerStates (prog: any): any {
+  if (!prog || typeof prog !== 'object' || Array.isArray(prog)) return prog
+  const norm = normalizedStatesMap((prog as any).answer_states)
+  return norm ? { ...prog, answer_states: norm } : prog
+}
+
+/** 「明显缩水」（2026-10-10）：来方（incoming）已答数不足现有（existing）的一半 ⇒ 判缩水版，
+ *  现有须达 SUBSTANTIAL_MIN，来方带 `_reset`（用户有意清空）时不算。
+ *  补旧守卫拦不住的中间带：来方 50 vs 现有 200 时，旧的「≤1 vs ≥5」两条守卫全不触发，
+ *  saved_at 更新的缩水版照旧顶掉完整版。 */
+export function isSeverelyShrunk (existing: any, incoming: any): boolean {
+  if (trulyAnsweredCount(existing) < SUBSTANTIAL_MIN) return false
+  if (incoming && incoming._reset) return false
+  return trulyAnsweredCount(incoming) * 2 < trulyAnsweredCount(existing)
+}
+
 /** 进度内容与「本机已知题号」（题 id ∪ 源题号）的命中率（0~1）。
  *  无 order_ids 时返回 1（无据可判，不作无效处理）。用于「本机进度与题库对不上」的保护判定。 */
 export function orderHitRate (prog: any, knownIds: Set<number>): number {
@@ -119,6 +167,9 @@ const progTs = (x: any): number => { const t = Date.parse(String((x && x.saved_a
  *    否则采用云端并**重映射**（历史错位数据的自愈路径）。
  *  - 守卫：本地近乎空（≤1 已提交）+ 云端实质（≥5 已提交）→ 无论时间戳都采用云端；
  *    本地点过「重新开始」（`_reset` 标记）时不触发，避免重置被顶回来。
+ *  - 缩水守卫（2026-10-10）：云端此版「明显缩水」（已答数不足本机一半，见 isSeverelyShrunk）→ 不落地。
+ *  - answer_states 逐键合并（2026-10-10）：同名键由 saved_at 较新的一版覆盖，双方独有键都保留；
+ *    条目一律先归一成网页端 QuestionState 形状。
  *  - 云端内容来自本机（`_src.dev == myDev`）→ 原样采用（内容已是本机编号）。
  *  - 库不在本机（index 为空）→ 不落地，等题库先同步下来。
  * 落盘值统一带本机 `_src` 标记，保证「本机最终形态」可被下次合并识别。
@@ -149,6 +200,9 @@ export function mergeProgressForLocal(
   const refuseEmptyCloud = trulyAnsweredCount(localProg) >= SUBSTANTIAL_MIN && trulyAnsweredCount(cloudProg) <= 1
     && !(cloudProg && cloudProg._reset)
   if (refuseEmptyCloud) return { write: false, value: null }
+  // 2026-10-10（缩水守卫 · 补中间带）：云端此版「明显缩水」（已答数不足本机一半）⇒ 不许压本机。
+  // 旧两条守卫只管「≤1 vs ≥5」的绝对空档，50 vs 200 这类按时间戳照样能顶掉完整版。
+  if (isSeverelyShrunk(localProg, cloudProg)) return { write: false, value: null }
   const take = substantial || ct > lt || (ct === lt && !localIsMine)
   if (!take) return { write: false, value: null }
   // passthrough = 订阅库/公共库：进度里的题号是**云端稳定 id**（两端一致），跨端无需映射、也不能
@@ -156,6 +210,21 @@ export function mergeProgressForLocal(
   // 时跳过，等题库同步下来再拉。
   if (!passthrough && (!index || index.size === 0)) return { write: false, value: null }
   const mapped = (cloudIsMine || passthrough) ? { ...cloudProg } : remapProgress(cloudProg, index)
+  // 2026-10-10（B2 逐键合并 + B1 归一）：answer_states 不再整包替换 —— 整包替换会删掉本机独有的
+  // 作答键（本机改判/重答也传不回小程序）。改为：同名键由 saved_at 较新的一方覆盖，双方独有键都保留。
+  // 两边条目先归一回网页端形状（小程序形状落进本地会读不出对错，见 normalizeAnswerEntry）。
+  const cloudStates = normalizedStatesMap(mapped.answer_states)
+  const localStates = normalizedStatesMap(localProg && localProg.answer_states)
+  // 2026-10-10（补修）：来方带 `_reset`（用户在另一端点了重新开始/清空）⇒ 有意清空，连对错一起清 ——
+  // 并键会把本机旧对错留在原地，云端那份「空 + `_reset`」被采用后看起来等于没清（与 2026-10-04
+  // `_reset`＝允许覆盖对方实质进度的语义相悖）。其余情形维持并键。
+  if (mapped && mapped._reset) {
+    mapped.answer_states = cloudStates || {}
+  } else if (cloudStates || localStates) {
+    mapped.answer_states = ct > lt
+      ? { ...(localStates || {}), ...(cloudStates || {}) }
+      : { ...(cloudStates || {}), ...(localStates || {}) }
+  }
   mapped._src = { dev: myDev, v: PROG_SCHEMA_V }
   return { write: true, value: mapped }
 }
@@ -184,6 +253,9 @@ export function mergeProgressMapForCloud(
     // ⇒ 保留本机、不上传这个「空档」，否则一推就把云端（与其它设备）的实质进度抹掉。见那边注释的实测经过。
     const refuseEmptyCloud = trulyAnsweredCount(lv) >= SUBSTANTIAL_MIN && trulyAnsweredCount(cv) <= 1 && !(cv && cv._reset)
     if (refuseEmptyCloud) { out[bid] = lv; continue }
+    // 2026-10-10（缩水守卫 · 补中间带）：本机此版「明显缩水」（已答数不足云端一半）⇒ 保留云端、不上传。
+    // 旧两条守卫只管「≤1 vs ≥5」的绝对空档，50 vs 200 这类按时间戳照样能压掉云端完整版。
+    if (isSeverelyShrunk(cv, lv)) { out[bid] = cv; tookCloud++; continue }
     if (guarded || progTs(lv) < progTs(cv)) { out[bid] = cv; tookCloud++ } else { out[bid] = lv }
   }
   return { map: out, tookCloud }
@@ -211,7 +283,8 @@ export function remapProgress(prog: any, index: Map<number, number>): any {
 
 /** 2026-10-03：把小程序上行的进度条目（题号是 `bankRef::id:<云题 _id>`）重塑成网页端本地形态。
  *  idMap = 「云题 _id → 本机题号」索引（由调用方异步构建）；映射不到的题号一律丢弃
- *  （丢失策略与记录侧一致：绝不挂错号）；order_ids 全空时返回 null（放弃合并）。 */
+ *  （丢失策略与记录侧一致：绝不挂错号）；order_ids 全空时返回 null（放弃合并）。
+ *  2026-10-10：answer_states 条目同时归一成网页端 QuestionState 形状（B1）。 */
 export function reshapeMpProgress(prog: any, idMap: Map<string, number>): any | null {
   const toLocal = (qid: unknown): number | null => {
     const s = String(qid || '')
@@ -230,7 +303,8 @@ export function reshapeMpProgress(prog: any, idMap: Map<string, number>): any | 
   const src = (prog.answer_states && typeof prog.answer_states === 'object') ? prog.answer_states : {}
   for (const [k, v] of Object.entries(src)) {
     const m = toLocal(k)
-    if (m != null) answer_states[String(m)] = v
+    // 2026-10-10（B1 归一）：小程序形状 `{picked,correct}` 条目整形成网页端 QuestionState 再落本地。
+    if (m != null) answer_states[String(m)] = normalizeAnswerEntry(v)
   }
   const current = toLocal(prog.current_id)
   return {
