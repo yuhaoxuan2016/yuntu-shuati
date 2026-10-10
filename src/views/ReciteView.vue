@@ -132,6 +132,9 @@ onMounted(load)
             <p v-if="(q as any).answer_derived" class="derived">
               <span class="derived-tag">推算</span>{{ (q as any).answer_derived }}
             </p>
+            <p v-if="(q as any).formula" class="formula">
+              <span class="formula-tag">公式</span>{{ (q as any).formula }}
+            </p>
             <p v-if="(q as any).answer_conflict_note" class="warn-note">{{ (q as any).answer_conflict_note }}</p>
           </details>
           <details v-if="!revealAll && q.analysis" class="fold">
@@ -148,6 +151,9 @@ onMounted(load)
             <p class="ans">{{ q.answer || '（本题库未给出标准答案）' }}</p>
             <p v-if="(q as any).answer_derived" class="derived">
               <span class="derived-tag">推算</span>{{ (q as any).answer_derived }}
+            </p>
+            <p v-if="(q as any).formula" class="formula">
+              <span class="formula-tag">公式</span>{{ (q as any).formula }}
             </p>
             <p v-if="(q as any).answer_conflict_note" class="warn-note">{{ (q as any).answer_conflict_note }}</p>
             <p v-if="q.analysis || (q as any).knowledge" class="ai-foot">解析与知识点总结由 AI 批量生成，仅供参考；答案以题库原文为准。</p>
@@ -203,6 +209,15 @@ onMounted(load)
   background: #f4f6fb; color: #46506b; font-size: 0.92rem; white-space: pre-wrap;
 }
 .derived-tag {
+  display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 4px;
+  background: var(--color-primary-light); color: var(--color-primary); font-size: 0.74rem; font-weight: 700;
+}
+/* 2026-10-10：官方公式块——与「推算」同色系（同是辅助理解，不另起一套视觉） */
+.formula {
+  margin: 6px 0 0; padding: 6px 12px; border-radius: 8px;
+  background: #f4f6fb; color: #46506b; font-size: 0.92rem; white-space: pre-wrap;
+}
+.formula-tag {
   display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 4px;
   background: var(--color-primary-light); color: var(--color-primary); font-size: 0.74rem; font-weight: 700;
 }

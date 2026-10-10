@@ -223,6 +223,9 @@ export interface ExamQuestion {
   images?: string[] | null
   // 由解析推算出来、**不是题库标准答案**的空值。标准答案才是考试判分依据，两者在 UI 上分开显示。
   answer_derived?: string | null
+  // 2026-10-10：计算题「官方公式」——用题内量（X1、X2…）直接求各空值的算式串，多空以全角「；」连接。
+  // 仅计算题（背题库）部分题携带；背题页在「推算」之外补充展示。
+  formula?: string | null
   // 标准答案与解析算出的结果对不上时的标记：'value' | 'unit' | 'rounding' | ''（一致）。
   // 题库标准答案无论对错都保留，所以这里只做提示、不改答案。
   answer_conflict?: string | null
@@ -928,6 +931,8 @@ const PUBLIC_Q_FIELDS = {
   _local_id: true, _local_bank_id: true, bank_id: true, stem: true,
   type: true, options: true, answer: true, analysis: true, source_index: true,
   images: true, answer_derived: true, answer_conflict: true, answer_conflict_note: true,
+  // 2026-10-10：计算题「官方公式」（背题页展示用）
+  formula: true,
   knowledge: true, difficulty: true, difficulty_why: true,
   // 2026-09-25：「题面校对过」标记（跨端展示，方便读者核对，见 analysis-4064/FACE-FIX-LOG.md）
   face_revised: true,
@@ -941,7 +946,8 @@ const PUBLIC_Q_CACHE_TTL = 24 * 3600 * 1000
 // 抬到同值后，两端「字段口径版本」语义一致；本地缓存介质不同、互不影响，仅作对齐与可读性。
 // 2026-10-07：由 3 抬到 4 —— 补下发 _id（映射为 cloud_qid，跨端进度恢复解析用）。小程序端字段未变、
 // 无需跟抬；「两端同值对齐」的约定自本条起按需各自推进（对齐是为了防漏改，不是为了强绑）。
-const PUBLIC_Q_CACHE_SCHEMA = 4
+// 2026-10-10：由 4 抬到 5 —— 补下发 formula（计算题官方公式）；小程序端字段未变、无需跟抬。
+const PUBLIC_Q_CACHE_SCHEMA = 5
 
 function mapPublicQuestion(q: any): ExamQuestion {
   // 2026-09-15 加固(评审 Important #1，根因侧)：补 `?? q._id` 兜底。
@@ -961,6 +967,7 @@ function mapPublicQuestion(q: any): ExamQuestion {
     source_index: q.source_index ?? null,
     images: Array.isArray(q.images) ? q.images : null,
     answer_derived: q.answer_derived || null,
+    formula: q.formula || null,
     answer_conflict: q.answer_conflict || '',
     answer_conflict_note: q.answer_conflict_note || null,
     knowledge: q.knowledge || null,
