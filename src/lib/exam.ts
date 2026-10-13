@@ -226,8 +226,9 @@ export interface ExamQuestion {
   // 2026-10-10：计算题「官方公式」——用题内量（X1、X2…）直接求各空值的算式串，多空以全角「；」连接。
   // 仅计算题（背题库）部分题携带；背题页在「推算」之外补充展示。
   formula?: string | null
-  // 2026-10-10：自变量取值范围（官方题库抽样区间，已归一化成人话：30~50 / 250/300/350；
-  // 多变量形如「X1 2~3；X2 3/6」）。含义是「这题每场会换数」，与 formula 配套展示。
+  // 2026-10-10：自变量取值范围（官方题库抽样区间）。2026-10-13 更正口径：背题批后云端存的
+  // 已是**整句人话**（如「考试时这题的数字会变：从 30~50 里取一个」），不再是「30~50 / 250/300/350」
+  // 那样的归一化短形；含义仍是「这题每场会换数」，与 formula 配套展示。
   formula_vars?: string | null
   // 标准答案与解析算出的结果对不上时的标记：'value' | 'unit' | 'rounding' | ''（一致）。
   // 题库标准答案无论对错都保留，所以这里只做提示、不改答案。
@@ -300,18 +301,22 @@ function getLocalResults(): ExamResult[] {
 function saveLocalResults(results: ExamResult[]) {
   localStorage.setItem(LOCAL_RESULTS_KEY, JSON.stringify(results))
 }
-// 考生快照里问题的形状：answer/analysis **两个键都不存在**。
+// 考生快照里问题的形状：answer/analysis/answer_derived/answer_conflict_note **四个键都不存在**。
 // 刻意删键而不是置 null —— 置 `null` 仍会在 localStorage 里留下 `"answer":null`，
-// 一眼就能看出这道题原本有答案（简报的验收口径也是「JSON.stringify 后 grep 不含这两个字段」）。
-type TakerExamQuestion = Omit<ExamQuestion, 'answer' | 'analysis'>
+// 一眼就能看出这道题原本有答案（简报的验收口径也是「JSON.stringify 后 grep 不含这四个字段」）。
+// 2026-10-13 补全（与 functions/examGate/index.js 的 stripForTaker 同集合，两端必须同改）：
+//   · answer_derived（计算题推算答案，值即等于答案本身）与 answer_conflict_note（口径备注，
+//     样本含「本题取D」「本题取85%」＝直接泄漏答案值）此前漏剥，随考卷下发即泄漏；
+//   · answer_conflict（'value'|'unit'|'rounding'|''）只是比对标记、不含答案值，保留。
+type TakerExamQuestion = Omit<ExamQuestion, 'answer' | 'analysis' | 'answer_derived' | 'answer_conflict_note'>
 
-// 考生快照的答案剥离（P0-5）：只保留展示/作答必需字段（stem/options/type/id/bank_id）。
+// 考生快照的答案剥离（P0-5）：只保留展示/作答必需字段（stem/options/type/id/bank_id…）。
 // 必须**返回新对象**（含新的 question 对象）——原地改写会污染调用方内存中的整卷，
 // 而考生端这份整卷随后仍要用于判分（gradeExam / ExamTakeView.doSubmit）。
 // 也刻意保留 options/stem/type：考生重进考试（云端查不到时靠快照兜底）仍需正常作答。
 function stripAnswersForTaker(exam: Exam): TakerExamQuestion[] {
   const questions = Array.isArray(exam.questions) ? exam.questions : []
-  return questions.map(({ answer: _answer, analysis: _analysis, ...rest }) => rest)
+  return questions.map(({ answer: _answer, analysis: _analysis, answer_derived: _answer_derived, answer_conflict_note: _answer_conflict_note, ...rest }) => rest)
 }
 
 // 保存考试快照（用于云端查询失败/网络异常时兜底展示，避免误报"考试不存在"）
@@ -416,32 +421,6 @@ async function ensureCloud(): Promise<boolean> {
 }
 
 function isCloud(): boolean { return cloudReady && !!cloudDb }
-
-/** 刷新匿名登录态（token 过期时调用，重置 cloudReady 强制重新登录） */
-async function refreshAuth(): Promise<boolean> {
-  if (!cloudApp) return false
-  try {
-    const auth = cloudApp.auth({ persistence: 'local' })
-    // 先尝试 signOut 清除过期态，再重新匿名登录
-    try { await auth.signOut() } catch { /* ignore */ }
-    await auth.anonymousAuthProvider().signIn()
-    const state = await auth.getLoginState()
-    cachedUid = state?.user?.uid || state?.uid || null
-    cloudReady = true
-    return true
-  } catch (e) {
-    console.warn('刷新匿名登录态失败：', e)
-    cloudReady = false
-    return false
-  }
-}
-
-/** 判断错误是否为权限/认证类（需要刷新登录态重试） */
-function isAuthError(e: any): boolean {
-  const msg = String(e?.message || e?.code || e || '').toLowerCase()
-  return msg.includes('permission denied') || msg.includes('security rules')
-    || msg.includes('unauthorized') || msg.includes('auth') || msg.includes('token')
-}
 
 // 超时保护：CloudBase 请求异常挂起时避免页面永远卡在"加载中"
 function withTimeout<T>(p: Promise<T>, ms = 15000, label = '请求'): Promise<T> {

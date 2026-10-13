@@ -406,7 +406,7 @@ const SYNC_DELETED_KEY = 'sync_deleted'
 // 2026-09-18 扩充（重审 A-15）：`question_id` 允许 `null` = **整库**语义
 //   （`quiz_banks` 用不到 question_id；`questions` 传 null 表示"删该库的全部题目"）。
 //   为什么不逐题打标记：一个 2000 题的题库会往 localStorage 写 2000 条标记，量级不可接受。
-type DeletedMark = { bank_id: number; question_id: number | string | null; cloud_id?: string | null; at?: number; tries?: number; uid?: string }
+type DeletedMark = { bank_id: number | string; question_id: number | string | null; cloud_id?: string | null; at?: number; tries?: number; uid?: string }
 
 function getDeletedMarks(): Record<string, DeletedMark[]> {
   try {
@@ -449,8 +449,11 @@ export function loadDeletedLedgerIndex(): LedgerIndex {
 // 2026-09-24：补 `cloudId`（题库/题目的云端 `_id`，能拿到就带上，删除时按它精确定位；换过身份的
 //   文档 `_local_id` 对不上，只有 `_id` 才认得出是同一份）＋ `at`（删除时刻，账本弱键的时间闸门），
 //   并**同步写一笔删除账本** —— 账本是「下载时不要再拉回来」的终身凭据，与标记（待办）分开存。
+// 2026-10-13（类型清错）：`bankId` 放宽为 number | string —— 订阅模式（2026-09-27）起
+//   api 层会带字符串 bankRef 进来（记录类删除、questions/quiz_banks 的销账都是既有运行时路径），
+//   标记与账本对 it 一律按值存储/等值比较，纯类型放宽、运行时不变。
 export function markCloudDeleted(
-  collection: CloudCollection, bankId: number, questionId: number | string | null,
+  collection: CloudCollection, bankId: number | string, questionId: number | string | null,
   cloudId: string | null = null,
 ): void {
   const marks = getDeletedMarks()

@@ -160,10 +160,20 @@ async function fetchAll(collection, where, max = 2000) {
   return all
 }
 
+// 2026-10-13（答案剥离补全）：考生下发剥离字段清单扩为**四件**（与网页端 src/lib/exam.ts 的
+//   stripAnswersForTaker 保持同集合，两端必须同改）：
+//   · answer —— 标准答案
+//   · analysis —— 解析
+//   · answer_derived —— 计算题推算答案（真实题库 39 条非空，值即等于答案本身）
+//   · answer_conflict_note —— 口径备注（样本含「本题取D」「本题取85%」＝直接泄漏答案值）
+//   注：`answer_conflict`（'value'|'unit'|'rounding'|''）只是「标准答案与推算值是否一致」的标记，
+//   本身不含答案值，保留下发。
 function stripForTaker(q) {
   const out = { ...q }
   delete out.answer
   delete out.analysis
+  delete out.answer_derived
+  delete out.answer_conflict_note
   return out
 }
 
@@ -265,11 +275,17 @@ async function actReviewByCode(payload, event) {
   const candidateIds = [result._openid].filter(Boolean).map(normId)
   const isOwner = cands.some(c => ownerIds.includes(c))
   const isCandidate = cands.some(c => candidateIds.includes(c))
-  // 身份一个都取不到（仅管理端/无上下文调用会走到）⇒ 退回旧行为，避免误伤真实两端；此支由日志监控
+  // 2026-10-13 fail-closed 翻向：原实现对「身份一个都取不到」的调用**退回旧行为（给全答案）**，
+  // 等于「拿不到身份证就等于本人」。真实两端恒有平台注入身份（网页版 uid / 小程序 openid），
+  // 2026-10-04 起日志窗口内零 unknownCaller 实测；取不到身份只可能是管理端/伪造上下文，
+  // 此时正确处置是与普通访客一视同仁地给**剥答案的卷**，而不是给全答案。
   const unknownCaller = cands.length === 0
-  const allowFull = isOwner || isCandidate || unknownCaller
-  console.log('[examGate] reviewByCode',
-    JSON.stringify({ code4: code.slice(0, 4), cands: cands.length, isOwner, isCandidate, unknownCaller, allowFull }))
+  const allowFull = isOwner || isCandidate
+  const logLine = '[examGate] reviewByCode ' +
+    JSON.stringify({ code4: code.slice(0, 4), cands: cands.length, isOwner, isCandidate, unknownCaller, allowFull })
+  // 日志行保留；无身份调用升级为醒目的 warn，供监控及时发现
+  if (unknownCaller) console.warn('[examGate] reviewByCode 无身份调用', logLine)
+  else console.log(logLine)
   return { ok: true, result, exam: publicExamView(exam, true, !allowFull) }
 }
 

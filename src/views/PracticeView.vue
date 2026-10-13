@@ -251,7 +251,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, Question, resolveBankId } from '../utils/api'
+import { api, Question, resolveBankId, type BankKey } from '../utils/api'
 import { toastError, toastSuccess, toastInfo } from '../utils/toast'
 import { useBankStore } from '../stores/bank'
 import { idb } from '../lib/db'
@@ -554,7 +554,9 @@ onMounted(async () => {
         const raw = localStorage.getItem('study_plan_questions')
         planId.value = localStorage.getItem('study_plan_id')
         if (raw) {
-          const items = JSON.parse(raw) as { id: number; bankId: number }[]
+          // 2026-10-13（类型清错）：StudyPlanView 写入的 bankId 是 BankKey（本地库数字 / 订阅库 bankRef 字符串），
+          // 原 cast 写成 number 与事实不符；改回 BankKey 后与下面 `bankIdSet.has(bankId)` 的类型一致。
+          const items = JSON.parse(raw) as { id: number; bankId: BankKey }[]
           const bankIdSet = new Set(items.map(i => i.bankId))
           if (!bankIdSet.has(bankId) && bankIdSet.size > 1) {
             // 队列里没有当前题库的题（跨题库计划），提示并回退普通练习
@@ -1033,7 +1035,10 @@ async function saveProgressInner() {
     void import('../lib/cloud').then(m => m.scheduleProgressPush()).catch(() => {})
   } catch (e) {
     console.error('保存进度失败：', e)
-    saveWarn.value = '⚠️ 进度可能没存上（' + String((e && e.message) || e) + '）——点此立即重试'
+    // 2026-10-13（类型清错）：catch 变量是 unknown；收窄成「对象且有 message 用 message，否则字符串化」，
+    // 与原判据 `(e && e.message) || e` 语义一致（不用 any 吞错）。
+    const em = (e && typeof e === 'object' && 'message' in e) ? (e as { message?: unknown }).message : undefined
+    saveWarn.value = '⚠️ 进度可能没存上（' + String(em || e) + '）——点此立即重试'
   }
 }
 

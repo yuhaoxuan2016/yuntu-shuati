@@ -163,7 +163,9 @@ export async function testConnection(): Promise<void> {
 // 5. 每块失败自动重试 1 次（防网络抖动丢题）
 export async function aiStructurize(
   text: string,
-  bankId: number,
+  // 2026-10-13（类型清错）：放宽为 number | string —— 订阅库 bankRef 是字符串，
+  // 本函数只把它原样写进 `q.bank_id`（与 api.listQuestions 的订阅库形态同口径），纯类型放宽。
+  bankId: number | string,
   onProgress?: (done: number, total: number) => void
 ): Promise<{ questions: any[]; failedChunks: number; totalChunks: number }> {
   const cfg = await getAiConfig()

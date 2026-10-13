@@ -168,7 +168,11 @@ function parseChineseNum(s: string): number {
 export function htmlToParagraphs(html: string): { paragraphs: string[]; images: string[] } {
   const paragraphs: string[] = []
   const images: string[] = []
-  if (!html.toLowerCase().includes('<p')) {
+  // 2026-10-13 修复：判据由 `html.toLowerCase().includes('<p')` 改为标签边界正则。
+  // 原判据把 `<pre>`/`<path` 这类**以 `<p` 开头的其它标签**误判成「含段落标签的 HTML」，
+  // 走进 HTML 分支后 `while` 循环又只认真正的 `<p …>`，结果整篇被当空文档（段落 0 条）。
+  // 新判据 `/<p[\s/>]/i`：`<p>`、`<p …>`、`<p/>`、大写 `<P>` 都认；`<pre`/`<path` 不再误中。
+  if (!/<p[\s/>]/i.test(html)) {
     const plain = stripTags(html)
     return {
       paragraphs: plain.split('\n').map(s => s.trim()).filter(s => s.length > 0),
@@ -625,6 +629,18 @@ export function detectType(stem: string, options: string[], answer: string | nul
   return 'single'
 }
 
+// 2026-10-13：页脚/分值杂行过滤（判据**保守**——宁可漏滤，不可误删正常题干/选项文本）：
+//   · `第 N 页…`（页脚页码）
+//   · `…共 N 页`（页脚总页数）
+//   · `（本题 N 分）`（题面分值标注）
+// 用途：这些行在提取出的文本流里常夹在题干/选项之间，此前会被拼进题干或选项（污染导题结果）。
+// 只在「题干拼接」与「选项续行拼接」两处跳过；其余行一律不碰。
+// 2026-10-13 修复（验收）：三个分支都锚行首，防误删含「共 N 页」字样的合法题干（如「本规程全书共 500 页」）。
+const RE_NOISE_LINE = /^\s*第\s*\d+\s*页|^\s*共\s*\d+\s*页|^[（(]\s*本题\s*\d+\s*分\s*[)）]/
+function isNoiseLine(line: string): boolean {
+  return RE_NOISE_LINE.test(line)
+}
+
 // 构建单题（移植 structure.rs build_question）
 function buildQuestion(blocks: string[], sourceIndex: number, chapter: number, section: number): ParsedQuestion | null {
   if (blocks.length === 0) return null
@@ -637,6 +653,8 @@ function buildQuestion(blocks: string[], sourceIndex: number, chapter: number, s
   // 处理题干（可能是多行）
   while (i < blocks.length) {
     const line = blocks[i]
+    // 2026-10-13：页脚/分值杂行不进题干（同 isNoiseLine，判据保守）
+    if (isNoiseLine(line)) { i++; continue }
     const optMatch = line.match(RE_OPT)
     if (optMatch) break
     const ansMatch = line.match(RE_ANS)
@@ -681,7 +699,8 @@ function buildQuestion(blocks: string[], sourceIndex: number, chapter: number, s
       continue
     }
     if (inOptions) {
-      // 选项续行
+      // 选项续行（2026-10-13：页脚/分值杂行跳过——不进选项也不进题干）
+      if (isNoiseLine(line)) { i++; continue }
       const lastIdx = options.length - 1
       if (lastIdx >= 0) options[lastIdx] += line
     }
@@ -779,7 +798,9 @@ function buildQuestion(blocks: string[], sourceIndex: number, chapter: number, s
 }
 
 // 从 HTML 直接解析（pipeline.rs html_to_questions 的 JS 版）
-export function parseHtml(html: string, bankId: number): any[] {
+// 2026-10-13（类型清错）：`bankId` 放宽为 number | string —— 订阅库的 bankRef 是字符串，
+// 而本函数只把它原样写进 `q.bank_id`（与 api.listQuestions 的订阅库形态同口径），纯类型放宽、运行时不变。
+export function parseHtml(html: string, bankId: number | string): any[] {
   const { paragraphs, images } = htmlToParagraphs(html)
   const parsed = parseQuestions(paragraphs)
   return parsed.map(pq => {

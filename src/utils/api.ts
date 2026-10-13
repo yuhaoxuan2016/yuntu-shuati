@@ -55,6 +55,10 @@ function markCloudDeleted(
 
 /** 取题库的云端 `_id`（没推上去过 / 取不到 → null） */
 async function bankCloudId(bankId: number | string): Promise<string | null> {
+  // 2026-10-13（类型清错）：`idb.getBank` 的键是本地自增数字 id；字符串 bankRef（订阅库）
+  // 在本机没有题库行可查 —— 直接返回 null，与运行时实际行为逐字一致（字符串 key 查 IndexedDB
+  // 得到 undefined → 原实现同样落 `?? null`）。类型上把这一点写明，不再拿宽类型去调窄参数。
+  if (typeof bankId !== 'number') return null
   try {
     const b: any = await idb.getBank?.(bankId)
     return b?.cloud_id ?? null
@@ -251,7 +255,9 @@ export const api = {
   async quitApp(): Promise<void> { window.close() },
   // === 练习记录 ===
   // 返回 { autoMastered, streak, totalWrong }：autoMastered=true 表示本次答对触发「自动移入已掌握」；null 表示无错题本动作
-  async recordPractice(r: { bank_id: number; question_id: number; user_answer: string | null; is_correct: boolean; duration_ms: number | null }): Promise<{ autoMastered: boolean; streak: number; totalWrong?: number } | null> {
+  // 2026-10-13（类型清错）：`bank_id` 放宽为 number | string —— 订阅库（bankRef 字符串）也能练、
+  //   也能留痕（PracticeView 的 canTrack）；下游 idb.* 早已是 number | string 同口径（db.ts 2026-09-27 起）。
+  async recordPractice(r: { bank_id: number | string; question_id: number; user_answer: string | null; is_correct: boolean; duration_ms: number | null }): Promise<{ autoMastered: boolean; streak: number; totalWrong?: number } | null> {
     await idb.recordPractice({ ...r, practiced_at: new Date().toISOString() })
     let signal: { autoMastered: boolean; streak: number; totalWrong?: number } | null = null
     if (!r.is_correct) {

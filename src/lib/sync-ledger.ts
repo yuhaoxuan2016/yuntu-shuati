@@ -32,8 +32,11 @@ export type LedgerEntry = {
   coll: LedgerColl
   /** 云端 _id（已知时最强键）；未知为 null */
   cloud_id: string | null
-  /** 本地题库 id（quiz_banks）／题目所属本地题库 id（questions 与记录类） */
-  local_id: number | null
+  /** 本地题库 id（quiz_banks）／题目所属本地题库 id（questions 与记录类）。
+   *  2026-10-13：放宽为 `number | string` —— 订阅模式（2026-09-27）起订阅库的记录以字符串
+   *  bankRef 作 bank_id 流动，云端文档 `_local_bank_id` 同源也可能是字符串；这条只参与
+   *  「存储 + 等值/String() 比对」，纯类型放宽、运行时不变。 */
+  local_id: number | string | null
   /** 记录类与逐题删除用；`null` = 整库语义（questions） */
   question_id: number | string | null
   /** 记下当时的同步昵称，弱键要比对 */
