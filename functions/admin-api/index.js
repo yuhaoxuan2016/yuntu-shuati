@@ -17,7 +17,7 @@
 // 安全铁律：secret 文档缺失（或没有 pwd_hash）时服务直接禁用，绝不回退到任何默认口令。
 // 为什么用哈希而不是 ADMIN_PASSWORD 环境变量（2026-09-16 用户拍板改云函数时定的）：
 //   ① 口令明文不必经过部署工具/日志（部署参数里没有秘密）；② 库被读到也拿不到口令原值；
-//   ③ 轮换＝用本机脚本重算一次哈希写回（原口令只存在用户的 `scripts/.creds.env` 里）。
+//   ③ 轮换＝用本机脚本重算一次哈希写回（明文口令只保存在维护者本机，不入库）。
 const cloudbase = require('@cloudbase/node-sdk')
 const crypto = require('crypto')
 

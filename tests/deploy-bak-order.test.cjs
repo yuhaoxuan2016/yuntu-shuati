@@ -14,7 +14,7 @@ const path = require('path')
 
 const SRC = path.resolve(__dirname, '../scripts/deploy-check.cjs')
 if (!fs.existsSync(SRC)) {
-  console.error(`❌ 找不到 ${SRC}\n   这脚本是服务器部署脚本的本地副本（被 gitignore），换机器要先从服务器 /opt/shuati-ops/deploy-check.cjs 拉回来。`)
+  console.error(`❌ 找不到 ${SRC}\n   这脚本是部署脚本的本地副本，不入库（克隆仓库不会有它）。缺它这条守卫跑不了。`)
   process.exit(2)
 }
 const lines = fs.readFileSync(SRC, 'utf8').split(/\r?\n/)

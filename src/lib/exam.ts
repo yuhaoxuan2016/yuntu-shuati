@@ -192,8 +192,7 @@ export interface ExamQuestion {
   //   · `PublicPracticeView.vue` —— 原列 7 条：其中三处里含**一条 TS2345 传参 + 两条 TS7015 数组下标**，
   //     其余为 TS7015 数组下标
   //   ⚠️ **不要按行号去找它们**：Task 6/7 改写过这些视图，行号已整体漂移，条数也可能随之变化。
-  //   消费方清单**只能以 `npx vue-tsc --noEmit` 现取**为准（T8b 的对账结果见 `.superpowers/sdd/
-  //   audit-fix-20260914/task-8b-report.md` 第 1 节）。
+  //   消费方清单**只能以 `npx vue-tsc --noEmit` 现取**为准。
   //
   // **T8b（2026-09-16）已如实放宽为 `number | string`，且全部消费方在同一个提交里改完**——
   // 因为放宽与修消费方拆开任何一个中间状态都过不了类型门禁，这正是它当初被回退的原因。

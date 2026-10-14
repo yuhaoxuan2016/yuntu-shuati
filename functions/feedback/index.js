@@ -95,7 +95,7 @@ exports.main = async (event = {}) => {
   }
 }
 
-// ===== 钉钉单聊推送（与 server-ops/agent-deploy/scripts/push-dingtalk.mjs 同一套接口）=====
+// ===== 钉钉单聊推送 =====
 // 环境变量：DINGTALK_APP_KEY / DINGTALK_APP_SECRET / DINGTALK_USER_ID，任一缺失则整段跳过。
 function pushDingTalk (doc) {
   const key = process.env.DINGTALK_APP_KEY || ''
