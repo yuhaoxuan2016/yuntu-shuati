@@ -133,5 +133,37 @@ console.log('== ③ 既有正确行为钉子（本轮改动不得碰坏） ==')
   eq(rng2.map((q) => q.answer), ['false', 'false', 'true'], '反向对照：range「错错对」不是按字面/位置硬编码')
 }
 
+console.log('== ④ 答案解析/答案与解析不再吃成答案（2026-10-20 修复） ==')
+{
+  // 回归靶心：原实现 RE_ANS 先把整行吃成答案（捕获「解析：…」），正确答案被清空/解析丢失。
+  const r1 = mod.parseQuestions(['1. 题干一', 'A. 甲', 'B. 乙', '答案：A', '答案解析：本题考查甲'])
+  eq(r1[0].answer, 'A', '「答案解析：」不覆盖上一行的正确答案')
+  eq(r1[0].analysis, '本题考查甲', '「答案解析：」落进 analysis')
+
+  // 答案与解析同一行：开头的答案 token 归 answer，其余归 analysis
+  const r2 = mod.parseQuestions(['1. 题干二', 'A. 甲', 'B. 乙', '答案与解析：B 本题考查乙'])
+  eq(r2[0].answer, 'B', '「答案与解析：B …」答案 token 归 answer')
+  eq(r2[0].analysis, '本题考查乙', '「答案与解析：B …」其余文本归 analysis')
+
+  // 反向对照：解析正文里的拉丁字母不许被当成答案
+  const r3 = mod.parseQuestions(['1. 题干三', 'A. 甲', 'B. 乙', '答案：C', '答案解析：A项说法错误，应选C'])
+  eq(r3[0].answer, 'C', '解析正文里的 A 不被当成答案（已有答案 C 保持）')
+  eq(/A项说法错误/.test(r3[0].analysis || ''), true, '解析正文完整保留')
+
+  // 只有解析、没有答案行：答案保持为空，解析仍在
+  const r4 = mod.parseQuestions(['1. 题干四', 'A. 甲', 'B. 乙', '答案解析：本题考查基础'])
+  eq(!r4[0].answer, true, '无答案行时答案仍为空（不被解析文本填充）')
+  eq(r4[0].analysis, '本题考查基础', '仅有解析行时解析照常落库')
+
+  // 【答案解析】写法
+  const r5 = mod.parseQuestions(['1. 题干五', 'A. 甲', 'B. 乙', '【答案解析】本题考查五'])
+  eq(!r5[0].answer, true, '【答案解析】不污染答案')
+  eq(r5[0].analysis, '本题考查五', '【答案解析】解析落库')
+
+  // 回归钉子：普通「答案：A」照常
+  const r6 = mod.parseQuestions(['1. 题干六', 'A. 甲', 'B. 乙', '答案：A'])
+  eq(r6[0].answer, 'A', '回归钉子：普通「答案：A」不受影响')
+}
+
 console.log(`\n${failed === 0 ? '✅ 全部通过' : '❌ 有失败'}（失败 ${failed}）`)
 process.exit(failed ? 1 : 0)

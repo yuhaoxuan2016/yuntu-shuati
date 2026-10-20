@@ -325,6 +325,25 @@ export async function consumeRecoverPendingPull(): Promise<void> {
   }
 }
 
+/** 2026-10-20（P1-19）：设置改动后**单键轻推**。`scheduleAutoPush` 自 2026-08-09 起是空函数，
+ *  导致 ai_model / subscriptions 等设置改完只留本机，下一次拉取被云端旧值覆盖。
+ *  与轻推同一套写形态（稳定 _id + key/value），只推这一个键；敏感键（AI key/端点）一律不推。 */
+const SETTING_KEY_DENY = new Set(['ai_api_key', 'ai_base_url', 'ai_base_url_ack'])
+export async function pushSettingKey(key: string): Promise<boolean> {
+  if (SETTING_KEY_DENY.has(key)) return false
+  try {
+    if (!isCloudEnabled()) return false
+    if (!(await ensureApp())) return false
+    if (!isAuthed()) return false
+    const value = await idb.getSetting(key)
+    if (value == null) return false
+    return (await pushDoc('settings', { _id: settingsDocId(key), key, value })) === 'ok'
+  } catch (e) {
+    console.warn('[cloud] 设置轻推失败（静默）', key, e)
+    return false
+  }
+}
+
 /** 昵称变更后立即推一行设置行（best-effort；失败静默——下轮全量推送会再带） */
 export async function pushNicknameSetting(): Promise<void> {
   try {
@@ -742,8 +761,8 @@ async function dropLegacyDocId(collection: CloudCollection, legacyId: string): P
   }
 }
 
-async function pushDoc(collection: CloudCollection, doc: any): Promise<boolean> {
-  if (!isAuthed()) return false
+async function pushDoc(collection: CloudCollection, doc: any): Promise<'ok' | 'skip' | 'miss'> {
+  if (!isAuthed()) return 'miss'
   const coll = db.collection(collection)
   const id = doc._id || doc.cloud_id
   // T18（2026-09-15 夜间，沙盒集合 acl_probe_tmp 实测）：推送前必须剥掉 `_openid`。
@@ -772,10 +791,10 @@ async function pushDoc(collection: CloudCollection, doc: any): Promise<boolean> 
     const v = (rest as any).visibility
     if (v === 'public') {
       // 公共题库/题目的写权在服务端（规则明确禁止客户端改 public）→ 跳过，**不计入失败**。
-      // 2026-09-18（A-03）：返回 false 而不是 null——调用方要能和「成功」区分开，
+      // 2026-09-18（A-03）：返回 'skip' 而不是 'ok'——调用方要能和「成功」区分开，
       // 否则这条本地改动会被当成已同步（详见 pushDoc 顶部的返回值说明）。
       console.warn(`推送 ${collection} 跳过：public 文档客户端无权写（${String(id)}）`)
-      return false
+      return 'skip'
     }
     body = { ...rest, visibility: v || 'private' }
   }
@@ -785,7 +804,7 @@ async function pushDoc(collection: CloudCollection, doc: any): Promise<boolean> 
       // 都**无条件 return true**，而 `where(...).update()` **影响 0 行也不抛错**（属主不匹配/行不存在时
       // 就静默 0 行）⇒ 界面报"推送成功"、云端没有任何变化，是彻头彻尾的假成功。
       // 现在：① `add` 成功即真成功；② 重复键（已存在）才落到 `update`；③ `update` 必须读 `stats.updated`
-      // 判成败，为 0 一律按失败返回并打印原因。
+      // 判成败，为 0 一律按 `miss` 返回（调用方不标已同步、下次重试）并打印原因。
       let added = false
       try {
         await withTimeout(coll.add({ ...body, _id: id, updated_at: now() }), 20000, '推送')
@@ -794,7 +813,7 @@ async function pushDoc(collection: CloudCollection, doc: any): Promise<boolean> 
         if (!isIgnorableSyncError(e)) throw e
         // 已存在（重复键）等可忽略错误 ⇒ 交给下面的 update 分支
       }
-      if (added) return true
+      if (added) return 'ok'
       // T18-2a（2026-09-16）：`doc(id).update()` 改 `where({_id, _openid: authedUid}).update()`
       // T18-2f：这两个集合还要带上 `visibility != 'public'`，否则整条被拒（见上）
       const where: any = { _id: id, _openid: authedUid }
@@ -813,12 +832,12 @@ async function pushDoc(collection: CloudCollection, doc: any): Promise<boolean> 
       )
       if (!updated) {
         console.warn(`[cloud] 更新 ${collection} 影响 0 行（_id=${id}）—— 行不存在或属主不匹配（authedUid=${String(authedUid).slice(0, 16)}）`)
-        return false
+        return 'miss'
       }
-      return true
+      return 'ok'
     } else {
       await withTimeout(coll.add({ ...body, updated_at: now() }), 20000, '新增')
-      return true
+      return 'ok'
     }
   } catch (e: any) {
     console.warn(`CloudBase 推送 ${collection} 失败：`, e?.message || e)
@@ -1137,6 +1156,11 @@ async function pushToCloudInner(): Promise<{ pushed: number; failed: number; ski
           const res = results[j]
           if (res.status === 'fulfilled' && res.value === 'pushed') { pushed++; classifyDetail(detail, coll, batch[j]) }
           else if (res.status === 'fulfilled' && res.value === 'skipped') skipped++
+          else if (res.status === 'fulfilled' && res.value === 'failed') {
+            // 2026-10-20（P1-05）：0 行未命中不计 skipped 也不静默——计入失败并保留待推。
+            failed++
+            console.warn(`推送 ${coll} 未命中（行不存在或属主不符，不标已同步、下次重试）`)
+          }
           else if (res.status === 'rejected') {
             failed++
             console.warn(`推送 ${coll} 失败：`, res.reason?.message || res.reason)
@@ -1166,7 +1190,7 @@ async function pushToCloudInner(): Promise<{ pushed: number; failed: number; ski
 }
 
 // 推送单条本地记录（原 pushToCloud 循环体拆出）→ 'pushed' 已写入 / 'skipped' 客户端无权写（public）
-async function pushOne(coll: CloudCollection, r: any, syncKey: string): Promise<'pushed' | 'skipped'> {
+async function pushOne(coll: CloudCollection, r: any, syncKey: string): Promise<'pushed' | 'skipped' | 'failed'> {
   const doc = { ...r, sync_key: syncKey }
   // 旧形状（uid 截断）那一格，写成功后要清掉，避免同一记录在云端有两行
   let legacyId: string | null = null
@@ -1204,14 +1228,15 @@ async function pushOne(coll: CloudCollection, r: any, syncKey: string): Promise<
   if (isRecordColl && typeof doc.bank_id === 'string') doc.bank_ref = doc.bank_id
   // 本机来源标记不上云（云端题已有 _local_id；src_local_id 只服务本机映射）
   delete (doc as any).src_local_id
-  const ok = await pushDoc(coll, doc)
+  const state = await pushDoc(coll, doc)
   // 写成功才清旧格：旧形状那一行若还挂在**自己**名下，留着会让同一记录在云端出现两行
-  if (ok && legacyId && String(doc._id || '') !== legacyId) await dropLegacyDocId(coll, legacyId)
-  // 2026-09-18 修复（重审 A-03）：无论成功还是「跳过」都要回写 synced_at——被跳过的那条本地改动
+  if (state === 'ok' && legacyId && String(doc._id || '') !== legacyId) await dropLegacyDocId(coll, legacyId)
+  // 2026-09-18 修复（重审 A-03）：成功与「公共内容跳过」都要回写 synced_at——被跳过的那条本地改动
   //   永远推不上去（公共内容客户端无权写），不标就会每轮同步都重试并刷日志。
-  //   但**绝不把它谎报为 pushed**：计数交给 pushToCloud 的 skipped，并一路报到设置页文案。
-  await markSynced(coll, r, doc._id ? String(doc._id) : null)
-  return ok ? 'pushed' : 'skipped'
+  // 2026-10-20 修复（P1-05）：`miss`（更新影响 0 行＝行不存在或属主不符）**不标** synced_at ——
+  //   旧实现把它与「跳过」混在一起标掉，本地改动永不再重试、还被报成「公共内容跳过」（谎报）。
+  if (state !== 'miss') await markSynced(coll, r, doc._id ? String(doc._id) : null)
+  return state === 'ok' ? 'pushed' : state === 'skip' ? 'skipped' : 'failed'
 }
 
 // 推送成功后回写本地：synced_at（增量标记）；quiz_banks/questions 同时回写 cloud_id（云端身份）
@@ -1537,7 +1562,7 @@ async function pushProgressLightInner(force = false): Promise<void> {
     const m = await mergeProgressMapWithCloud(rows)
     const merged = resolvePushedRows(rows, m ? m.rows : null, !!m?.readFailed)
     let ok = 0
-    for (const r of merged) { if (await pushDoc('settings', r)) ok++ }
+    for (const r of merged) { if ((await pushDoc('settings', r)) === 'ok') ok++ }
     if (ok) {
       lastLightPushAt = Date.now()
       cloudState.lastSyncAt = now()
@@ -1828,7 +1853,8 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
           await stampSyncedByKey(coll, bankId, r.question_id)
         }
         else {
-          await idb.toggleFavoriteSafe?.(bankId, r.question_id)
+          // 2026-10-20 修复：只补不删（细节见 db.ensureFavorite）。旧实现走 toggleFavorite ⇒ 每次拉取翻转收藏。
+          await idb.ensureFavorite?.(bankId, r.question_id)
           await stampSyncedByKey(coll, bankId, r.question_id)
         }
       }

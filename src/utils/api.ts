@@ -217,8 +217,12 @@ export const api = {
   async importFromHtml(bankId: number | string, html: string): Promise<number> {
     const { parseHtml } = await import('../lib/parser')
     const qs = parseHtml(html, bankId)
-    await idb.clearBankQuestions(bankId)
-    const n = await idb.addQuestions(bankId, qs)
+    // 2026-10-20 修复：0 题不清库（清空不可回滚）；清理+写入合并进同一事务。
+    if (!qs.length) throw new Error('未识别到任何题目，已保留原题库内容。请检查文件格式后重试。')
+    // 2026-10-20 修复：整库替换后旧题云端仍在 ⇒ 下次自动拉取会复活。替换前给整库题目记账
+    // （与 clearBankQuestions 同口径；不加这句，导入过两次的库会混进上一版题目）。
+    markCloudDeleted('questions', bankId, null, await bankCloudId(bankId))
+    const n = await idb.replaceBankQuestions(bankId, qs)
     scheduleCloudPush()
     return n
   },
@@ -230,8 +234,10 @@ export const api = {
   async importWithAi(bankId: number | string, text: string, onProgress?: (done: number, total: number) => void): Promise<{ count: number; expected: number; failedChunks: number; totalChunks: number }> {
     const { aiStructurize, estimateQuestionCount } = await import('../lib/ai')
     const res = await aiStructurize(text, bankId, onProgress)
-    await idb.clearBankQuestions(bankId)
-    const count = await idb.addQuestions(bankId, res.questions)
+    // 2026-10-20 修复：同 importFromHtml——0 题不清库；清理+写入同一事务；替换前给旧题记账。
+    if (!res.questions.length) throw new Error('未识别到任何题目，已保留原题库内容。请检查文件格式后重试。')
+    markCloudDeleted('questions', bankId, null, await bankCloudId(bankId))
+    const count = await idb.replaceBankQuestions(bankId, res.questions)
     scheduleCloudPush()
     return { count, expected: estimateQuestionCount(text), failedChunks: res.failedChunks, totalChunks: res.totalChunks }
   },
@@ -352,7 +358,13 @@ export const api = {
   async bankStats(bankId: number | string): Promise<{ total: number; practiced: number; correct: number; mastered: number }> { return idb.bankStats(bankId) },
   // === 设置 ===
   async getSetting(key: string): Promise<string | null> { return idb.getSetting(key) },
-  async setSetting(key: string, value: string): Promise<void> { await idb.setSetting(key, value); scheduleCloudPush() },
+  async setSetting(key: string, value: string): Promise<void> {
+    await idb.setSetting(key, value)
+    scheduleCloudPush()
+    // 2026-10-20 修复（P1-19）：旧链 scheduleAutoPush 是空函数 ⇒ 设置改完只留本机、下次拉取被云端旧值覆盖。
+    // 改为单键轻推（best-effort、失败静默；下轮全量同步仍会带）。敏感键在 pushSettingKey 内被拒。
+    import('../lib/cloud').then(m => m.pushSettingKey(key)).catch(() => {})
+  },
   // === 订阅（2026-09-27）===  // 订阅 = 「把某个公共题库纳入我的题库」——**只记一条引用，不复制题目**。
   // 存 settings（与 progress / last_practice 同机制）⇒ 天然走云同步、跨端一致。
   // 两个作用：① 出现在「我的题库」；② 练习时**记错题/统计**。
@@ -410,6 +422,8 @@ export const api = {
     const next = has ? cur.filter(x => x !== bankRef) : cur.concat([bankRef])
     await idb.setSetting(SUBS_KEY, JSON.stringify(next))
     scheduleCloudPush()
+    // 2026-10-20 修复（P1-19）：订阅直写绕过了 setSetting ⇒ 旧链是空函数时订阅只留本机、被云端旧名单盖掉。
+    import('../lib/cloud').then(m => m.pushSettingKey(SUBS_KEY)).catch(() => {})
     return !has
   },
   // === 收藏 ===

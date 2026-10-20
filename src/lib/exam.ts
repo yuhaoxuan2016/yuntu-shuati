@@ -1270,7 +1270,8 @@ function formatAnswerRaw(q: ExamQuestion, a: { selected: number[]; blank: string
 
 // 归档 / 取消归档考试（2026-09-27）。归档＝从两端列表撤下，数据与成绩都保留。
 // 客户端 update 必须：① `where({_id, _openid})` 形态（属主型写规则下 doc(id) 会被拒）；
-// ② 载荷带 `data` 包裹（**客户端**形态；服务端 node-sdk 反而是不带 data 的，见 scripts 里的踩坑记录）。
+// ② 载荷**不**包 `data`（网页版 js-sdk 是 `update({...字段})`；包一层会把 `data` 当字段名写进去）。
+//   ⚠️ 只有小程序 `wx.cloud.database()` 才是 `update({ data: {...} })` 形态，别把两端写形态混用。
 export async function setExamArchived(id: string, archived: boolean): Promise<boolean> {
   if (await ensureCloud() && isCloud()) {
     const uid = await getCurrentUid()
@@ -1278,9 +1279,10 @@ export async function setExamArchived(id: string, archived: boolean): Promise<bo
     try {
       const res: any = await cloudDb.collection('exams')
         .where({ _id: id, _openid: uid })
-        .update({ data: { archived, archived_at: Date.now() } })
-      // updated 可能为 0（目标值未变也算成功）⇒ 只要没抛错就按成功处理
-      return Number(res?.updated ?? res?.stats?.updated ?? 0) > 0 || true
+        .update({ archived, archived_at: Date.now() })
+      // 2026-10-20：去掉 `|| true`——archived_at 每次都变，命中必 >0；0 行就是没命中（非属主/已删），
+      //   继续当成功会让「归档失败」永远看不见。
+      return Number(res?.updated ?? res?.stats?.updated ?? 0) > 0
     } catch (e) { console.warn('归档失败：', errMsg(e)); return false }
   }
   return false

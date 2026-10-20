@@ -430,7 +430,9 @@ const displayOptions = computed<string[]>(() => {
 // 当前选中项的展示下标（answers 存的是原始下标，反查展示下标用于高亮）
 const selectedDisplay = computed<number[]>(() => {
   const raw = currentAnswer.value.selected
-  if (!shuffleOptions.value || !displayMap.value.length) return raw
+  // 2026-10-20 修复：不再按乱序开关分流——displayMap 恒为「有效选项的原始下标」，关乱序时它是
+  //   恒等映射（无空项）或带洞映射（含空项），必须走同一套反查，否则高亮错行。
+  if (!displayMap.value.length) return raw
   return raw.map(r => displayMap.value.indexOf(r)).filter(i => i >= 0)
 })
 const isChoice = computed(() => !!currentQuestion.value && !isJudgeQuestion() && (currentQuestion.value?.type === 'single' || currentQuestion.value?.type === 'multi'))
@@ -455,7 +457,9 @@ function toggleOption(i: number) {
   if (!q) return
   const a = currentAnswer.value
   // i 是展示下标 → 转回原始下标存储（判分用原始答案字母）
-  const raw = shuffleOptions.value ? (displayMap.value[i] ?? i) : i
+  // 2026-10-20 修复：**始终**走 displayMap。旧实现在关乱序时直接用 i，而 displayMap 已剔除空选项
+  //   ⇒ 选项含空串且空串不在末尾时，展示行与原始下标错位（点第 3 行记到空选项，判分按错项）。
+  const raw = displayMap.value[i] ?? i
   if (q.type === 'single') {
     a.selected = [raw]
   } else {

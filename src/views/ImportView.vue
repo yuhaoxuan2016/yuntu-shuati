@@ -290,10 +290,16 @@ async function backfillImages(bankId: number, html: string): Promise<number> {
     if (/\[IMG:\d+\]/.test(String(q.stem || ''))) continue
     const key = norm(q.stem)
     if (!key) continue
-    const hit = index.find(e => e.key.includes(key) || key.includes(e.key))
-    if (!hit) continue
+    const hits = index.filter(e => e.key.includes(key) || key.includes(e.key))
+    // 2026-10-20 修复（P1-20）：歧义命中（多条）直接跳过——旧实现取首条，图会挂到相邻题上。
+    if (hits.length !== 1) continue
+    const hit = hits[0]
     try {
-      await api.updateQuestion({ ...q, stem: hit.stem + (q.options ? '' : ''), images: hit.images } as any)
+      // 2026-10-20 修复（P1-20）：只补 images 与 [IMG:k] 占位，**不覆盖** AI 识别出的题干。
+      //   旧实现用 hit.stem（含题号/选项的整段原文）顶掉 stem，且 `(q.options ? '' : '')` 是恒空拼接。
+      const tokens = (String(hit.stem || '').match(/\[IMG:\d+\]/g) || []).join('')
+      const stem = tokens && !/\[IMG:\d+\]/.test(String(q.stem || '')) ? String(q.stem || '') + tokens : q.stem
+      await api.updateQuestion({ ...q, stem, images: hit.images } as any)
       filled++
     } catch (e) {
       dbg('backfill_images_item_fail', { id: q.id, msg: String(e) })
@@ -406,6 +412,11 @@ async function runImport(file: File) {
     // 而是那次整库清空**不可逆且没有任何确认**，一次误点即丢整卷。差集层是把「删多少」算准的未来防护。
     const beforeIds = (await api.listQuestions(bankId.value)).map(q => q.id)
     existingCount.value = replacedCount(beforeIds)
+    // 2026-10-20 修复：整库替换不可逆，替换前显式确认（此前只有一行提示文字、没有门禁）。
+    if (existingCount.value > 0 && !confirm(`导入将替换题库现有 ${existingCount.value} 题，且不可撤销。继续吗？`)) {
+      resetImport()
+      return
+    }
     stage.value = 'recognizing'
     if (engine.value === 'ai') {
       status.value = 'AI 识别中（分块解析，请耐心等待...）'

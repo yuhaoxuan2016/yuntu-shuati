@@ -232,8 +232,21 @@ export const idb = {
       (practicedAt ? String(r.practiced_at) === String(practicedAt) : true)
     )
   },
-  async toggleFavoriteSafe(bankId: number | string, questionId: number): Promise<boolean> {
-    return this.toggleFavorite(bankId, questionId)
+  // 2026-10-20 修复：拉取侧只补不删。云端收藏是「存在」信号，本地删除由删除账本（LEDGER_COLLS）拦；
+  // 旧实现用 toggleFavorite（已存在就删）⇒ 本地收藏行没有 updated_at，每次拉取都满足 cloudTs > localTs，
+  // 收藏按同步次数在有/无之间翻转。返回值：true=本次补写了一条。
+  async ensureFavorite(bankId: number | string, questionId: number): Promise<boolean> {
+    const db = await openDB()
+    const exists = await new Promise<boolean>((resolve, reject) => {
+      const t = db.transaction('favorites', 'readonly')
+      const idx = t.objectStore('favorites').index('bank_id')
+      const req = idx.getAll(IDBKeyRange.only(bankId))
+      req.onsuccess = () => resolve(req.result.some(x => x.question_id === questionId))
+      req.onerror = () => reject(req.error)
+    })
+    if (exists) return false
+    await tx('favorites', 'readwrite', s => s.add(plain({ bank_id: bankId, question_id: questionId, created_at: new Date().toISOString() })))
+    return true
   },
   // === questions ===
   async listQuestions(bankId: number | string): Promise<any[]> {
@@ -268,6 +281,24 @@ export const idb = {
       req.onsuccess = () => {
         const c = req.result
         if (c) { store.delete(c.value.id); c.continue() }
+      }
+    })
+  },
+  // 2026-10-20 修复：清空 + 写入放进**同一个事务**。旧实现分两个事务（clearBankQuestions → addQuestions），
+  // 写入失败（配额/DataClone）时清空不可回滚 ⇒ 整库题目被清掉且无提示。
+  async replaceBankQuestions(bankId: number | string, qs: any[]): Promise<number> {
+    const db = await openDB()
+    return new Promise((resolve, reject) => {
+      const t = db.transaction('questions', 'readwrite')
+      t.oncomplete = () => resolve(qs.length)
+      t.onerror = () => reject(t.error)
+      const store = t.objectStore('questions')
+      const idx = store.index('bank_id')
+      const req = idx.openCursor(IDBKeyRange.only(bankId))
+      req.onsuccess = () => {
+        const c = req.result
+        if (c) { store.delete(c.value.id); c.continue(); return }
+        for (const q of qs) store.add({ ...q, bank_id: bankId })
       }
     })
   },

@@ -692,9 +692,10 @@ async function restoreProgress(): Promise<RestoreOutcome> {
       answerStates.value = map
     }
 
-    if (progress.finished) {
-      finished.value = true
-    } else if (currentOrderIdx >= 0 && !suppressRestoredBanner) {
+    // 2026-10-20 修复：无论 true/false 都按存档赋值——旧实现只在 true 时赋值，恢复一版未完成进度后
+    //   finished 仍是 true（界面停在完成页，点「再练一次」还会跳过确认清空刚恢复的进度）。
+    finished.value = !!progress.finished
+    if (!finished.value && currentOrderIdx >= 0 && !suppressRestoredBanner) {
       restoredBanner.value = true
       setTimeout(() => { restoredBanner.value = false }, 5000)
     }
@@ -968,7 +969,11 @@ async function saveProgressInner() {
   // 2026-10-07：未就绪闸门 —— 恢复没上、用户也还没答题时不落任何盘（见 restoreUnsettled 注释）。
   // 答出第一题即解除；「重新开始」也在 restart() 里显式解除。
   if (restoreUnsettled.value) {
-    if (answerStates.value.size === 0) { dirtySince.value = 0; return }
+    // 2026-10-20 修复：判据从「answerStates 非空」改成「确有作答」。旧判据被 QuestionCard 的每秒计时
+    //   emit 击穿（挂载 1 秒内就 size=1）⇒ 恢复未就绪时仍会落盘并把 current_id 写回第 1 题。
+    const answeredReal = [...answerStates.value.values()].some(s => !!s && (
+      (s.selected && s.selected.length > 0) || !!s.blankAnswer || s.judgeSelected != null || !!s.submitted))
+    if (!answeredReal) { dirtySince.value = 0; return }
     restoreUnsettled.value = false
   }
   const progress: SavedProgress = {
@@ -1353,8 +1358,18 @@ function jumpToQuestion(qid: number) {
 // QuestionCard 状态变化时保存到 Map（切换题目/返回上一题时仍可恢复）
 function onStateChange(state: QuestionState) {
   const q = currentQuestion.value
+  const prev = answerStates.value.get(q.id)
   answerStates.value.set(q.id, state)
-  scheduleSave()
+  // 2026-10-20 修复（P1-14）：只有计时秒数变化时不落盘。QuestionCard 每秒 emit 一次（watch 含 elapsedSecs），
+  //   旧实现每秒全量写 IndexedDB + 触发云端轻推（历史栈 ~125KB 反复 parse/stringify）⇒ 低端机卡顿、白耗配额。
+  const onlyTick = !!prev &&
+    JSON.stringify(prev.selected) === JSON.stringify(state.selected) &&
+    prev.blankAnswer === state.blankAnswer &&
+    prev.submitted === state.submitted &&
+    prev.isCorrect === state.isCorrect &&
+    prev.selfEvalDone === state.selfEvalDone &&
+    prev.judgeSelected === state.judgeSelected
+  if (!onlyTick) scheduleSave()
 }
 
 function next() {

@@ -39,8 +39,8 @@ async function main () {
   {
     ok('❗落地用的是 markWrong（逐条打标记），不是"清空重建"',
       /await idb\.markWrong\(bankId, r\.question_id/.test(cloudSrc))
-    ok('❗收藏用的是 toggleFavoriteSafe（逐条），不是整本替换',
-      /await idb\.toggleFavoriteSafe\?\.\(bankId, r\.question_id\)/.test(cloudSrc))
+    ok('❗收藏用的是 ensureFavorite（逐条只补不删），不是整本替换、也不是 toggle 翻转',
+      /await idb\.ensureFavorite\?\.\(bankId, r\.question_id\)/.test(cloudSrc))
     ok('❗已掌握用的是 markWrongMastered（逐条）',
       /await idb\.markWrongMastered\(bankId, r\.question_id\)/.test(cloudSrc))
     // 反向对照：全文件里不得有"先清空该库错题再写"的写法

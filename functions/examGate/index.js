@@ -233,9 +233,16 @@ async function actGrade(payload) {
   //   原实现无条件把整卷 key 返回 ⇒ 传一个空 `answers` 就能零成本取走整卷答案与解析（还能反复刷分）。
   //   以「全卷未答」为界（直接用 gradeAll 的 unanswered 判定，与判分口径一致、不自造第二套）：
   //   交卷场景必然有作答；真的一题未答就交卷时只回成绩，回看页不显示正确答案——这是应得的（确实没答）。
+  // 2026-10-20 修复：只回**本次实际作答过**的题的答案。
+  //   原实现以「整卷有任何一题作答」为界返回全卷 key —— 传一题答案即可零成本取走整卷答案与解析
+  //   （线上复现：只答第 1 题，返回第 2、3 题答案）。判据与 gradeAll 的 unanswered 逐字同源。
   const key = {}
-  for (const q of questions) key[String(q.id)] = { answer: q.answer ?? null, analysis: q.analysis ?? null }
-  const hasAnswer = result.unanswered < questions.length
+  for (const q of questions) {
+    const a = answers ? answers[q.id] : null
+    const answered = !!a && !(((a.selected || []).length === 0) && !a.blank && (a.judge === null || a.judge === undefined))
+    if (answered) key[String(q.id)] = { answer: q.answer ?? null, analysis: q.analysis ?? null }
+  }
+  const hasAnswer = Object.keys(key).length > 0
   return { ok: true, ...result, key: (isPublic && hasAnswer) ? key : null }
 }
 
@@ -247,14 +254,14 @@ function normId(v) {
   return String(v == null ? '' : v).replace(/^wx_/, '').trim()
 }
 
-function callerCandidates(event) {
+function callerCandidates() {
   const out = []
   try {
     const info = app.auth().getUserInfo() || {}
     for (const v of [info.openId, info.uid, info.customUserId]) if (v) out.push(String(v))
   } catch (e) { /* 无身份上下文（管理端调用）时忽略 */ }
-  const u = event && event.userInfo
-  if (u && u.openId) out.push(String(u.openId))
+  // 2026-10-20 修复：**不再采信 `event.userInfo`** —— 它是调用方自报字段（网页端 data 原样进 event），
+  //   配合回看接口回传的 `_openid` 即可冒充考生拿整卷答案。身份只认平台注入的 auth().getUserInfo()。
   return [...new Set(out.filter(Boolean))]
 }
 
@@ -270,7 +277,7 @@ async function actReviewByCode(payload, event) {
   // 2026-09-27：原先凭码即回**整卷含答案**，等于「成绩表可读 ⇒ 答案公开」（生产实测复现）。
   // 现按 B 口径：属主无条件可取；考生凭「码 + 身份归一后匹配本人」取自己那份；
   // 其余人只回成绩 + 剥答案的卷（与 action='paper' 同口径，题面本就不是机密）。
-  const cands = callerCandidates(event).map(normId)
+  const cands = callerCandidates().map(normId)
   const ownerIds = [exam._openid, exam.creator_openid].filter(Boolean).map(normId)
   const candidateIds = [result._openid].filter(Boolean).map(normId)
   const isOwner = cands.some(c => ownerIds.includes(c))
@@ -337,13 +344,16 @@ async function actSubmit(payload) {
       const prev = firstDoc(ex)
       if (prev && prev._id) {
         // 同一场 + 同姓名 + 同身份 ⇒ 覆盖（沿用两端既有语义：同名重考覆盖上次）
-        await db.collection('exam_results').doc(prev._id).update({ data: row })
+        // 2026-10-20 修复：node-sdk 的写形态是 update(row)/add(row)，多包一层 `data:` 不报错，
+        //   而是把整行塞进字面量 `data` 字段（线上复现：顶层 exam_id/score/query_code 全空，
+        //   按顶层 exam_id 查 0 条）。feedback/index.js 有同一实测记录。
+        await db.collection('exam_results').doc(prev._id).update(row)
       } else {
-        await db.collection('exam_results').add({ data: row })
+        await db.collection('exam_results').add(row)
       }
     } else {
       // 取不到身份（管理端/无上下文调用）⇒ 只新增，不做 upsert，避免覆盖同名他人成绩
-      await db.collection('exam_results').add({ data: row })
+      await db.collection('exam_results').add(row)
     }
   } catch (e) {
     console.error('[examGate] submit 写库失败', e && e.message)

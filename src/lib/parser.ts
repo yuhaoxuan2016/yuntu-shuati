@@ -29,8 +29,11 @@ const RE_NUM_STRIP = /^\s*[\(（]?\d+[\.、．)）](?!\d)\s*(.+)/
 // `)` 本身可充当分隔符；可选收尾靠正则回溯同时覆盖 `(A) text`（`)` 当分隔符）与 `(A). text`（`)` 收尾、`.` 当分隔符）。
 // 分隔符仍为必选，故 `A text`（字母后无分隔符的续行）不会被误判成选项。
 const RE_OPT = /^\s*[\(（]?([A-H])[\)）]?\s*[\.、．)）:：]\s*(.+)/
-const RE_ANS = /^\s*(答案|正确答案|【答案】)\s*[:：]?\s*(.+)/i
-const RE_ANA = /^\s*(解析|答案解析|【解析】)\s*[:：]?\s*(.+)/i
+// 2026-10-20 修复：「答案解析：…」原被 RE_ANS 整体吃成答案（捕获「解析：…」），正确答案被清空、解析丢失。
+// 三种写法分开：① 答案+解析行（可含开头答案 token）② 纯解析行 ③ 纯答案行（负向预查挡掉解析类续写）。
+const RE_ANS = /^\s*(答案|正确答案|【答案】)\s*[:：]?\s*(?!解析|与解析|及解析|和解析|详解)(.+)/i
+const RE_ANA = /^\s*(解析|【解析】|【答案解析】)\s*[:：]?\s*(.+)/i
+const RE_ANS_ANA = /^\s*(?:答案|正确答案)\s*(?:与|及|和)?\s*解析\s*[:：]?\s*([\s\S]*)$/i
 const RE_BLANK = /_{2,}|（\s*）|\(\s*\)|【\s*】/
 // 2026-09-15 修复(P2-26)：RE_OPT_MARK 真正接上——用于拆分与题干同行的内联选项
 // （`1. 下列… A. x B. y C. z D. w`，PDF 文本提取的常态），此前它只定义未引用，此类题产出 options:[] 与 type:'qa'。
@@ -411,7 +414,7 @@ export function parseQuestions(paragraphs: string[]): ParsedQuestion[] {
     if (blocks.length > 0) {
       // P2-26：续行也可能同行携带内联选项（如整行 `A. x B. y C. z D. w`），同样拆分；无标记时原样入块
       blocks.push(...splitInlineOptions(t))
-    } else if (RE_ANS.test(t) || RE_ANA.test(t)) {
+    } else if (RE_ANS.test(t) || RE_ANA.test(t) || RE_ANS_ANA.test(t)) {
       // 游离答案/解析，开启新块
       blocks = [t]
     }
@@ -521,9 +524,11 @@ function isAnswerHeader(line: string): boolean {
     || lower.includes('答案') || lower.includes('answer')
   if (!hasKw) return false
   // 内联答案："答案：A"（after 含字母/判断词）→ 不算标题
-  const ansMatch = line.match(RE_ANS)
+  // 2026-10-20：解析行（答案解析/答案与解析）同属「内联答案」，不能当答案区标题。
+  const ansMatch = line.match(RE_ANS) || line.match(RE_ANA) || line.match(RE_ANS_ANA)
   if (ansMatch) {
-    const after = ansMatch[2].trim()
+    // RE_ANS_ANA 只有第 1 组（答案+解析行的正文），RE_ANS/RE_ANA 的正文在第 2 组
+    const after = String(ansMatch[2] != null ? ansMatch[2] : ansMatch[1] || '').trim()
     if (/[A-Za-z0-9\u4e00-\u9fff]/.test(after) || RE_JUDGE_WORD.test(after)) return false
   }
   // 题号行："1. 答案是..." → 不算标题
@@ -657,6 +662,7 @@ function buildQuestion(blocks: string[], sourceIndex: number, chapter: number, s
     if (isNoiseLine(line)) { i++; continue }
     const optMatch = line.match(RE_OPT)
     if (optMatch) break
+    if (line.match(RE_ANS_ANA)) break
     const ansMatch = line.match(RE_ANS)
     if (ansMatch) break
     const anaMatch = line.match(RE_ANA)
@@ -686,15 +692,24 @@ function buildQuestion(blocks: string[], sourceIndex: number, chapter: number, s
       i++
       continue
     }
-    const ansMatch = line.match(RE_ANS)
-    if (ansMatch) {
-      answer = ansMatch[2]
+    // 2026-10-20：先判「答案+解析」行，再判纯解析、最后纯答案——「答案解析：…」不能再落进 answer。
+    const aaMatch = line.match(RE_ANS_ANA)
+    if (aaMatch) {
+      const txt = aaMatch[1].trim()
+      const lead = txt.match(/^([A-Ha-h]{1,8}|正确|错误|对|错|√|×|true|false)(?:\s|[,，、。.；;]|$)([\s\S]*)$/i)
+      if (lead) { answer = lead[1]; analysis = (lead[2] || '').trim() } else { analysis = txt }
       i++
       continue
     }
     const anaMatch = line.match(RE_ANA)
     if (anaMatch) {
       analysis = anaMatch[2]
+      i++
+      continue
+    }
+    const ansMatch = line.match(RE_ANS)
+    if (ansMatch) {
+      answer = ansMatch[2]
       i++
       continue
     }
