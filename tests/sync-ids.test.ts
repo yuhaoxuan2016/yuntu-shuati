@@ -3,7 +3,7 @@
 // 2026-10-10 起补：B1 形状归一 / B2 逐键合并 / 缩水守卫（每条带反向对照）
 import {
   buildSrcLocalIndex, mapSrcToLocal, remapProgress, mergeProgressForLocal, mergeProgressMapForCloud, getOrCreateDeviceId, orderHitRate, submittedCount, answeredCountLoose, trulyAnsweredCount,
-  normalizeAnswerStates, isSeverelyShrunk,
+  normalizeAnswerStates, isSeverelyShrunk, buildProgressRefMaps, resolveProgressRef,
 } from '../src/lib/sync-ids.ts'
 
 let pass = 0, fail = 0
@@ -24,6 +24,18 @@ eq('命中映射', mapSrcToLocal(idx, 5), 101)
 eq('未命中 → null', mapSrcToLocal(idx, 999), null)
 eq('垃圾输入 → null', mapSrcToLocal(idx, 'abc'), null)
 eq('字符串数字可映射', mapSrcToLocal(idx, '6'), 102)
+
+// ── 2026-10-20（P1-11）：本机 id 与 src_local_id 分表，数值引用先查本机 id
+const refQs = [
+  { id: 3, src_local_id: 1 },
+  { id: 1, src_local_id: 2 },
+  { id: 4, src_local_id: 3 },
+]
+const refMaps = buildProgressRefMaps(refQs as any)
+eq('本机 id 优先：ref=3 → 第 0 题（不被 src 3 抢）', resolveProgressRef(3, refMaps), 0)
+eq('本机 id 未命中再查来源号：ref=2 → 第 1 题', resolveProgressRef(2, refMaps), 1)
+eq('字符串数字同口径：ref="3" → 第 0 题', resolveProgressRef('3', refMaps), 0)
+eq('反向对照：来源号 1 指向第 0 题，但本机 id 1 存在 ⇒ 取第 1 题', resolveProgressRef(1, refMaps), 1)
 
 // ── 进度重映射（反向对照：映射后必须 ≠ 源号，且失败项被剔除而非保留）
 const remapped = remapProgress({ mode: 'order', order_ids: [5, 6, 7], current_id: 6, answer_states: { '5': { a: 1 }, '7': { b: 2 } }, saved_at: 'T' }, idx)

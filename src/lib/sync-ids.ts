@@ -332,28 +332,32 @@ export function reshapeMpProgress(prog: any, idMap: Map<string, number>): any | 
 // ─────────────────────────────────────────────────────────────────────────────
 export interface ProgressRefMaps {
   byId: Map<number, number>
+  /** 2026-10-20（P1-11）：src_local_id 单独一张表——旧实现与 byId 共用命名空间，后写覆盖先写；
+   *  本地 id 有缺口时会把引用解析到错题上。解析顺序：本机 id 优先，未命中再查来源号。 */
+  bySrcId: Map<number, number>
   byDocId: Map<string, number>
 }
 
 export function buildProgressRefMaps(questions: any[]): ProgressRefMaps {
   const byId = new Map<number, number>()
+  const bySrcId = new Map<number, number>()
   const byDocId = new Map<string, number>()
   ;(questions || []).forEach((q: any, i: number) => {
     if (!q) return
     if (typeof q.id === 'number') byId.set(q.id, i)
     const s = Number(q.src_local_id)
-    if (Number.isFinite(s) && s > 0) byId.set(s, i)
+    if (Number.isFinite(s) && s > 0) bySrcId.set(s, i)
     const d = q.cloud_qid
     if (typeof d === 'string' && d) byDocId.set(d, i)
   })
-  return { byId, byDocId }
+  return { byId, bySrcId, byDocId }
 }
 
 export function resolveProgressRef(ref: unknown, maps: ProgressRefMaps): number | undefined {
-  if (typeof ref === 'number') return Number.isFinite(ref) ? maps.byId.get(ref) : undefined
+  if (typeof ref === 'number') return Number.isFinite(ref) ? (maps.byId.get(ref) ?? maps.bySrcId.get(ref)) : undefined
   const s = String(ref == null ? '' : ref).trim()
   if (!s) return undefined
-  if (/^\d+$/.test(s)) return maps.byId.get(Number(s))
+  if (/^\d+$/.test(s)) { const n = Number(s); return maps.byId.get(n) ?? maps.bySrcId.get(n) }
   const at = s.lastIndexOf('::id:')
   if (at >= 0) return maps.byDocId.get(s.slice(at + 5))
   return maps.byDocId.get(s)

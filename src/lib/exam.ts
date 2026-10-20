@@ -257,10 +257,11 @@ export interface Exam {
   visibility?: 'public' | 'private'   // 公共考试（所有人可考）/ 自建考试（仅自己可见）
   archived?: boolean                  // 2026-09-27：归档后从两端列表撤下（数据与成绩保留）
   archived_at?: number
+  _snapshot_at?: string        // 本机考试快照的写入时间（只存在于 localStorage 快照里）
   deadline?: string | null     // 截止时间 ISO 字符串；为空表示不限时
   shuffle_options?: boolean    // 答题时是否乱序选项（默认 true；false = 按原顺序展示）
   created_at: string
-  creator_name?: string        // 创建人（用户可自定义填写）
+  creator_name?: string | null // 创建人（用户可自定义填写）
   _openid?: string             // 云数据库创建者标识（服务端自动写入）
   // T18-2d（2026-09-16）：**列表行**不再下发 `questions`（走 examGate 的字段白名单），
   // 由服务端补一个题数进来供列表渲染；详情/取卷仍是完整 Exam（含 questions）。

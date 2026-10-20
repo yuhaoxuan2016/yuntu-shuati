@@ -331,7 +331,6 @@ const isChoice = computed(() => {
 })
 // 题型按钮列表：按规范化类型聚合（判断题不再缺失）
 const availableTypes = computed(() => [...new Set(allQuestions.value.map(q => normType(q)))])
-const totalCount = computed(() => order.value.length)
 
 function typeLabel(t: string) {
   return { single: '单选', multi: '多选', judge: '判断', blank: '填空', qa: '问答' }[t] || t

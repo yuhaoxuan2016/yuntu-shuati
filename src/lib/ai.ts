@@ -217,6 +217,11 @@ export async function aiStructurize(
         const parsed = extractJson(content)
         if (Array.isArray(parsed)) {
           results[ci] = parsed.filter(item => item && typeof item === 'object' && item.stem)
+        } else {
+          // 2026-10-20 修复（P1-13）：AI 回对象/散文时解析成功但非数组，旧实现静默丢整块且 failedChunks=0
+          //   ⇒ 导入页的「可能少了整块」告警永不触发。计为失败块。
+          failed++
+          console.warn(`AI 分块 ${ci + 1}/${chunks.length} 返回非数组，已跳过`)
         }
       } catch (e) {
         failed++

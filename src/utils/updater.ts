@@ -2,7 +2,7 @@
 export const check = async () => null
 export type Update = any
 
-export async function checkForUpdates(opts: { silent?: boolean } = {}): Promise<any> {
+export async function checkForUpdates(_opts: { silent?: boolean } = {}): Promise<any> {
   // 当前版本：构建时由 vite 的 define 注入（见 vite.config.ts），dev/异常时回退到 unknown
   const version = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev'
   return { hasUpdate: false, currentVersion: version }

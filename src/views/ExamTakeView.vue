@@ -100,8 +100,8 @@
       <div class="question-card">
         <div class="q-stem">
           <span class="q-idx">{{ current + 1 }}.</span>
-          <span class="q-type">{{ typeLabel(currentQuestion.type) }}</span>
-          <span class="q-text">{{ currentQuestion.stem }}</span>
+          <span class="q-type">{{ typeLabel(currentQuestion?.type || '') }}</span>
+          <span class="q-text">{{ currentQuestion?.stem }}</span>
         </div>
 
         <!-- 选择题 -->
@@ -150,7 +150,7 @@
       <div v-if="showConfirm" class="modal-mask" @click.self="showConfirm = false">
         <div class="modal-body">
           <h3>确认交卷？</h3>
-          <p>已答 {{ answeredCount }} / {{ exam.questions.length }} 题，{{ answeredCount < exam.questions.length ? '还有未答题目！' : '全部完成！' }}</p>
+          <p>已答 {{ answeredCount }} / {{ exam?.questions?.length ?? 0 }} 题，{{ answeredCount < (exam?.questions?.length ?? 0) ? '还有未答题目！' : '全部完成！' }}</p>
           <div class="modal-actions">
             <button @click="showConfirm = false">继续答题</button>
             <button class="danger" @click="confirmSubmit">确认交卷</button>

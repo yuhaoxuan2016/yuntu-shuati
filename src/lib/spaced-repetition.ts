@@ -206,16 +206,20 @@ export function calculateDailyTask(
 
   // 2026-08-23 优化：用 Set/Map 替代嵌套 find/includes，O(N×R+M×B) → O(N+R+M+B)
   const bankIdSet = new Set(plan.bankIds)
-  const recordMap = new Map<number, ReviewRecord>()
+  // 2026-10-20 修复（P1-22）：复习记录按「题库 + 题号」复合键索引——旧实现只按 question_id，
+  //   本地库与订阅库同号题会互相顶替，复习到期日套到另一库的题上。
+  //   记录没有 bank_id 的历史数据回落到「仅题号」键（行为与旧版一致）。
+  const recordMap = new Map<string, ReviewRecord>()
   for (const r of reviewRecords) {
-    recordMap.set(r.question_id, r)
+    const k = (r.bank_id != null ? String(r.bank_id) : '') + ':' + String(r.question_id)
+    recordMap.set(k, r)
   }
 
   // 筛选计划中的题库题目
   const planQuestions = allQuestions.filter(q => bankIdSet.has(q.bankId))
 
   for (const question of planQuestions) {
-    const record = recordMap.get(question.id)
+    const record = recordMap.get(String(question.bankId) + ':' + String(question.id)) ?? recordMap.get(':' + String(question.id))
 
     if (record) {
       // 到期判断统一以 next_review 为准

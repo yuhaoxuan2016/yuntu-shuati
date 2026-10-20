@@ -169,6 +169,9 @@ function parseChineseNum(s: string): number {
 
 // HTML 转段落（移植 docx.rs parse_html）
 export function htmlToParagraphs(html: string): { paragraphs: string[]; images: string[] } {
+  // 2026-10-20 修复（P1-09）：Word 的 Shift+Enter 软换行输出 `<br/>`，旧实现只丢标签不补换行
+  //   ⇒ 选项/答案粘成一行、识别不到（整题退化成问答）。统一切成换行符，下面按行切段。
+  html = String(html || '').replace(/<br\s*\/?>/gi, '\n')
   const paragraphs: string[] = []
   const images: string[] = []
   // 2026-10-13 修复：判据由 `html.toLowerCase().includes('<p')` 改为标签边界正则。
@@ -198,7 +201,13 @@ export function htmlToParagraphs(html: string): { paragraphs: string[]; images: 
     if (html[i] === '<' && html[i + 1] === '/' && html[i + 2] === 'p' && html[i + 3] === '>') {
       inP = false
       const text = stripTags(current).trim()
-      if (text) paragraphs.push(text)
+      if (text) {
+        // 2026-10-20（P1-09）：段内的 `<br>` 已换成换行符，按行拆成独立段落（选项/答案各占一行）。
+        for (const line of text.split('\n')) {
+          const t = line.trim()
+          if (t) paragraphs.push(t)
+        }
+      }
       current = ''
       i += 4
       continue

@@ -63,13 +63,14 @@ const HOT_COLLECTIONS = [
   'mastered_questions',
   'review_records',
 ]
+// 2026-10-20（P1-25）：`bind_codes`（长期身份码明文）与 `admin_auth`（口令哈希）**不进备份**——
+//   备份会落云存储 30 天并推送服务器 90 天，任何一处泄露都等于可离线爆破/接管。
+//   恢复时不重建这两集合（管理员可重置口令；绑定码本就是短命凭据）。
 const COLD_COLLECTIONS = [
   'questions',
   'quiz_banks',
   'exams',
   'exam_results',
-  'bind_codes',
-  'admin_auth',
   'visit_stats',
 ]
 const COLLECTIONS = [...HOT_COLLECTIONS, ...COLD_COLLECTIONS]

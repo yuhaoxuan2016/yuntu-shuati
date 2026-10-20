@@ -27,7 +27,7 @@ async function main () {
 
   // ── 真实云端快照（本机 2026-10-07 只读实读）──
   const SNAP = path.join(__dirname, '_fixtures', 'rabbit-sync-snapshot.json')
-  if (!fs.existsSync(SNAP)) { console.error(`❌ 缺快照 ${SNAP}`); process.exit(2) }
+  if (!fs.existsSync(SNAP)) { console.log(`[skip] 缺快照 ${SNAP}（_fixtures 不入库，干净 clone 正常跳过）`); process.exit(0) }
   const snap = JSON.parse(fs.readFileSync(SNAP, 'utf8'))
   console.log(`快照（来自云端实读）：错题 ${snap.wrong_questions.length} / 收藏 ${snap.favorites.length} / 已掌握 ${snap.mastered_questions.length}\n`)
 

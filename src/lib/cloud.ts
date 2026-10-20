@@ -58,7 +58,6 @@ let app: any = null
 let db: any = null
 let auth: any = null
 let authedUid: string | null = null
-let syncChain: Promise<void> = Promise.resolve()
 
 export const cloudState = {
   enabled: false,
@@ -585,7 +584,7 @@ async function removeCloudDocsByMark(coll: CloudCollection, m: DeletedMark, sync
   let removedAll = 0
   // 分页只为请求量保护（每轮 100 条）：删除会让结果集变小，所以固定从头部重查，最多 20 轮防死循环。
   for (let round = 0; round < 20; round++) {
-    const res = await withTimeout(
+    const res: any = await withTimeout(
       db.collection(coll)
         .where(deletedMarkWhere(coll, m))
         .limit(100)
@@ -851,14 +850,14 @@ async function pushDoc(collection: CloudCollection, doc: any): Promise<'ok' | 's
 // 现在① 命中上限打 console.warn，② 向上返回 truncated 标志，由 syncFromCloud → syncAll 传给设置页提示用户。
 // 上限的**数值边界与修复前逐字一致**（`skip > 8000`，即最多 81 页 / 8100 条）——本次只加告警与标志，不改行为。
 // 注释里原先写「公共题现有 7049 道」：该数字早已过期（线上 23103），写死数量只会再次误导，故不再写死。
-async function pullAll(coll: any, query: any, label = ''): Promise<{ rows: any[]; truncated: boolean }> {
+async function pullAll(_coll: any, query: any, label = ''): Promise<{ rows: any[]; truncated: boolean }> {
   const all: any[] = []
   const pageSize = 100
   const MAX_SKIP = 8000
   let skip = 0
   let truncated = false
   for (;;) {
-    const res = await withTimeout(query.skip(skip).limit(pageSize).get(), 20000, '拉取')
+    const res: any = await withTimeout(query.skip(skip).limit(pageSize).get(), 20000, '拉取')
     const rows = Array.isArray(res.data) ? res.data : []
     all.push(...rows)
     if (rows.length < pageSize) break
@@ -875,7 +874,7 @@ async function pullAll(coll: any, query: any, label = ''): Promise<{ rows: any[]
   return { rows: all, truncated }
 }
 
-async function pullCollection(collection: CloudCollection, localIds: Set<string>): Promise<{ docs: any[]; truncated: boolean }> {
+async function pullCollection(collection: CloudCollection, _localIds: Set<string>): Promise<{ docs: any[]; truncated: boolean }> {
   if (!isAuthed()) return { docs: [], truncated: false }
   const coll = db.collection(collection)
   const all: any[] = []
@@ -1018,6 +1017,9 @@ async function syncFromCloudInner(): Promise<{ pulled: number; truncated: boolea
       for (const r of localRows) {
         localMap.set(String(r.id ?? r._id), r)
         if (r.cloud_id) localMap.set('cid:' + r.cloud_id, r)
+        // 2026-10-20（P1-01）：settings 的主键是 `key`（本地没有 id/_id）——旧实现按 id 建映射，
+        // local 恒 undefined ⇒ 云端旧值无条件覆盖本机。单独用 `setting:<key>` 挂一份。
+        if (coll === 'settings' && r && r.key) localMap.set('setting:' + String(r.key), r)
       }
 
       for (const cd of cloudDocs) {
@@ -1031,7 +1033,9 @@ async function syncFromCloudInner(): Promise<{ pulled: number; truncated: boolea
         // 原逻辑 String(cd.id ?? cd._id) 永远匹配不上本地数字 id → 每次全量重写且 updated_at 冲突比较失效。
         // 优先用 _local_id 匹配本地，其次 cloud_id，最后回退 _id。
         const localId = String(cd._local_id ?? cd.id ?? cd._id)
-        const local = localMap.get(localId) || (cd._id ? localMap.get('cid:' + cd._id) : undefined)
+        const local = coll === 'settings'
+          ? localMap.get('setting:' + String(cd.key))
+          : (localMap.get(localId) || (cd._id ? localMap.get('cid:' + cd._id) : undefined))
         // P2-7（T10a）：updated_at 类型混合（网页端 ISO 串 / 小程序端数字）→ 必须归一后比较，
         // 直接字典序比较时 `"2026-…" > "1789…"` 恒成立，会把云端更旧的判断成更新。
         // 相等时**保留云端**：同一毫秒的更新若判本地较新就永远推不上去（云端那份丢）。
@@ -1039,7 +1043,11 @@ async function syncFromCloudInner(): Promise<{ pulled: number; truncated: boolea
         //       避免每次同步都做无意义的本地重写（与 writeLocal 里 practice_records 去重那段同因）。
         const cloudTs = normalizeTs(cd.updated_at)
         const localTs = local ? normalizeTs(local.updated_at) : 0
-        if (!local || cloudTs > localTs || (cloudTs === localTs && cloudTs > 0)) {
+        // 2026-10-20（P1-01）：settings 只在云端**严格更新**时落地（避免同毫秒反复重写）。
+        const fresher = coll === 'settings'
+          ? (!local || cloudTs > localTs)
+          : (!local || cloudTs > localTs || (cloudTs === localTs && cloudTs > 0))
+        if (fresher) {
           // 云端较新（或本地没有）→ 写入本地；2026-08-23 计数修复：pulled 只统计真正新增的题目，
           // 避免"遍历的云端文档数"虚高（此前导入干净备份后显示拉取 15800，实际云端只 14088）
           const type = await writeLocal(coll, cd)
@@ -1886,7 +1894,7 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
           try { cur = curRaw ? JSON.parse(String(curRaw)) : null } catch { cur = null }
           const at = (x: any) => Date.parse(String((x && x.saved_at) || '')) || 0
           if (!incoming || typeof incoming !== 'object' || at(incoming) <= at(cur)) return 'skipped'
-          await idb.bulkPut('settings', [{ key: doc.key, value: String(doc.value), synced_at: now() }])
+          await idb.bulkPut('settings', [{ key: doc.key, value: String(doc.value), updated_at: normalizeTs(doc.updated_at) || now(), synced_at: now() }])
         } catch (e) { console.warn('[cloud] last_practice 落地失败（不阻断）', e) }
         return 'skipped'
       }
@@ -1914,7 +1922,7 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
             .sort((a, b) => a.date.localeCompare(b.date))
             .slice(-400)
             .map(r => ({ date: r.date, total: r.total, correct: r.correct, ...(r.duration > 0 ? { duration: r.duration } : {}) }))
-          await idb.bulkPut('settings', [{ key: doc.key, value: JSON.stringify(merged), synced_at: now() }])
+          await idb.bulkPut('settings', [{ key: doc.key, value: JSON.stringify(merged), updated_at: normalizeTs(doc.updated_at) || now(), synced_at: now() }])
         } catch (e) { console.warn('[cloud] daily_records 合并失败（不阻断）', e) }
         return 'skipped'
       }
@@ -1945,7 +1953,7 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
             }
           }
           if (Object.keys(out).length) {
-            await idb.bulkPut('settings', [{ key: PRACTICE_HISTORY_KEY, value: JSON.stringify(out), synced_at: now() }])
+            await idb.bulkPut('settings', [{ key: PRACTICE_HISTORY_KEY, value: JSON.stringify(out), updated_at: normalizeTs(doc.updated_at) || now(), synced_at: now() }])
           }
         } catch (e) { console.warn('[cloud] 进度历史栈合并失败（不阻断）', e) }
         return 'skipped'
@@ -1999,7 +2007,7 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
             } else {
               res = mergeProgressForLocal(map[bid], localAll[lk] ?? null, myDev, new Map(), true)
             }
-            if (res.write) puts.push({ key: lk, value: JSON.stringify(res.value), synced_at: now() })
+            if (res.write) puts.push({ key: lk, value: JSON.stringify(res.value), updated_at: normalizeTs(doc.updated_at) || now(), synced_at: now() })
           }
           if (puts.length) await idb.bulkPut('settings', puts)
         } catch (e) {
@@ -2008,7 +2016,8 @@ async function writeLocal(coll: CloudCollection, doc: any): Promise<'added' | 'u
         return 'skipped'
       }
       // 2026-08-21：bulkPut 带 synced_at（拉取视为已同步；settings 推送为全推，此标记仅避免重复写）
-      await idb.bulkPut('settings', [{ key: doc.key, value: doc.value, synced_at: now() }])
+      // 2026-10-20（P1-01）：把云端时间戳落到本地，下一次拉取才能做「谁新」比较。
+      await idb.bulkPut('settings', [{ key: doc.key, value: doc.value, updated_at: normalizeTs(doc.updated_at) || now(), synced_at: now() }])
       return 'skipped'
     }
   }
@@ -2306,6 +2315,28 @@ export async function rollbackProgress(bankRef: string, savedAt: string): Promis
   }
 }
 
+// 2026-10-20（P1-04）：历史栈超上限时为**云端副本**裁剪（本机不动）——每库保留最近 1 版，
+//   按 saved_at 从新到旧装填，装到上限为止；返回 null 表示连一版都装不下。
+function trimHistoryForUpload(raw: string, cap: number): string | null {
+  try {
+    const m = JSON.parse(raw)
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return null
+    const rows: { bank: string; prog: any; at: number }[] = []
+    for (const [bank, arr] of Object.entries(m)) {
+      if (!Array.isArray(arr) || !arr.length) continue
+      const prog = arr[0]   // pushHistory 新→旧，栈顶是最新版
+      rows.push({ bank, prog, at: Date.parse(String((prog && prog.saved_at) || '')) || 0 })
+    }
+    rows.sort((a, b) => b.at - a.at)
+    const out: Record<string, any[]> = {}
+    for (const r of rows) {
+      out[r.bank] = [r.prog]
+      if (JSON.stringify(out).length > cap) { delete out[r.bank]; break }
+    }
+    return Object.keys(out).length ? JSON.stringify(out) : null
+  } catch { return null }
+}
+
 async function listAllSettings(): Promise<any[]> {
   // 读取已知 key（从设置页用到的）
   // 注意：ai_api_key（AI 密钥）不参与云同步，仅保存在本地浏览器，避免泄露到云端
@@ -2366,18 +2397,26 @@ async function listAllSettings(): Promise<any[]> {
   // 值直接取本机 localStorage（昵称不存 idb），体积 ≤32 字符，无需体积守卫。
   out.push({ _id: settingsDocId('nickname'), key: 'nickname', value: getSyncKey() })
   // 2026-10-05：进度历史栈随全量推送一起上云（换设备/清缓存后仍能回滚）。
-  // 体积：每库 5 版、单库约 8–25KB ⇒ 十几个库约 100–300KB，**超过下面的 64KB 单键上限**。
-  // 故这里走独立上限（512KB）：它是「最后的保险」，被跳过就等于没有，宁可放宽也不要静默丢。
+  // 2026-10-20 修复（P1-04）：上限从 512KB 收到 64KB（与其它 settings 单键同口径；187KB 曾触发服务端 500）。
+  //   超限时不再**整键跳过**（跳过 = 这份保险永远不上云），而是给**云端副本**裁剪：
+  //   每库保留最近 1 版，按 saved_at 从新到旧装填到上限；本机历史保持完整。
   try {
     const hv = await idb.getSetting(PRACTICE_HISTORY_KEY)
     if (hv != null) {
       const size = typeof hv === 'string' ? hv.length : JSON.stringify(hv).length
-      const MAX_HISTORY_BYTES = 512 * 1024
+      const MAX_HISTORY_BYTES = 64 * 1024
+      let value: string | null = hv as string
       if (size > MAX_HISTORY_BYTES) {
-        console.warn(`[cloud] 进度历史栈体积 ${(size / 1024).toFixed(1)}KB 超过上限 ${MAX_HISTORY_BYTES / 1024}KB，已跳过上传`)
-      } else {
-        out.push({ _id: settingsDocId(PRACTICE_HISTORY_KEY), key: PRACTICE_HISTORY_KEY, value: hv })
+        const trimmed = trimHistoryForUpload(String(hv), MAX_HISTORY_BYTES)
+        if (trimmed) {
+          value = trimmed
+          console.warn(`[cloud] 进度历史栈 ${(size / 1024).toFixed(1)}KB 超过 ${MAX_HISTORY_BYTES / 1024}KB，已裁剪为 ${(trimmed.length / 1024).toFixed(1)}KB 上传（本机保留完整版）`)
+        } else {
+          console.warn(`[cloud] 进度历史栈 ${(size / 1024).toFixed(1)}KB 超过 ${MAX_HISTORY_BYTES / 1024}KB 且无法裁剪，已跳过上传`)
+          value = null
+        }
       }
+      if (value != null) out.push({ _id: settingsDocId(PRACTICE_HISTORY_KEY), key: PRACTICE_HISTORY_KEY, value })
     }
   } catch { /* 历史栈缺失不阻断设置同步 */ }
   return out

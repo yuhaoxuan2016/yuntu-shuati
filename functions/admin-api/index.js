@@ -334,10 +334,13 @@ async function deleteBank(bankId, bankRef) {
   // 级联删除题目（按 bank_ref 匹配）
   let deleted = 0
   const pageSize = 100
-  for (let skip = 0; skip < 5000; skip += pageSize) {
-    const q = db.collection('questions').where({ bank_ref: bankId })
-    const res = await q.skip(skip).limit(pageSize).get()
+  // 2026-10-20 修复（P1-24）：旧实现「边删边 skip」——每轮删掉当前页后再跳过同等数量，
+  //   剩余文档前移 ⇒ 实际只删掉约一半。改为每轮都取**当前第一页**（不 skip），删到取空为止。
+  //   1000 轮（10 万题）只是防死循环，正常题库远低于此。
+  for (let round = 0; round < 1000; round++) {
+    const res = await db.collection('questions').where({ bank_ref: bankId }).limit(pageSize).get()
     const rows = res.data || []
+    if (!rows.length) break
     for (const qd of rows) {
       try { await db.collection('questions').doc(qd._id).remove(); deleted++ } catch { /* ignore */ }
     }

@@ -109,7 +109,6 @@ import { api, Question } from '../utils/api'
 import { toastError } from '../utils/toast'
 import { useBankStore } from '../stores/bank'
 import ImportReviewTable from '../components/ImportReviewTable.vue'
-import { parseText, parseHtml } from '../lib/parser'
 import { extractImagesByParagraph } from '../lib/parser'
 import { newQuestionIds, replacedCount } from '../lib/import-diff'
 

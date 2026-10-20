@@ -628,13 +628,6 @@ const canSubmitCode = computed(() => {
   return isValidRecoverCodeInput(raw) || raw.length === 6 || raw.length === 16
 })
 
-function formatSize(b: number): string {
-  if (b < 1024) return `${b} B`
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
-  if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(2)} MB`
-  return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`
-}
-
 onMounted(async () => {
   try {
     apiKey.value = (await api.getSetting('ai_api_key')) || ''

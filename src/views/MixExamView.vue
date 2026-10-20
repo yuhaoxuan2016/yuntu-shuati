@@ -548,7 +548,7 @@ function onQuestionUpdated(updated: Question) {
   if (idx >= 0) examQuestions.value[idx] = updated
   reloadKey.value++
 }
-function getDotClass(listIdx: number, qid: number): string {
+function getDotClass(_listIdx: number, qid: number): string {
   const classes: string[] = []
   if (qid === currentQuestion.value?.id) classes.push('current')
   const s = answerStates.value.get(qid)

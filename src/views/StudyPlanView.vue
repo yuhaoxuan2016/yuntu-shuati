@@ -168,11 +168,16 @@ async function loadTodayTask() {
     // 获取计划中的所有题目
     const allQuestions: { id: number; bankId: BankKey }[] = []
     planQuestionBankMap.value.clear()
+    // 2026-10-20 修复（P1-21）：计划练习实际只进**第一个题库**（/practice/:bankId 只按单库过滤）。
+    //   旧实现把所有库的题都算进 todayTask/task_total ⇒ 进度永远到不了 100%、映射还会被同号题串库。
+    //   其余题库的题不计入今日任务（页面已有 toast 说明「本次练习仅包含第一个题库」）。
+    const firstBank = currentPlan.value.bankIds[0]
     for (const bankId of currentPlan.value.bankIds) {
+      if (bankId !== firstBank) continue
       const questions = await api.listQuestions(bankId)
       for (const q of questions) {
-        planQuestionBankMap.value.set(q.id, q.bank_id)
-        allQuestions.push({ id: q.id, bankId: q.bank_id })
+        planQuestionBankMap.value.set(q.id, bankId)
+        allQuestions.push({ id: q.id, bankId })
       }
     }
     

@@ -155,7 +155,6 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
 import { api, Question } from '../utils/api'
 import { idb, normalizeTs } from '../lib/db'
 import { toastSuccess, toastInfo } from '../utils/toast'
@@ -168,7 +167,6 @@ import {
   qualityLabel,
   labelToQuality,
   calculateDailyReviewCap,
-  calculateBankReviewCap,
   calculateDynamicCap,
   calculateDaysToExam,
   isStaleReview,
@@ -178,7 +176,6 @@ import {
   type QualityLabel,
 } from '../lib/spaced-repetition'
 
-const router = useRouter()
 
 // MEMORY_OPTIONS：手动质量覆盖按钮
 // 2026-09-15 修复(P2-10)：必须与 qualityLabel 的值域一一对应（详见 spaced-repetition.ts 里的注释）。
@@ -269,7 +266,7 @@ async function loadData() {
 
 // ===== 统计 =====
 // 2026-08-23 内容去重：同 stem 的题只保留最强记录，避免重复题虚高统计
-import { deduplicateByStem, simpleHash } from '../lib/spaced-repetition'
+import { deduplicateByStem } from '../lib/spaced-repetition'
 // 有追踪记录的题目合集（去重前，用于列表展示；去重后用于统计）
 const tracked = computed(() => {
   const set = new Set<number>()

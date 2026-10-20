@@ -83,7 +83,9 @@ console.log('== ④ 接线守卫：练习页恢复链与未就绪闸门（Practi
   has(/buildProgressRefMaps\(questions\.value/, '恢复链使用 buildProgressRefMaps')
   has(/resolveProgressRef\(ref, refMaps\)/, 'idxOf 走 resolveProgressRef')
   has(/restoreUnsettled\.value = true/, '解析不出当前位置时挂未就绪闸门')
-  has(/if \(restoreUnsettled\.value\) \{[\s\S]{0,220}dirtySince\.value = 0; return/, '保存链受闸门拦截（不落盘、不推指针）')
+  // 2026-10-20（P0-03）：判据从「answerStates 非空」改成「确有作答」（计时器每秒 emit 会击穿旧判据）。
+  has(/answeredReal[\s\S]{0,260}if \(!answeredReal\) \{ dirtySince\.value = 0; return \}/, '保存链受闸门拦截（按「确有作答」判定，不落盘、不推指针）')
+  absent(/answerStates\.value\.size === 0/, '旧的「只看 Map 非空」判据已移除')
   has(/async function restart[\s\S]{0,500}restoreUnsettled\.value = false/, '「重新开始」显式解除闸门')
   absent(/typeof progress\.current_id !== 'number'/, '旧的「只认数字 current_id」门槛已移除')
 }

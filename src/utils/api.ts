@@ -6,6 +6,10 @@ function scheduleCloudPush() {
   import('../lib/cloud').then(m => m.scheduleAutoPush()).catch(() => {})
 }
 
+// 2026-10-20（P1-18）：导入取消闸。旧实现 cancelImport 是空函数——用户点「取消」后 AI 仍跑完、
+//   随后照常清库+写入；现在取消标记会在写库前拦下，题库保持原样。
+let importCancelled = false
+
 // 订阅模式（2026-09-27）：题库标识有两种形态，**判据只在这里做一次**：
 //   · 纯数字 ⇒ 本地题库的 IndexedDB id
 //   · 其它   ⇒ 公共题库的 bankRef（云端 quiz_banks 文档 _id）
@@ -69,6 +73,7 @@ export interface QuizBank {
   id: number; name: string; description: string | null;
   visibility?: 'public' | 'private' | 'pending';   // 公共/自建（私人）/待审核（pending=提交公共审核中）
   creator_name?: string | null;        // 创建人（用户可自定义填写）
+  cloud_shared?: boolean;              // 从云端落地的公共题库行标记（HomeView 清理空公共壳用）
   question_count: number; created_at: string; updated_at: string;
 }
 export interface Question {
@@ -215,10 +220,12 @@ export const api = {
   // === 导入 ===
   // 浏览器端：直接解析后入库（规则引擎）
   async importFromHtml(bankId: number | string, html: string): Promise<number> {
+    importCancelled = false
     const { parseHtml } = await import('../lib/parser')
     const qs = parseHtml(html, bankId)
     // 2026-10-20 修复：0 题不清库（清空不可回滚）；清理+写入合并进同一事务。
     if (!qs.length) throw new Error('未识别到任何题目，已保留原题库内容。请检查文件格式后重试。')
+    if (importCancelled) { importCancelled = false; throw new Error('已取消导入，题库未改动') }
     // 2026-10-20 修复：整库替换后旧题云端仍在 ⇒ 下次自动拉取会复活。替换前给整库题目记账
     // （与 clearBankQuestions 同口径；不加这句，导入过两次的库会混进上一版题目）。
     markCloudDeleted('questions', bankId, null, await bankCloudId(bankId))
@@ -232,23 +239,25 @@ export const api = {
   //   · A-23：`expected` 原来直接写成 `count`（自己跟自己比）⇒ 导入页那条「识别题数明显少于预期」
   //     的安全网**永远不可能触发**。现在改用**独立于 AI 的文档题号预估**（ai.ts 的 estimateQuestionCount）。
   async importWithAi(bankId: number | string, text: string, onProgress?: (done: number, total: number) => void): Promise<{ count: number; expected: number; failedChunks: number; totalChunks: number }> {
+    importCancelled = false
     const { aiStructurize, estimateQuestionCount } = await import('../lib/ai')
     const res = await aiStructurize(text, bankId, onProgress)
     // 2026-10-20 修复：同 importFromHtml——0 题不清库；清理+写入同一事务；替换前给旧题记账。
     if (!res.questions.length) throw new Error('未识别到任何题目，已保留原题库内容。请检查文件格式后重试。')
+    if (importCancelled) { importCancelled = false; throw new Error('已取消导入，题库未改动') }
     markCloudDeleted('questions', bankId, null, await bankCloudId(bankId))
     const count = await idb.replaceBankQuestions(bankId, res.questions)
     scheduleCloudPush()
     return { count, expected: estimateQuestionCount(text), failedChunks: res.failedChunks, totalChunks: res.totalChunks }
   },
-  async importFromPdf(bankId: number | string, path: string): Promise<number> {
+  async importFromPdf(_bankId: number | string, _path: string): Promise<number> {
     throw new Error('PDF 导入在网页版暂不支持，请使用 TXT/MD/docx 格式')
   },
   async testAiConnection(): Promise<void> {
     const { testConnection } = await import('../lib/ai')
     return testConnection()
   },
-  async cancelImport(): Promise<void> { /* 无操作 */ },
+  async cancelImport(): Promise<void> { importCancelled = true },
   async cancelPdfImport(): Promise<void> { /* 无操作 */ },
   // === 数据库信息（PWA 中显示浏览器存储说明） ===
   async getDbInfo(): Promise<{ path: string; size_bytes: number; backups_dir: string; backup_count: number }> {
@@ -256,7 +265,7 @@ export const api = {
   },
   async openDbFolder(): Promise<string> { throw new Error('网页版不支持打开文件夹') },
   async pickDatabaseFolder(): Promise<string | null> { return null },
-  async changeDbPath(newDir: string): Promise<string> { throw new Error('网页版不支持修改数据库位置') },
+  async changeDbPath(_newDir: string): Promise<string> { throw new Error('网页版不支持修改数据库位置') },
   async restartApp(): Promise<void> { location.reload() },
   async quitApp(): Promise<void> { window.close() },
   // === 练习记录 ===

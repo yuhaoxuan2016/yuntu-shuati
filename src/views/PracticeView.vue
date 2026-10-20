@@ -287,7 +287,6 @@ const bankId = resolveBankId(route.params.bankId)
 // 2026-08-22：智能学习计划模式——队列来自 StudyPlanView 写入的 localStorage（study_plan_questions）
 // 修复前：计划跳转路由错误 404，且 mode=plan / study_plan_questions 无消费方，计划功能完全断裂
 const isPlanMode = route.query.mode === 'plan'
-const planItems = ref<{ id: number; bankId: number }[]>([])
 const planId = ref<string | null>(null)
 const planQueueReady = ref(false)
 // 2026-09-27 订阅模式：`canTrack` = 本次练习是否「留痕」（写错题/收藏/统计、进度上云）。

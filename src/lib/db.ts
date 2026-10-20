@@ -1,7 +1,7 @@
 // 轻量 IndexedDB 封装：替代 Tauri 后端的 SQLite
 // 数据表：quiz_banks / questions / practice_records / wrong_questions / favorites / settings
 
-interface DBSchema {
+export interface DBSchema {
   quiz_banks: { keyPath: 'id'; indexes: { name: 'name' } }
   questions: { keyPath: 'id'; indexes: { bank_id: 'bank_id' } }
   practice_records: { keyPath: 'id'; indexes: { bank_id: 'bank_id'; question_id: 'question_id' } }
@@ -75,8 +75,15 @@ function openDB(): Promise<IDBDatabase> {
         db.createObjectStore('public_question_cache', { keyPath: 'bank_ref' })
       }
     }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
+    req.onsuccess = () => {
+      const db = req.result
+      // 2026-10-20（P1-08）：别的标签页要升级版本时主动让路；否则本页永久占住旧连接，
+      // 新版本标签页的 open 永远 blocked（页面空转、进度不保存）。
+      db.onversionchange = () => { try { db.close() } catch { /* 静默 */ } dbPromise = null }
+      resolve(db)
+    }
+    req.onerror = () => { dbPromise = null; reject(req.error) }
+    req.onblocked = () => { dbPromise = null; reject(new Error('IndexedDB 升级被其它标签页阻塞，请关闭其它页面后重试')) }
   })
   return dbPromise
 }
@@ -245,7 +252,7 @@ export const idb = {
       req.onerror = () => reject(req.error)
     })
     if (exists) return false
-    await tx('favorites', 'readwrite', s => s.add(plain({ bank_id: bankId, question_id: questionId, created_at: new Date().toISOString() })))
+    await tx('favorites', 'readwrite', s => s.add(plain({ bank_id: bankId, question_id: questionId, created_at: new Date().toISOString(), updated_at: Date.now() })))
     return true
   },
   // === questions ===
@@ -344,7 +351,8 @@ export const idb = {
   // === practice_records ===
   // 2026-08-21：返回新记录 id（供云同步拉取后回写 synced_at 增量标记）
   async recordPractice(record: any): Promise<number> {
-    return tx('practice_records', 'readwrite', s => s.add(plain(record))) as unknown as number
+    // 2026-10-20（P1-06）：记录行带 updated_at，拉取侧才能做「谁新」比较（旧实现 localTs 恒 0 ⇒ 云端旧记录每次覆盖本机）。
+    return tx('practice_records', 'readwrite', s => s.add(plain({ ...record, updated_at: Number(record && record.updated_at) || Date.now() }))) as unknown as number
   },
   // 2026-09-28（跨设备映射自愈）：按主键删单条练习记录（清理「挂不到题」的错位记录用）
   async removePracticeRecord(id: number): Promise<void> {
@@ -388,7 +396,7 @@ export const idb = {
     }
     if (!exists) {
       // 2026-08-19：correct_streak = 连续答对计数（错题重练答对累计，达到阈值自动转「已掌握」）
-      await tx('wrong_questions', 'readwrite', s => s.add(plain({ bank_id: bankId, question_id: questionId, created_at: new Date().toISOString(), correct_streak: streak ?? 0, total_wrong: totalWrong })))
+      await tx('wrong_questions', 'readwrite', s => s.add(plain({ bank_id: bankId, question_id: questionId, created_at: new Date().toISOString(), updated_at: Date.now(), correct_streak: streak ?? 0, total_wrong: totalWrong })))
     } else {
       // 记录已存在：更新累计错误数 + 刷新连对 streak（答错时清零）
       await this.setWrongRecord(bankId, questionId, { total_wrong: totalWrong, correct_streak: typeof streak === 'number' ? streak : 0 })
@@ -424,7 +432,7 @@ export const idb = {
         const c = req.result
         if (c && c.value.question_id === questionId) {
           const { synced_at, ...rest } = c.value
-          store.put({ ...rest, ...patch })
+          store.put({ ...rest, ...patch, updated_at: Date.now() })
         } else if (c) c.continue()
       }
     })
@@ -456,7 +464,7 @@ export const idb = {
         if (c && c.value.question_id === questionId) {
           // 2026-08-21：本地改动 → 清 synced_at（云同步增量标记），下次推送自动补推
           const { synced_at, ...rest } = c.value
-          store.put({ ...rest, correct_streak: streak })
+          store.put({ ...rest, correct_streak: streak, updated_at: Date.now() })
         } else if (c) c.continue()
       }
     })
@@ -532,12 +540,12 @@ export const idb = {
       const mreq = midx.getAll(IDBKeyRange.only(bankId))
       mreq.onsuccess = () => {
         if (!mreq.result.some(x => x.question_id === questionId)) {
-          mstore.add({ bank_id: bankId, question_id: questionId, created_at: new Date().toISOString(), total_wrong: totalWrong })
+          mstore.add({ bank_id: bankId, question_id: questionId, created_at: new Date().toISOString(), updated_at: Date.now(), total_wrong: totalWrong })
         } else {
           // 已存在：更新 total_wrong 取较大值
           const rec = mreq.result.find(x => x.question_id === questionId)
           const prev = rec?.total_wrong || 0
-          if (totalWrong > prev) mstore.put({ ...rec, total_wrong: totalWrong })
+          if (totalWrong > prev) mstore.put({ ...rec, total_wrong: totalWrong, updated_at: Date.now() })
         }
       }
     })
@@ -567,7 +575,7 @@ export const idb = {
       const wreq = widx.getAll(IDBKeyRange.only(bankId))
       wreq.onsuccess = () => {
         if (!wreq.result.some(x => x.question_id === questionId)) {
-          wstore.add({ bank_id: bankId, question_id: questionId, created_at: new Date().toISOString(), total_wrong: totalWrong })
+          wstore.add({ bank_id: bankId, question_id: questionId, created_at: new Date().toISOString(), updated_at: Date.now(), total_wrong: totalWrong })
         }
       }
     })
@@ -620,7 +628,7 @@ export const idb = {
       })
       return false
     } else {
-      await tx('favorites', 'readwrite', s => s.add(plain({ bank_id: bankId, question_id: questionId, created_at: new Date().toISOString() })))
+      await tx('favorites', 'readwrite', s => s.add(plain({ bank_id: bankId, question_id: questionId, created_at: new Date().toISOString(), updated_at: Date.now() })))
       return true
     }
   },
@@ -670,8 +678,10 @@ export const idb = {
     const v = await tx('settings', 'readonly', s => s.get(key))
     return v ? v.value : null
   },
-  async setSetting(key: string, value: string): Promise<void> {
-    await tx('settings', 'readwrite', s => s.put(plain({ key, value })))
+  async setSetting(key: string, value: string, updatedAt: number = Date.now()): Promise<void> {
+    // 2026-10-20（P1-01）：本地设置行带 updated_at，拉取侧据此判断谁新——旧实现只写 key/value，
+    // localTs 恒 0 ⇒ 云端旧值每次拉取都覆盖本机刚改的值。
+    await tx('settings', 'readwrite', s => s.put(plain({ key, value, updated_at: updatedAt })))
   },
   async getAllSettings(): Promise<Record<string, string>> {
     const rows = await tx('settings', 'readonly', s => s.getAll()) as any[]

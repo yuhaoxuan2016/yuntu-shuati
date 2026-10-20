@@ -15,7 +15,7 @@ export const useBankStore = defineStore('bank', () => {
     }
   }
   // originRef：从公共题库导入时传入，存下来供「从公共题库更新」定位来源。
-  async function create(name: string, description: string | null, visibility: 'public' | 'private' = 'public', creatorName?: string | null, originRef?: string | null) {
+  async function create(name: string, description: string | null, visibility: 'public' | 'private' | 'pending' = 'public', creatorName?: string | null, originRef?: string | null) {
     const b = await api.createBank({ name, description, visibility, creator_name: creatorName, origin_ref: originRef ?? null })
     banks.value.unshift(b)
     return b

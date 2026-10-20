@@ -165,5 +165,18 @@ console.log('== ④ 答案解析/答案与解析不再吃成答案（2026-10-20 
   eq(r6[0].answer, 'A', '回归钉子：普通「答案：A」不受影响')
 }
 
+console.log('== ⑤ docx 软换行 <br> 不再吞掉选项（2026-10-20 修复） ==')
+{
+  // Word 的 Shift+Enter 输出 `<br/>`；旧实现只丢标签不补换行 ⇒ 选项粘成一行、识别不到。
+  const br = mod.htmlToParagraphs('<p>1. 题干</p><p>A. 甲<br/>B. 乙<br>答案：A</p>')
+  eq(br.paragraphs, ['1. 题干', 'A. 甲', 'B. 乙', '答案：A'], '<br>/<br/> 都切成独立行')
+  const qs = mod.parseQuestions(br.paragraphs)
+  eq(qs[0]?.options, ['A. 甲', 'B. 乙'], '软换行后的选项被正确识别')
+  eq(qs[0]?.answer, 'A', '软换行后的答案被正确回填')
+  // 反向对照：没有 <br> 的普通段落照旧
+  const plain = mod.htmlToParagraphs('<p>1. 题干</p><p>A. 甲</p><p>B. 乙</p>')
+  eq(plain.paragraphs, ['1. 题干', 'A. 甲', 'B. 乙'], '普通段落行为不变')
+}
+
 console.log(`\n${failed === 0 ? '✅ 全部通过' : '❌ 有失败'}（失败 ${failed}）`)
 process.exit(failed ? 1 : 0)

@@ -8,6 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "type-check": "vue-tsc --noEmit",
+    "test:node": "node tests/run-all.mjs",
+    "verify": "npm run type-check && npm run test:node",
     "check-parity": "node tests/cross-end-parity.test.cjs",
     "check-parity-all": "node tests/cross-end-parity.test.cjs && node tests/theme-parity.test.cjs && node tests/cross-end-type-parity.test.cjs && node tests/changelog-parity.test.cjs",
     "deploy": "node scripts/deploy-server.mjs",

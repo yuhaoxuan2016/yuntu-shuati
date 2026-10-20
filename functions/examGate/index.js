@@ -191,6 +191,15 @@ function publicExamView(e, withQuestions, stripAnswers) {
   return view
 }
 
+// 2026-10-20：回看回执剥身份字段 —— event.userInfo 修复后它已不能用于冒充，但仍是标识符泄露。
+function publicResultView(r) {
+  if (!r || typeof r !== 'object') return r
+  const out = { ...r }
+  delete out._openid
+  delete out.creator_openid
+  return out
+}
+
 async function loadExam(examId) {
   const res = await db.collection('exams').doc(examId).get()
   return firstDoc(res)
@@ -293,7 +302,7 @@ async function actReviewByCode(payload, event) {
   // 日志行保留；无身份调用升级为醒目的 warn，供监控及时发现
   if (unknownCaller) console.warn('[examGate] reviewByCode 无身份调用', logLine)
   else console.log(logLine)
-  return { ok: true, result, exam: publicExamView(exam, true, !allowFull) }
+  return { ok: true, result: publicResultView(result), exam: publicExamView(exam, true, !allowFull) }
 }
 
 // 交卷落库（2026-09-27）：分数此前由**客户端**构造后 `add` 进 exam_results（规则允许写自己的文档）
@@ -372,7 +381,7 @@ async function actResultByCode(payload) {
   const result = firstDoc(res)
   if (!result) return { ok: false, code: 'NOT_FOUND', message: '未找到该查询码的成绩' }
   const exam = await loadExam(result.exam_id)
-  return { ok: true, result, examTitle: exam ? String(exam.title || '') : '' }
+  return { ok: true, result: publicResultView(result), examTitle: exam ? String(exam.title || '') : '' }
 }
 
 // 某场考试的成绩榜。**仅该场考试属主可取** —— 否则任何人都能列出别人的姓名与分数。
